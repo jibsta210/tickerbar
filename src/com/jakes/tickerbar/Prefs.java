@@ -26,8 +26,8 @@ public final class Prefs {
     public static final String IGNORE       = "ignore_pkgs";
 
     // animation
-    public static final String ANIM_IN      = "anim_in";       // 0 none, 1 fade, 2 slide down, 3 slide from right
-    public static final String ANIM_OUT     = "anim_out";      // 0 none, 1 fade, 2 slide up, 3 slide left
+    public static final String ANIM_IN      = "anim_in";       // 0 none, 1 fade, 2 slide down, 3 slide from right, 4 flip, 5 hinge
+    public static final String ANIM_OUT     = "anim_out";      // 0 none, 1 fade, 2 slide up, 3 slide left, 4 flip, 5 hinge
     public static final String ANIM_MS      = "anim_ms";
     public static final String SCROLL_MODE  = "scroll_mode";   // TickerView.MODE_*
     public static final String SPEED        = "speed_pxs";
@@ -56,9 +56,9 @@ public final class Prefs {
         DEF.put(PAD, 120);       DEF.put(TEXT, 13);       DEF.put(OPACITY, 100);
         DEF.put(DWELL, 4000);    DEF.put(QUEUE, 1);       DEF.put(SKIP_SILENT, 1);
         DEF.put(SKIP_ONGOING, 1);
-        DEF.put(ANIM_IN, 2);     DEF.put(ANIM_OUT, 2);    DEF.put(ANIM_MS, 220);
+        DEF.put(ANIM_IN, 4);     DEF.put(ANIM_OUT, 4);    DEF.put(ANIM_MS, 380);
         DEF.put(SCROLL_MODE, 0); DEF.put(SPEED, 160);     DEF.put(DELAY, 700);
-        DEF.put(SWIPE_ON, 0);    DEF.put(SWIPE_HOME, 0);  DEF.put(SWIPE_TRIGGER, 0);
+        DEF.put(SWIPE_ON, 0);    DEF.put(SWIPE_HOME, 0);  DEF.put(SWIPE_TRIGGER, 2);
         DEF.put(SWIPE_POS, 2);   DEF.put(SWIPE_W, 12);    DEF.put(SWIPE_H, 0);
         DEF.put(SWIPE_Y, 0);     DEF.put(SWIPE_DIST, 40); DEF.put(SWIPE_PILL, 1);
         DEF.put(SHADE_HOME, 1);
@@ -85,11 +85,16 @@ public final class Prefs {
     public static void put(Context c, String key, int v)    { get(c).edit().putInt(key, v).apply(); }
     public static void put(Context c, String key, String v) { get(c).edit().putString(key, v).apply(); }
 
-    /** v1.3 turned the swipe strip into a nav-bar button, so its old geometry no longer fits. */
+    /** One-off resets when a default changes meaning. */
     public static void migrate(Context c) {
         SharedPreferences p = get(c);
-        if (p.getInt(SCHEMA, 1) >= 2) return;
-        p.edit().remove(SWIPE_H).remove(SWIPE_W).remove(SWIPE_POS).remove(SWIPE_Y)
-                .remove(SWIPE_DIST).putInt(SCHEMA, 2).apply();
+        int v = p.getInt(SCHEMA, 1);
+        if (v >= 3) return;
+        SharedPreferences.Editor e = p.edit();
+        // v1.3: the swipe strip became a nav-bar button, so its old geometry no longer fits
+        if (v < 2) e.remove(SWIPE_H).remove(SWIPE_W).remove(SWIPE_POS).remove(SWIPE_Y).remove(SWIPE_DIST);
+        // v1.4: the button is swipe-only by request, and the 3D flip is the default animation
+        e.remove(SWIPE_TRIGGER).remove(ANIM_IN).remove(ANIM_OUT).remove(ANIM_MS);
+        e.putInt(SCHEMA, 3).apply();
     }
 }

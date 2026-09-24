@@ -2,4 +2,8 @@
 <resources>
     <string name="app_name">TickerBar</string>
     <string name="acc_desc">Draws the notification ticker above the status bar, shows the wallet button on the navigation bar, and opens the notification shade or Control Centre from launcher gestures. It only watches which app is in front (to know when you are on the home screen) and never reads screen content.</string>
+    <string name="sc_notif_short">Notifications</string>
+    <string name="sc_notif_long">Open notifications</string>
+    <string name="sc_cc_short">Control Centre</string>
+    <string name="sc_cc_long">Open Control Centre</string>
 </resources>

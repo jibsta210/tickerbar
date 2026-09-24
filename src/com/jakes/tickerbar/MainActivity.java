@@ -102,10 +102,12 @@ public class MainActivity extends Activity {
 
         // ---------------------------------------------------------- animation
         section("Animation");
-        cycle("Entry", Prefs.ANIM_IN, new int[]{0, 1, 2, 3},
-                new String[]{"None", "Fade", "Slide down", "Slide in from right"});
-        cycle("Exit", Prefs.ANIM_OUT, new int[]{0, 1, 2, 3},
-                new String[]{"None", "Fade", "Slide up", "Slide out left"});
+        cycle("Entry", Prefs.ANIM_IN, new int[]{4, 5, 2, 3, 1, 0},
+                new String[]{"3D flip", "Flip down (hinge)", "Slide down", "Slide in from right",
+                        "Fade", "None"});
+        cycle("Exit", Prefs.ANIM_OUT, new int[]{4, 5, 2, 3, 1, 0},
+                new String[]{"3D flip away", "Flip up (hinge)", "Slide up", "Slide out left",
+                        "Fade", "None"});
         num("Animation duration ms", Prefs.ANIM_MS);
         cycle("Scrolling", Prefs.SCROLL_MODE,
                 new int[]{TickerView.MODE_REVEAL, TickerView.MODE_LOOP, TickerView.MODE_OFF},
@@ -120,8 +122,8 @@ public class MainActivity extends Activity {
         section("Wallet button");
         check("Enable nav-bar button", Prefs.SWIPE_ON);
         cycle("Side", Prefs.SWIPE_POS, new int[]{0, 1, 2}, new String[]{"Left", "Centre", "Right"});
-        cycle("Trigger", Prefs.SWIPE_TRIGGER, new int[]{0, 1, 2},
-                new String[]{"Tap or swipe up", "Tap only", "Swipe up only"});
+        cycle("Trigger", Prefs.SWIPE_TRIGGER, new int[]{2, 0, 1},
+                new String[]{"Swipe up only", "Tap or swipe up", "Tap only"});
         check("Only on the home screen", Prefs.SWIPE_HOME);
         check("Show card icon", Prefs.SWIPE_PILL);
         text("App to open  (package name)", Prefs.SWIPE_PKG);

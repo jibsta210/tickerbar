@@ -1,6 +1,13 @@
 package com.jakes.tickerbar;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.KeyguardManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.graphics.LinearGradient;
+import android.graphics.Path;
+import android.graphics.Shader;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -31,6 +38,7 @@ import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.animation.ValueAnimator;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.Toast;
@@ -70,6 +78,33 @@ public class ShadeService extends AccessibilityService {
     private String launcherPkg = "";
     private boolean onHome = true;
 
+    // lock state: nothing of ours appears on the lock screen
+    private KeyguardManager keyguard;
+    private boolean receiverOn;
+    private boolean lastLocked;
+    private final Runnable syncR = new Runnable() { public void run() { syncLock(); } };
+    private final BroadcastReceiver screenR = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            // The unlock broadcast can arrive before the keyguard reports unlocked (or not
+            // at all), so look again a few times rather than trusting a single signal.
+            syncLock();
+            ui.postDelayed(syncR, 300);
+            ui.postDelayed(syncR, 1200);
+            ui.postDelayed(syncR, 3000);
+        }
+    };
+
+    private boolean isLocked() { return keyguard != null && keyguard.isKeyguardLocked(); }
+
+    /** Re-evaluates lock state; hides everything on lock and restores the button on unlock. */
+    private void syncLock() {
+        boolean l = isLocked();
+        if (l == lastLocked) return;
+        lastLocked = l;
+        if (l) hideTickerNow();
+        updateButton();
+    }
+
     // ============================================================ lifecycle
 
     @Override protected void onServiceConnected() {
@@ -77,7 +112,16 @@ public class ShadeService extends AccessibilityService {
         self = this;
         Prefs.migrate(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
         launcherPkg = resolveLauncher();
+        IntentFilter f = new IntentFilter();
+        f.addAction(Intent.ACTION_SCREEN_OFF);
+        f.addAction(Intent.ACTION_SCREEN_ON);
+        f.addAction(Intent.ACTION_USER_PRESENT);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenR, f, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(screenR, f);
+        receiverOn = true;
+        lastLocked = isLocked();
         buildTicker();
         applySettings();
     }
@@ -103,6 +147,7 @@ public class ShadeService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
         if (e == null || e.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
+        syncLock();   // unlocking always brings a window change, even when no broadcast arrives
         CharSequence cs = e.getPackageName();
         if (cs == null) return;
         String pkg = cs.toString();
@@ -124,6 +169,7 @@ public class ShadeService extends AccessibilityService {
     }
 
     private void teardown() {
+        if (receiverOn) { try { unregisterReceiver(screenR); } catch (Exception ignored) {} receiverOn = false; }
         ui.removeCallbacksAndMessages(null);
         queue.clear();
         showing = false;
@@ -270,6 +316,9 @@ public class ShadeService extends AccessibilityService {
     private void enqueue(String app, String title, String body, boolean force) {
         if (ticker == null) return;
         if (!force && !Prefs.on(this, Prefs.TICKER_ON)) return;
+        // The lock screen hides sensitive notification content; scrolling it across a
+        // locked phone would bypass that, so the ticker stays quiet until unlock.
+        if (isLocked()) return;
         String[] item = new String[]{
                 app == null ? "" : app, title == null ? "" : title, body == null ? "" : body};
         if (showing && Prefs.on(this, Prefs.QUEUE)) {
@@ -278,6 +327,16 @@ public class ShadeService extends AccessibilityService {
             return;
         }
         display(item, !showing);
+    }
+
+    private void hideTickerNow() {
+        ui.removeCallbacks(hideR);
+        queue.clear();
+        if (ticker != null) {
+            ticker.animate().cancel();
+            ticker.setVisibility(View.GONE);
+        }
+        showing = false;
     }
 
     private void display(String[] it, boolean animateIn) {
@@ -302,6 +361,9 @@ public class ShadeService extends AccessibilityService {
         ticker.setAlpha(1f);
         ticker.setTranslationX(0f);
         ticker.setTranslationY(0f);
+        ticker.setRotationX(0f);
+        ticker.setShade(0f);
+        ticker.animate().setUpdateListener(null);
         ticker.setContent(texts, styles, animateIn ? ms : 0);
         showing = true;
         ticker.setVisibility(View.VISIBLE);
@@ -328,9 +390,40 @@ public class ShadeService extends AccessibilityService {
                 ticker.setTranslationX(w);
                 ticker.animate().translationX(0f).setDuration(ms).setInterpolator(in).start();
                 break;
+            case 4:   // billboard: the panel's back face swings round to the front
+                flip(90f, 0f, h / 2f, ms, in, null);
+                break;
+            case 5:   // hinged at the top edge, swinging down like a flap
+                flip(-90f, 0f, 0f, ms, in, null);
+                break;
             default:
                 break;
         }
+    }
+
+    /** Rotates the panel about its horizontal axis, shading it as it turns edge-on. */
+    private void flip(float from, float to, float pivotY, int ms,
+                      android.animation.TimeInterpolator interp, Runnable end) {
+        float density = getResources().getDisplayMetrics().density;
+        int w = ticker.getWidth() > 0 ? ticker.getWidth() : screenWidth();
+        ticker.setPivotX(w / 2f);
+        ticker.setPivotY(pivotY);
+        ticker.setCameraDistance(6000f * density);   // mild perspective; lower looks fish-eyed
+        ticker.setRotationX(from);
+        ticker.setShade(shadeFor(from));
+        android.view.ViewPropertyAnimator a = ticker.animate().rotationX(to).setDuration(ms)
+                .setInterpolator(interp)
+                .setUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                    public void onAnimationUpdate(ValueAnimator va) {
+                        if (ticker != null) ticker.setShade(shadeFor(ticker.getRotationX()));
+                    }
+                });
+        if (end != null) a.withEndAction(end);
+        a.start();
+    }
+
+    private static float shadeFor(float degrees) {
+        return (float) Math.abs(Math.sin(Math.toRadians(degrees))) * 0.6f;
     }
 
     private void maybeHide() {
@@ -354,6 +447,7 @@ public class ShadeService extends AccessibilityService {
         int w = ticker.getWidth() > 0 ? ticker.getWidth() : screenWidth();
         AccelerateInterpolator out = new AccelerateInterpolator();
         ticker.animate().cancel();
+        ticker.animate().setUpdateListener(null);
         switch (Prefs.n(this, Prefs.ANIM_OUT)) {
             case 1:
                 ticker.animate().alpha(0f).setDuration(ms).setInterpolator(out).withEndAction(end).start();
@@ -366,6 +460,12 @@ public class ShadeService extends AccessibilityService {
                 ticker.animate().translationX(-w).setDuration(ms)
                         .setInterpolator(out).withEndAction(end).start();
                 break;
+            case 4:   // keep turning the same way, so the status bar comes back round
+                flip(0f, -90f, tickerLp.height / 2f, ms, out, end);
+                break;
+            case 5:   // flap swings back up into the top edge
+                flip(0f, -90f, 0f, ms, out, end);
+                break;
             default:
                 end.run();
                 break;
@@ -377,7 +477,8 @@ public class ShadeService extends AccessibilityService {
     private void updateButton() {
         if (wm == null) return;
         boolean want = Prefs.on(this, Prefs.SWIPE_ON)
-                && (!Prefs.on(this, Prefs.SWIPE_HOME) || onHome);
+                && (!Prefs.on(this, Prefs.SWIPE_HOME) || onHome)
+                && !isLocked();
         if (!want) {
             if (button != null && buttonAttached) {
                 try { wm.removeViewImmediate(button); } catch (Exception ignored) {}
@@ -399,7 +500,7 @@ public class ShadeService extends AccessibilityService {
         int pct = Math.max(5, Math.min(100, Prefs.n(this, Prefs.SWIPE_W)));
         int w = Math.max(dp(40), sw * pct / 100);
         int h = Prefs.n(this, Prefs.SWIPE_H);
-        if (h <= 0) h = Math.max(dp(32), navZoneHeight());
+        if (h <= 0) h = Math.max(dp(32), navZoneHeight()) + dp(14);
         WindowManager.LayoutParams lp = overlayParams(w, h, 0);
         int pos = Prefs.n(this, Prefs.SWIPE_POS);
         lp.gravity = Gravity.BOTTOM
@@ -440,32 +541,90 @@ public class ShadeService extends AccessibilityService {
         catch (Exception ex) { Toast.makeText(this, "Couldn't open " + pkg, Toast.LENGTH_LONG).show(); }
     }
 
-    /** A nav-bar button: tap or short swipe up. Draws a small card icon. */
+    // ------------------------------------------------------------ card graphic
+
+    private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF tmpR = new RectF();
+
+    /** A payment card: gradient face, gold chip, faint sheen and edge. */
+    private void drawCard(Canvas c, RectF r, float alpha) {
+        float rad = r.width() * 0.09f;
+        Paint p = cardPaint;
+        p.setStyle(Paint.Style.FILL);
+        p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
+                0xFF4F6BFF, 0xFF9B5CFF, Shader.TileMode.CLAMP));
+        p.setAlpha(Math.round(255 * alpha));
+        c.drawRoundRect(r, rad, rad, p);
+        p.setShader(null);
+
+        p.setColor(0xFFFFFFFF);                                   // sheen across the top
+        p.setAlpha(Math.round(38 * alpha));
+        tmpR.set(r.left, r.top, r.right, r.top + r.height() * 0.22f);
+        c.drawRoundRect(tmpR, rad, rad, p);
+
+        float chipW = r.width() * 0.2f, chipH = chipW * 0.76f;   // chip sits in the part that peeks out
+        tmpR.set(r.left + r.width() * 0.12f, r.top + r.height() * 0.26f,
+                r.left + r.width() * 0.12f + chipW, r.top + r.height() * 0.26f + chipH);
+        p.setColor(0xFFE9C46A);
+        p.setAlpha(Math.round(255 * alpha));
+        c.drawRoundRect(tmpR, chipW * 0.2f, chipW * 0.2f, p);
+
+        p.setStyle(Paint.Style.STROKE);                          // edge, so it reads on dark wallpaper
+        p.setStrokeWidth(dp(1));
+        p.setColor(0xFFFFFFFF);
+        p.setAlpha(Math.round(70 * alpha));
+        c.drawRoundRect(r, rad, rad, p);
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    /** Card size for a button window of the given width. */
+    private float cardWidth(float windowW) { return Math.min(windowW * 0.8f, dp(64)); }
+
+    /**
+     * A payment card tucked into the bottom edge, Samsung Pay style. Half of it peeks
+     * out; it lifts when touched and follows the finger, then slides out on a swipe.
+     */
     private final class ButtonView extends View {
-        private final Paint icon = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF card = new RectF();
         private final int slop;
-        private float downX, downY, lastY;
+        private float downX, downY, lastY, lift;
         private long downT;
-        private boolean fired, pressed;
+        private boolean fired, pressed, pulled;
+        private ValueAnimator liftAnim;
 
         ButtonView() {
             super(ShadeService.this);
             slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
-            icon.setStyle(Paint.Style.STROKE);
-            icon.setStrokeWidth(dp(1.6f));
         }
 
+        private float restTop() {
+            float ch = cardWidth(getWidth()) * 0.63f;
+            return getHeight() - ch * 0.5f;           // half the card below the edge
+        }
+
+        private float maxLift() { return Math.max(0f, restTop() - dp(2)); }
+
         @Override protected void onDraw(Canvas c) {
-            if (!Prefs.on(ShadeService.this, Prefs.SWIPE_PILL)) return;
-            float w = getWidth(), h = getHeight();
-            float cw = Math.min(w * 0.5f, dp(22)), ch = cw * 0.64f;
-            float cx = w / 2f, cy = h / 2f;
-            card.set(cx - cw / 2f, cy - ch / 2f, cx + cw / 2f, cy + ch / 2f);
-            icon.setColor(pressed ? 0xFFFFFFFF : 0x99FFFFFF);
-            c.drawRoundRect(card, dp(3), dp(3), icon);
-            float stripe = card.top + ch * 0.34f;
-            c.drawLine(card.left, stripe, card.right, stripe, icon);
+            if (pulled || !Prefs.on(ShadeService.this, Prefs.SWIPE_PILL)) return;
+            float w = getWidth();
+            float cw = cardWidth(w), ch = cw * 0.63f;
+            float top = restTop() - Math.min(lift, maxLift());
+            card.set((w - cw) / 2f, top, (w + cw) / 2f, top + ch);
+            drawCard(c, card, pressed ? 1f : 0.88f);
+        }
+
+        private void animateLift(float to) {
+            if (liftAnim != null) liftAnim.cancel();
+            liftAnim = ValueAnimator.ofFloat(lift, to);
+            liftAnim.setDuration(160);
+            liftAnim.setInterpolator(new DecelerateInterpolator());
+            liftAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                public void onAnimationUpdate(ValueAnimator a) {
+                    lift = (Float) a.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            liftAnim.start();
         }
 
         private final Runnable launchR = new Runnable() { public void run() { launchTarget(); } };
@@ -473,7 +632,18 @@ public class ShadeService extends AccessibilityService {
         private void fire(long delayMs) {
             fired = true;
             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            if (delayMs <= 0) launchTarget(); else ui.postDelayed(launchR, delayMs);
+            if (liftAnim != null) liftAnim.cancel();
+            pullOut(this, new RectF(card));
+            pulled = true;
+            invalidate();
+            ui.postDelayed(launchR, Math.max(0, delayMs));
+        }
+
+        void reset() {
+            pulled = false;
+            pressed = false;
+            lift = 0f;
+            invalidate();
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
@@ -486,14 +656,16 @@ public class ShadeService extends AccessibilityService {
                     downT = SystemClock.uptimeMillis();
                     fired = false;
                     pressed = true;
-                    invalidate();
+                    animateLift(dp(5));
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     lastY = e.getRawY();
-                    // only reached when nothing steals the gesture (button lifted clear of the zone)
-                    if (!fired && trig != 1
-                            && downY - lastY >= Prefs.n(ShadeService.this, Prefs.SWIPE_DIST)) {
-                        fire(0);
+                    if (!fired && trig != 1) {
+                        if (liftAnim != null) liftAnim.cancel();
+                        lift = Math.max(0f, downY - lastY) + dp(5);   // card follows the finger
+                        invalidate();
+                        // only reached when nothing steals the gesture
+                        if (downY - lastY >= Prefs.n(ShadeService.this, Prefs.SWIPE_DIST)) fire(220);
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
@@ -501,28 +673,90 @@ public class ShadeService extends AccessibilityService {
                             && Math.abs(e.getRawX() - downX) < slop
                             && Math.abs(e.getRawY() - downY) < slop
                             && SystemClock.uptimeMillis() - downT < 500) {
-                        fire(0);
+                        fire(180);
                     }
-                    pressed = false;
-                    invalidate();
+                    if (!fired) { pressed = false; animateLift(0f); }
                     return true;
                 case MotionEvent.ACTION_CANCEL:
-                    pressed = false;
-                    invalidate();
                     // The system's gesture recogniser steals upward swipes in its gesture
                     // zone from every window, even ones layered above the nav bar, and we
-                    // get CANCEL before our threshold. A gesture that began on the button
-                    // and was heading up can only be a swipe on the button, so honour it
-                    // once the system's own gesture has settled.
+                    // get CANCEL before our threshold. A gesture that began on the card and
+                    // was heading up can only be a swipe on the card, so honour it once the
+                    // system's own gesture has settled.
                     if (!fired && trig != 1 && downY - lastY > 0
                             && SystemClock.uptimeMillis() - downT < 1500) {
                         fire(450);
+                    } else if (!fired) {
+                        pressed = false;
+                        animateLift(0f);
                     }
                     return true;
                 default:
                     return true;
             }
         }
+    }
+
+    /** The card sliding up out of its slot, drawn in a tall untouchable window. */
+    private void pullOut(final ButtonView from, final RectF start) {
+        final int winH = Math.round(screenHeight() * 0.45f);
+        final int offset = winH - from.getHeight();   // button-window coords -> this window's
+        final View v = new View(this) {
+            float t;
+            {
+                ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+                a.setDuration(340);
+                a.setInterpolator(new DecelerateInterpolator(1.4f));
+                a.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                    public void onAnimationUpdate(ValueAnimator va) {
+                        t = (Float) va.getAnimatedValue();
+                        invalidate();
+                    }
+                });
+                a.addListener(new android.animation.AnimatorListenerAdapter() {
+                    @Override public void onAnimationEnd(android.animation.Animator an) {
+                        finishPull(from);
+                    }
+                });
+                a.start();
+            }
+            final RectF r = new RectF();
+            @Override protected void onDraw(Canvas c) {
+                float rise = t * winH * 0.55f;
+                float scale = 1f + 0.28f * t;
+                float cx = start.centerX(), cy = start.centerY() + offset - rise;
+                float hw = start.width() * scale / 2f, hh = start.height() * scale / 2f;
+                r.set(cx - hw, cy - hh, cx + hw, cy + hh);
+                float alpha = t < 0.45f ? 1f : Math.max(0f, 1f - (t - 0.45f) / 0.55f);
+                drawCard(c, r, alpha);
+            }
+        };
+        WindowManager.LayoutParams blp = (WindowManager.LayoutParams) from.getLayoutParams();
+        WindowManager.LayoutParams lp = overlayParams(blp.width, winH,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        lp.gravity = blp.gravity;
+        lp.y = blp.y;
+        lp.setTitle("TickerBar card");
+        pullView = v;
+        try { wm.addView(v, lp); } catch (Exception ex) { pullView = null; from.reset(); }
+    }
+
+    private View pullView;
+
+    private void finishPull(ButtonView from) {
+        if (pullView != null && wm != null) {
+            try { wm.removeViewImmediate(pullView); } catch (Exception ignored) {}
+        }
+        pullView = null;
+        from.reset();
+    }
+
+    private int screenHeight() {
+        Display d = display();
+        if (d == null) return getResources().getDisplayMetrics().heightPixels;
+        Point p = new Point();
+        d.getRealSize(p);
+        return p.y;
     }
 
     // ============================================================ helpers

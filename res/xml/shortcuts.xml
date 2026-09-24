@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="notifications"
+        android:enabled="true"
+        android:icon="@drawable/ic_notif"
+        android:shortcutShortLabel="@string/sc_notif_short"
+        android:shortcutLongLabel="@string/sc_notif_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.jakes.tickerbar"
+            android:targetClass="com.jakes.tickerbar.OpenNotificationsActivity"/>
+    </shortcut>
+    <shortcut
+        android:shortcutId="control_centre"
+        android:enabled="true"
+        android:icon="@drawable/ic_cc"
+        android:shortcutShortLabel="@string/sc_cc_short"
+        android:shortcutLongLabel="@string/sc_cc_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.jakes.tickerbar"
+            android:targetClass="com.jakes.tickerbar.OpenControlCentreActivity"/>
+    </shortcut>
+</shortcuts>

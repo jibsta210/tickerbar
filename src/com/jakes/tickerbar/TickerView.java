@@ -31,6 +31,10 @@ public class TickerView extends View {
     private static final float LINE_SPACING = 1.1f;
 
     private final Paint bg = new Paint();
+    private final Paint shadePaint = new Paint();
+    private float shade;                        // 0..1 darkening, used while flipping in 3D
+    private float originX, originY;             // window origin on screen, untransformed
+    private boolean haveOrigin;
     private final List<Rect> cutouts = new ArrayList<Rect>();   // screen coordinates
     private final float density;
 
@@ -107,6 +111,12 @@ public class TickerView extends View {
         invalidate();
     }
 
+    /** Darkens the whole panel; flips use it so the face shades as it turns away. */
+    public void setShade(float s) {
+        shade = Math.max(0f, Math.min(1f, s));
+        invalidate();
+    }
+
     /** Height one line of text needs at the given size. */
     public static float lineHeight(float px) {
         TextPaint p = new TextPaint();
@@ -149,10 +159,16 @@ public class TickerView extends View {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0 || lines.length == 0) return;
 
-        // window origin on screen, ignoring any in-flight slide animation
-        int[] loc = new int[2];
-        getLocationOnScreen(loc);
-        float ox = loc[0] - getTranslationX(), oy = loc[1] - getTranslationY();
+        // Window origin on screen. Only trust the measurement while the view is untransformed:
+        // mid-flip, the rotation matrix moves where (0,0) lands.
+        if (getRotationX() == 0f && getRotationY() == 0f && getScaleX() == 1f && getScaleY() == 1f) {
+            int[] loc = new int[2];
+            getLocationOnScreen(loc);
+            originX = loc[0] - getTranslationX();
+            originY = loc[1] - getTranslationY();
+            haveOrigin = true;
+        }
+        float ox = haveOrigin ? originX : 0f, oy = haveOrigin ? originY : 0f;
 
         float[] lh = new float[lines.length];
         float total = 0;
@@ -266,6 +282,10 @@ public class TickerView extends View {
                 c.restore();
                 vs += b - a;
             }
+        }
+        if (shade > 0f) {
+            shadePaint.setColor(Color.argb(Math.round(shade * 255f), 0, 0, 0));
+            c.drawRect(0, 0, getWidth(), getHeight(), shadePaint);
         }
         if (animating) postInvalidateOnAnimation();
     }
