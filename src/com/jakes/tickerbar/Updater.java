@@ -42,14 +42,14 @@ public class Updater {
     }
 
     /**
-     * Runs when the app opens: checks at most every 10 minutes, and only if auto-update is on.
+     * Runs when the app opens: checks at most once a minute, and only if auto-update is on.
      * @return true if a check was started
      */
     public static boolean autoCheck(Context ctx, Cb cb) {
         if (!Prefs.on(ctx, Prefs.AUTO_UPDATE)) return false;
         long now = System.currentTimeMillis();
         long last = Prefs.get(ctx).getLong(Prefs.LAST_CHECK, 0);
-        if (now - last < 10 * 60 * 1000L) return false;
+        if (now - last < 60 * 1000L) return false;   // just skips re-checks when bouncing back from a settings screen
         Prefs.get(ctx).edit().putLong(Prefs.LAST_CHECK, now).apply();
         checkAndInstall(ctx, cb);
         return true;
