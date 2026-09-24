@@ -11,6 +11,7 @@ public final class Prefs {
 
     // ticker
     public static final String TICKER_ON    = "ticker_on";
+    public static final String STYLE        = "ticker_style";  // 0 classic bar, 1 heads-up card
     public static final String LINES        = "lines";
     public static final String HEIGHT       = "height_px";     // 0 = auto
     public static final String HOP          = "hop";
@@ -49,6 +50,8 @@ public final class Prefs {
     public static final String WALLET_QUICK  = "wallet_quick";  // open straight to the default card
     public static final String CARD_OPACITY  = "card_opacity";  // %
     public static final String CARD_PEEK     = "card_peek";     // px showing at rest; 0 = auto
+    public static final String CARD_STYLE    = "card_style";    // CardArt.IDS
+    public static final String CARD_LABEL    = "card_label";    // optional text on the card
 
     // corner long-press
     public static final String CORNER_ON     = "corner_on";
@@ -58,6 +61,11 @@ public final class Prefs {
     public static final String CORNER_MS     = "corner_ms";      // hold time
     public static final String CORNER_W      = "corner_w";       // px, 0 = auto
     public static final String CORNER_HINT   = "corner_hint";    // draw a dot where the zone is
+    public static final String CORNER_TRIGGER= "corner_trigger"; // 0 long-press, 1 double-tap
+
+    // updates
+    public static final String AUTO_UPDATE   = "auto_update";
+    public static final String LAST_CHECK    = "last_update_check";
 
     // Google: 0 = the app's home feed (Discover cards), 1 = straight to the search box
     public static final String GOOGLE_MODE   = "google_mode";
@@ -80,10 +88,11 @@ public final class Prefs {
         DEF.put(SWIPE_Y, 0);     DEF.put(SWIPE_DIST, 40); DEF.put(SWIPE_PILL, 1);
         DEF.put(SHADE_HOME, 1);
         DEF.put(CARD_HOME, 1);   DEF.put(CARD_LOCK, 1);   DEF.put(WALLET_QUICK, 1);
-        DEF.put(CARD_OPACITY, 85); DEF.put(CARD_PEEK, 0);
+        DEF.put(CARD_OPACITY, 85); DEF.put(CARD_PEEK, 0);  DEF.put(CARD_STYLE, 0);
         DEF.put(CORNER_ON, 1);   DEF.put(CORNER_SIDE, 2); DEF.put(CORNER_ACTION, 0);
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
         DEF.put(GOOGLE_MODE, 0);
+        DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
     }
 
     private Prefs() {}

@@ -41,6 +41,20 @@ public class Updater {
         catch (Exception e) { return 0; }
     }
 
+    /**
+     * Runs when the app opens: checks at most every 10 minutes, and only if auto-update is on.
+     * @return true if a check was started
+     */
+    public static boolean autoCheck(Context ctx, Cb cb) {
+        if (!Prefs.on(ctx, Prefs.AUTO_UPDATE)) return false;
+        long now = System.currentTimeMillis();
+        long last = Prefs.get(ctx).getLong(Prefs.LAST_CHECK, 0);
+        if (now - last < 10 * 60 * 1000L) return false;
+        Prefs.get(ctx).edit().putLong(Prefs.LAST_CHECK, now).apply();
+        checkAndInstall(ctx, cb);
+        return true;
+    }
+
     public static void checkAndInstall(final Context ctx, final Cb cb) {
         new Thread(new Runnable() { public void run() {
             try {
@@ -51,7 +65,7 @@ public class Updater {
                 JSONObject rel = new JSONObject(get(
                         "https://api.github.com/repos/" + REPO + "/releases/latest"));
                 String tag = rel.optString("tag_name", "");
-                if (cmp(tag, cur) <= 0) { post(cb, "Up to date (" + cur + ")"); return; }
+                if (cmp(tag, cur) <= 0) { post(cb, "Up to date \u00b7 v" + cur); return; }
 
                 String url = null;
                 JSONArray assets = rel.optJSONArray("assets");
@@ -63,11 +77,11 @@ public class Updater {
                 }
                 if (url == null) { post(cb, "Release " + tag + " has no APK asset"); return; }
 
-                post(cb, "Downloading " + tag + "…");
+                post(cb, "Downloading " + tag + "\u2026");
                 install(ctx, url);
-                post(cb, "Installing " + tag + "…");
+                post(cb, "Installing " + tag + " \u2013 TickerBar restarts when it's done");
             } catch (Exception e) {
-                post(cb, "Update check failed: " + e);
+                post(cb, "Couldn't check for updates \u2013 " + e.getClass().getSimpleName());
             }
         }}).start();
     }
@@ -89,6 +103,12 @@ public class Updater {
         PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams sp = new PackageInstaller.SessionParams(
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        sp.setAppPackageName(ctx.getPackageName());
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            // Once TickerBar installed itself, Android 12+ lets it update without a prompt.
+            // The first time (installed from a browser or adb) the system still asks.
+            sp.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+        }
         int id = pi.createSession(sp);
         PackageInstaller.Session session = pi.openSession(id);
 

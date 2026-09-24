@@ -44,7 +44,7 @@ public class TickerListener extends NotificationListenerService {
         last.put(key, sig);
 
         String app = label(pkg);
-        ShadeService.post(app, title.isEmpty() ? app : title, body);
+        ShadeService.post(new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon()));
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {

@@ -67,7 +67,7 @@ public class ShadeService extends AccessibilityService {
     private TickerView ticker;
     private WindowManager.LayoutParams tickerLp;
     private boolean showing;
-    private final ArrayDeque<String[]> queue = new ArrayDeque<String[]>();
+    private final ArrayDeque<Item> queue = new ArrayDeque<Item>();
     private final Runnable hideR = new Runnable() { public void run() { maybeHide(); } };
     private List<Rect> cutoutRects = new ArrayList<Rect>();
 
@@ -179,7 +179,10 @@ public class ShadeService extends AccessibilityService {
         CharSequence cs = e.getPackageName();
         if (cs == null) return;
         String pkg = cs.toString();
-        if (isTransient(pkg)) return;
+        // TickerBar's own settings screen is a real app screen, not one of our overlays
+        boolean ownApp = pkg.equals(getPackageName()) && e.getClassName() != null
+                && MainActivity.class.getName().contentEquals(e.getClassName());
+        if (!ownApp && isTransient(pkg)) return;
         boolean home = pkg.equals(launcherPkg);
         if (home != onHome) {
             onHome = home;
@@ -234,21 +237,23 @@ public class ShadeService extends AccessibilityService {
         return s != null && s.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
     }
 
-    public static void post(String app, String title, String body) {
-        dispatch(app, title, body, false);
+    public static void post(Item it) {
+        dispatch(it, false);
     }
 
     public static boolean preview() {
-        return dispatch("TickerBar", "Preview",
+        ShadeService s = self;
+        android.graphics.drawable.Icon ic = s == null ? null
+                : android.graphics.drawable.Icon.createWithResource(s, R.drawable.ic_notif);
+        return dispatch(new Item("TickerBar", "Preview",
                 "A long sample line so you can watch it scroll, hop around the camera "
-                        + "cut-out and clear the rounded corners", true);
+                        + "cut-out and clear the rounded corners", "com.jakes.tickerbar", ic), true);
     }
 
-    private static boolean dispatch(final String app, final String title, final String body,
-                                    final boolean force) {
+    private static boolean dispatch(final Item it, final boolean force) {
         final ShadeService s = self;
         if (s == null) return false;
-        s.ui.post(new Runnable() { public void run() { s.enqueue(app, title, body, force); } });
+        s.ui.post(new Runnable() { public void run() { s.enqueue(it, force); } });
         return true;
     }
 
@@ -275,6 +280,9 @@ public class ShadeService extends AccessibilityService {
                     Prefs.on(this, Prefs.HOP), Prefs.n(this, Prefs.HOP_GAP),
                     Prefs.n(this, Prefs.SCROLL_MODE), Prefs.n(this, Prefs.SPEED),
                     Prefs.n(this, Prefs.DELAY), px, Prefs.n(this, Prefs.OPACITY));
+            Palette pal = Palette.of(this);
+            ticker.setLook(Prefs.n(this, Prefs.STYLE), pal.surfaceHigh, pal.onSurface,
+                    pal.onSurfaceVariant, pal.primary);
             tickerLp.height = barHeight(px);
             try { wm.updateViewLayout(ticker, tickerLp); } catch (Exception ignored) {}
         }
@@ -313,9 +321,12 @@ public class ShadeService extends AccessibilityService {
         if (id > 0) sb = sys.getDimensionPixelSize(id);
         int cut = 0;
         for (Rect r : cutoutRects) if (r.top <= 0) cut = Math.max(cut, r.bottom);
+        int base = Math.max(sb, cut);
+        // the heads-up card stays within the status bar; its text shrinks to fit instead
+        if (Prefs.n(this, Prefs.STYLE) == TickerView.LOOK_CARD) return base;
         int lines = Math.max(1, Math.min(3, Prefs.n(this, Prefs.LINES)));
         int need = (int) Math.ceil(TickerView.lineHeight(textPx) * (lines + 0.3f));
-        return Math.max(Math.max(sb, cut), need);
+        return Math.max(base, need);
     }
 
     // ============================================================ ticker
@@ -345,14 +356,12 @@ public class ShadeService extends AccessibilityService {
         try { wm.addView(ticker, tickerLp); } catch (Exception ex) { ticker = null; }
     }
 
-    private void enqueue(String app, String title, String body, boolean force) {
+    private void enqueue(Item item, boolean force) {
         if (ticker == null) return;
         if (!force && !Prefs.on(this, Prefs.TICKER_ON)) return;
         // The lock screen hides sensitive notification content; scrolling it across a
         // locked phone would bypass that, so the ticker stays quiet until unlock.
         if (isLocked()) return;
-        String[] item = new String[]{
-                app == null ? "" : app, title == null ? "" : title, body == null ? "" : body};
         if (showing && Prefs.on(this, Prefs.QUEUE)) {
             if (queue.size() >= 8) queue.pollFirst();
             queue.addLast(item);
@@ -387,22 +396,43 @@ public class ShadeService extends AccessibilityService {
         return new String[]{a, t, b};
     }
 
-    private void display(String[] it, boolean animateIn) {
-        int n = Math.max(1, Math.min(3, Prefs.n(this, Prefs.LINES)));
-        String[] tid = tidy(it[0], it[1], it[2]);
+    private void display(Item it, boolean animateIn) {
+        String[] tid = tidy(it.app, it.title, it.body);
         String app = tid[0], title = tid[1], body = tid[2];
-        String[] texts;
+        boolean card = Prefs.n(this, Prefs.STYLE) == TickerView.LOOK_CARD;
+        String[] bold, texts;
         int[] styles;
-        if (n == 1) {
-            String one = body.isEmpty() ? title : title.isEmpty() ? body : title + "  —  " + body;
-            texts = new String[]{one};
-            styles = new int[]{TickerView.STYLE_NORMAL};
-        } else if (n == 2) {
-            texts = new String[]{title, body};
-            styles = new int[]{TickerView.STYLE_BOLD, TickerView.STYLE_NORMAL};
+        android.graphics.drawable.Drawable icon = null;
+        if (card) {
+            // heads-up look: the app's own small icon, bold title, then the text
+            int n = Math.max(1, Math.min(2, Prefs.n(this, Prefs.LINES)));
+            if (it.icon != null) {
+                try { icon = it.icon.loadDrawable(this); } catch (Exception ignored) {}
+                if (icon != null) icon = icon.mutate();
+            }
+            if (n == 1) {
+                bold = new String[]{title};
+                texts = new String[]{body};
+                styles = new int[]{TickerView.STYLE_NORMAL};
+            } else {
+                bold = new String[]{title, ""};
+                texts = new String[]{app, body};
+                styles = new int[]{TickerView.STYLE_MUTED, TickerView.STYLE_NORMAL};
+            }
         } else {
-            texts = new String[]{app, title, body};
-            styles = new int[]{TickerView.STYLE_MUTED, TickerView.STYLE_BOLD, TickerView.STYLE_NORMAL};
+            int n = Math.max(1, Math.min(3, Prefs.n(this, Prefs.LINES)));
+            if (n == 1) {
+                String one = body.isEmpty() ? title : title.isEmpty() ? body : title + "  \u2014  " + body;
+                texts = new String[]{one};
+                styles = new int[]{TickerView.STYLE_NORMAL};
+            } else if (n == 2) {
+                texts = new String[]{title, body};
+                styles = new int[]{TickerView.STYLE_BOLD, TickerView.STYLE_NORMAL};
+            } else {
+                texts = new String[]{app, title, body};
+                styles = new int[]{TickerView.STYLE_MUTED, TickerView.STYLE_BOLD, TickerView.STYLE_NORMAL};
+            }
+            bold = null;
         }
 
         int ms = Math.max(0, Prefs.n(this, Prefs.ANIM_MS));
@@ -413,7 +443,7 @@ public class ShadeService extends AccessibilityService {
         ticker.setRotationX(0f);
         ticker.setShade(0f);
         ticker.animate().setUpdateListener(null);
-        ticker.setContent(texts, styles, animateIn ? ms : 0);
+        ticker.setContent(bold, texts, styles, icon, animateIn ? ms : 0);
         showing = true;
         ticker.setVisibility(View.VISIBLE);
         if (animateIn) animateIn(ms);
@@ -479,7 +509,7 @@ public class ShadeService extends AccessibilityService {
         if (ticker == null) return;
         long r = ticker.remainingMs();
         if (r > 0) { ui.postDelayed(hideR, r); return; }   // let the scroll finish first
-        final String[] next = queue.pollFirst();
+        final Item next = queue.pollFirst();
         animateOut(new Runnable() { public void run() {
             if (ticker == null) return;
             if (next != null) {
@@ -709,25 +739,24 @@ public class ShadeService extends AccessibilityService {
 
     // ------------------------------------------------------------ card graphic
 
-    private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final RectF tmpR = new RectF();
+    private CardArt cardArt;
 
-    /** A plain white card with a soft edge, so it reads on light and dark wallpapers. */
+    /** The wallet card in the user's chosen finish (see {@link CardArt}). */
     private void drawCard(Canvas c, RectF r, float alpha) {
+        if (cardArt == null) cardArt = new CardArt(this);
         alpha *= Math.max(5, Math.min(100, Prefs.n(this, Prefs.CARD_OPACITY))) / 100f;
-        float rad = Math.min(r.width() * 0.045f, dp(14));
-        Paint p = cardPaint;
-        p.setShader(null);
-        p.setStyle(Paint.Style.FILL);
-        p.setColor(0xFFFFFFFF);
-        p.setAlpha(Math.round(242 * alpha));
-        c.drawRoundRect(r, rad, rad, p);
-        p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(dp(1));
-        p.setColor(0xFF000000);
-        p.setAlpha(Math.round(34 * alpha));
-        c.drawRoundRect(r, rad, rad, p);
-        p.setStyle(Paint.Style.FILL);
+        cardArt.draw(c, r, alpha, Prefs.n(this, Prefs.CARD_STYLE), Prefs.str(this, Prefs.CARD_LABEL));
+    }
+
+    /**
+     * Fit the card's label into the strip that shows at rest, so it reads without lifting
+     * the card; it stays put relative to the card as it lifts and slides out.
+     */
+    private void fitLabel(float visible, float cardH) {
+        if (cardArt == null) cardArt = new CardArt(this);
+        float size = Math.min(cardH * 0.085f, Math.max(dp(9), visible * 0.45f));
+        cardArt.labelSize = size;
+        cardArt.labelBaseline = Math.min(cardH * 0.165f, visible / 2f + size * 0.36f);
     }
 
     /** The card fills almost the whole button window's width. */
@@ -768,6 +797,7 @@ public class ShadeService extends AccessibilityService {
             float cw = cardWidth(w), ch = cw * 0.63f;
             float top = restTop() - Math.min(lift, maxLift());
             card.set((w - cw) / 2f, top, (w + cw) / 2f, top + ch);
+            fitLabel(peek(getHeight()), ch);
             c.save();
             c.clipRect(0, 0, w, navLine);          // tucked behind the nav bar
             drawCard(c, card, pressed ? 1f : 0.9f);
@@ -984,6 +1014,19 @@ public class ShadeService extends AccessibilityService {
             runCornerAction();
         }};
 
+        // double-tap mode: a first tap waits briefly for a second before reaching the button
+        private long firstTapAt;
+        private float firstX, firstY;
+        private long firstDur;
+        private final Runnable firstTapR = new Runnable() { public void run() {
+            firstTapAt = 0;
+            passThrough(firstX, firstY, firstDur);
+        }};
+
+        private boolean doubleTap() {
+            return Prefs.n(ShadeService.this, Prefs.CORNER_TRIGGER) == 1;
+        }
+
         CornerView() {
             super(ShadeService.this);
             slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
@@ -1005,7 +1048,9 @@ public class ShadeService extends AccessibilityService {
                     downT = SystemClock.uptimeMillis();
                     fired = false;
                     moved = false;
-                    postDelayed(longPressR, Math.max(150, Prefs.n(ShadeService.this, Prefs.CORNER_MS)));
+                    if (!doubleTap()) {
+                        postDelayed(longPressR, Math.max(150, Prefs.n(ShadeService.this, Prefs.CORNER_MS)));
+                    }
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (Math.abs(e.getRawX() - downX) > slop || Math.abs(e.getRawY() - downY) > slop) {
@@ -1013,11 +1058,32 @@ public class ShadeService extends AccessibilityService {
                         removeCallbacks(longPressR);
                     }
                     return true;
-                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_UP: {
                     removeCallbacks(longPressR);
-                    // only a long-press is ours; a tap or short press belongs to the nav button
-                    if (!fired && !moved) passThrough(downX, downY, SystemClock.uptimeMillis() - downT);
+                    if (fired || moved) return true;
+                    long now = SystemClock.uptimeMillis(), held = now - downT;
+                    int window = ViewConfiguration.getDoubleTapTimeout();
+                    if (doubleTap() && held < window) {
+                        boolean second = firstTapAt > 0 && now - firstTapAt <= window + held
+                                && Math.abs(downX - firstX) < 4 * slop && Math.abs(downY - firstY) < 4 * slop;
+                        if (second) {                              // double-tap: ours
+                            removeCallbacks(firstTapR);
+                            firstTapAt = 0;
+                            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                            runCornerAction();
+                        } else {                                   // maybe the first of two
+                            firstTapAt = now;
+                            firstX = downX;
+                            firstY = downY;
+                            firstDur = held;
+                            postDelayed(firstTapR, window);
+                        }
+                        return true;
+                    }
+                    // anything else belongs to the nav button underneath
+                    passThrough(downX, downY, held);
                     return true;
+                }
                 case MotionEvent.ACTION_CANCEL:
                     removeCallbacks(longPressR);   // the system claimed a swipe
                     return true;
