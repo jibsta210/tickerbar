@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="11"
-    android:versionName="1.9.1">
+    android:versionCode="12"
+    android:versionName="1.9.2">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- lets its own updates install without a confirm dialog (Android 12+) -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"/>
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
 
     <application
