@@ -8,6 +8,8 @@ and HyperOS between them wouldn't do these things.
 - **Notification ticker** drawn *above* the status bar (as an accessibility overlay),
   in **1, 2 or 3 line** modes. Text **hops around the camera cut-out**, fades softly
   wherever it's cut, and side padding follows the screen's real rounded-corner radius.
+- **Works like a heads-up**: tap the ticker to open the notification (it's dismissed
+  if the app asked for that), flick it up or sideways to dismiss, pull down to open the shade.
 - **Two looks**: the classic black bar, or a **heads-up card** — a pill in the system's
   Material You colours (light or dark) with the app's icon, kept inside the status bar.
 - **Animation options** — entry/exit style (3D flip, hinge, slide, fade) and duration,

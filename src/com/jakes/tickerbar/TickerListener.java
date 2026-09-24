@@ -12,6 +12,18 @@ import java.util.HashMap;
 /** Filters notifications and hands the survivors to the ticker. Owns no UI. */
 public class TickerListener extends NotificationListenerService {
 
+    private static TickerListener self;
+
+    @Override public void onListenerConnected() { self = this; }
+    @Override public void onListenerDisconnected() { if (self == this) self = null; }
+
+    /** Dismiss a notification the user opened from the ticker, as the shade would. */
+    static void cancel(String key) {
+        TickerListener l = self;
+        if (l == null || key == null) return;
+        try { l.cancelNotification(key); } catch (Exception ignored) {}
+    }
+
     /** Last text shown per notification key, so repeat updates don't re-ticker. */
     private final HashMap<String, String> last = new HashMap<String, String>();
 
@@ -44,7 +56,8 @@ public class TickerListener extends NotificationListenerService {
         last.put(key, sig);
 
         String app = label(pkg);
-        ShadeService.post(new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon()));
+        ShadeService.post(new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon(),
+                n.contentIntent, key, (n.flags & Notification.FLAG_AUTO_CANCEL) != 0));
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {

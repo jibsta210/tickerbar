@@ -66,6 +66,7 @@ public class ShadeService extends AccessibilityService {
     // ticker
     private TickerView ticker;
     private WindowManager.LayoutParams tickerLp;
+    private Item current;   // what the ticker is showing, for tap-to-open
     private boolean showing;
     private final ArrayDeque<Item> queue = new ArrayDeque<Item>();
     private final Runnable hideR = new Runnable() { public void run() { maybeHide(); } };
@@ -100,7 +101,10 @@ public class ShadeService extends AccessibilityService {
     private final Runnable syncR = new Runnable() { public void run() { syncLock(); updateButton(); } };
     private final BroadcastReceiver screenR = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
-            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) pendingTarget = null;
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) {
+                pendingTarget = null;
+                hideTickerNow();   // never carry notification text onto the lock screen
+            }
             // The unlock broadcast can arrive before the keyguard reports unlocked (or not
             // at all), so look again a few times rather than trusting a single signal.
             syncLock();
@@ -370,7 +374,107 @@ public class ShadeService extends AccessibilityService {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
         tickerLp.gravity = Gravity.TOP | Gravity.START;
         tickerLp.setTitle("TickerBar ticker");
+        ticker.setOnTouchListener(new TickerTouch());
         try { wm.addView(ticker, tickerLp); } catch (Exception ex) { ticker = null; }
+    }
+
+    /**
+     * The ticker only takes touches while it's showing, so the status bar underneath
+     * behaves normally the rest of the time.
+     */
+    private void setTickerTouchable(boolean on) {
+        if (ticker == null || tickerLp == null) return;
+        int flags = on ? tickerLp.flags & ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                       : tickerLp.flags | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        if (flags == tickerLp.flags) return;
+        tickerLp.flags = flags;
+        try { wm.updateViewLayout(ticker, tickerLp); } catch (Exception ignored) {}
+    }
+
+    /**
+     * Works like a heads-up notification: tap to open it, flick it up or sideways to
+     * dismiss, pull down to open the shade (the ticker is covering the status bar).
+     */
+    private final class TickerTouch implements View.OnTouchListener {
+        private float x0, y0;
+        private boolean armed;
+
+        public boolean onTouch(View v, MotionEvent e) {
+            int slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
+            float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    x0 = e.getRawX();
+                    y0 = e.getRawY();
+                    armed = showing && current != null;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (armed && dy > 2 * slop && dy > Math.abs(dx)) {
+                        armed = false;
+                        pullShade(x0);
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (!armed) return true;
+                    armed = false;
+                    if (Math.abs(dx) < slop && Math.abs(dy) < slop) {
+                        v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                        openCurrent();
+                    } else if (dy > slop && dy > Math.abs(dx)) {
+                        pullShade(x0);
+                    } else {
+                        advance();
+                    }
+                    return true;
+                default:
+                    armed = false;
+                    return true;
+            }
+        }
+    }
+
+    /** A pull down on the ticker opens the shade the status bar would have. */
+    private void pullShade(float x) {
+        hideTickerNow();
+        // HyperOS splits the shade: pulling from the right opens Control Centre
+        String make = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(java.util.Locale.ROOT);
+        boolean split = make.contains("xiaomi") || make.contains("redmi") || make.contains("poco");
+        performGlobalAction(split && x > screenWidth() * 0.6f
+                ? GLOBAL_ACTION_QUICK_SETTINGS : GLOBAL_ACTION_NOTIFICATIONS);
+    }
+
+    /** Open what's on the ticker, exactly as tapping it in the shade would. */
+    private void openCurrent() {
+        Item it = current;
+        if (it == null) return;
+        if (isLocked()) { hideTickerNow(); return; }
+        boolean opened = false;
+        if (it.intent != null) {
+            try {
+                android.os.Bundle opts = null;
+                if (Build.VERSION.SDK_INT >= 34) {
+                    // lend the app our right to start an activity from the background,
+                    // the way the shade does when you tap a notification
+                    android.app.ActivityOptions o = android.app.ActivityOptions.makeBasic();
+                    o.setPendingIntentBackgroundActivityStartMode(
+                            android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                    opts = o.toBundle();
+                }
+                it.intent.send(this, 0, null, null, null, null, opts);
+                opened = true;
+            } catch (Exception ignored) {
+                // cancelled by the app since it posted; fall back to opening the app
+            }
+        }
+        if (!opened && it.pkg != null) {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(it.pkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(launch); } catch (Exception ignored) {}
+            }
+        }
+        if (it.autoCancel) TickerListener.cancel(it.key);
+        advance();
     }
 
     private void enqueue(Item item, boolean force) {
@@ -390,6 +494,8 @@ public class ShadeService extends AccessibilityService {
     private void hideTickerNow() {
         ui.removeCallbacks(hideR);
         queue.clear();
+        current = null;
+        setTickerTouchable(false);
         if (ticker != null) {
             ticker.animate().cancel();
             ticker.setVisibility(View.GONE);
@@ -462,6 +568,8 @@ public class ShadeService extends AccessibilityService {
         ticker.animate().setUpdateListener(null);
         ticker.setContent(bold, texts, styles, icon, animateIn ? ms : 0);
         showing = true;
+        current = it;
+        setTickerTouchable(true);
         ticker.setVisibility(View.VISIBLE);
         if (animateIn) animateIn(ms);
 
@@ -526,6 +634,15 @@ public class ShadeService extends AccessibilityService {
         if (ticker == null) return;
         long r = ticker.remainingMs();
         if (r > 0) { ui.postDelayed(hideR, r); return; }   // let the scroll finish first
+        advance();
+    }
+
+    /** Send the current notification off and bring on the next one, if any. */
+    private void advance() {
+        if (ticker == null) return;
+        ui.removeCallbacks(hideR);
+        current = null;
+        setTickerTouchable(false);
         final Item next = queue.pollFirst();
         animateOut(new Runnable() { public void run() {
             if (ticker == null) return;
