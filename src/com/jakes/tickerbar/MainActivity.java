@@ -165,8 +165,10 @@ public class MainActivity extends Activity {
 
         // ---------------------------------------------------------- updates
         section("Google search");
+        cycle("Google opens to", Prefs.GOOGLE_MODE, new int[]{0, 1},
+                new String[]{"Home feed (news, stocks, weather cards)", "Search box"});
         note("Your power button can only reach Gemini, so TickerBar adds its own ways into "
-                + "the Google search box:\n"
+                + "Google:\n"
                 + "  \u2022 Quick Settings tile \u201cGoogle search\u201d \u2013 add it by editing your Control Centre tiles\n"
                 + "  \u2022 Nova \u2192 Gestures \u2192 Shortcuts \u2192 TickerBar: Google search\n"
                 + "  \u2022 Long-press the TickerBar icon");

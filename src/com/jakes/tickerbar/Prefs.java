@@ -59,6 +59,9 @@ public final class Prefs {
     public static final String CORNER_W      = "corner_w";       // px, 0 = auto
     public static final String CORNER_HINT   = "corner_hint";    // draw a dot where the zone is
 
+    // Google: 0 = the app's home feed (Discover cards), 1 = straight to the search box
+    public static final String GOOGLE_MODE   = "google_mode";
+
     // shade shortcuts
     public static final String SHADE_HOME   = "shade_home";
 
@@ -80,6 +83,7 @@ public final class Prefs {
         DEF.put(CARD_OPACITY, 85); DEF.put(CARD_PEEK, 0);
         DEF.put(CORNER_ON, 1);   DEF.put(CORNER_SIDE, 2); DEF.put(CORNER_ACTION, 0);
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
+        DEF.put(GOOGLE_MODE, 0);
     }
 
     private Prefs() {}

@@ -6,18 +6,24 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.widget.Toast;
 
-/** Opens the Google app's text search box. Target of the tile and the shortcuts. */
+/** Opens the Google app: its home feed, or straight to the search box. Target of the tile and shortcuts. */
 public class SearchActivity extends Activity {
 
     static final String GOOGLE = "com.google.android.googlequicksearchbox";
 
-    /** GLOBAL_SEARCH is the search box itself; ASSIST would open Gemini instead. */
+    /**
+     * The app's own launcher entry opens its home feed (Discover cards: news, stocks,
+     * weather). GLOBAL_SEARCH opens the search box instead. ASSIST would open Gemini.
+     */
     static Intent searchIntent(Context c) {
-        Intent i = new Intent("android.search.action.GLOBAL_SEARCH").setPackage(GOOGLE);
-        if (i.resolveActivity(c.getPackageManager()) == null) {
-            Intent app = c.getPackageManager().getLaunchIntentForPackage(GOOGLE);
-            i = app != null ? app : new Intent("android.search.action.GLOBAL_SEARCH");
+        android.content.pm.PackageManager pm = c.getPackageManager();
+        Intent i = null;
+        if (Prefs.n(c, Prefs.GOOGLE_MODE) == 1) {
+            Intent box = new Intent("android.search.action.GLOBAL_SEARCH").setPackage(GOOGLE);
+            if (box.resolveActivity(pm) != null) i = box;
         }
+        if (i == null) i = pm.getLaunchIntentForPackage(GOOGLE);
+        if (i == null) i = new Intent("android.search.action.GLOBAL_SEARCH");   // some other search app
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         return i;
     }
