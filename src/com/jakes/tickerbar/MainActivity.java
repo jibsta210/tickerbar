@@ -119,21 +119,23 @@ public class MainActivity extends Activity {
         }});
 
         // ---------------------------------------------------------- wallet button
-        section("Wallet button");
-        check("Enable nav-bar button", Prefs.SWIPE_ON);
+        section("Wallet card");
+        check("Enable wallet card", Prefs.SWIPE_ON);
+        check("Show on the home screen", Prefs.CARD_HOME);
+        check("Show on the lock screen", Prefs.CARD_LOCK);
+        check("Open straight to your default card (Google Wallet)", Prefs.WALLET_QUICK);
         cycle("Side", Prefs.SWIPE_POS, new int[]{0, 1, 2}, new String[]{"Left", "Centre", "Right"});
         cycle("Trigger", Prefs.SWIPE_TRIGGER, new int[]{2, 0, 1},
                 new String[]{"Swipe up only", "Tap or swipe up", "Tap only"});
-        check("Only on the home screen", Prefs.SWIPE_HOME);
-        check("Show card icon", Prefs.SWIPE_PILL);
+        check("Show the card", Prefs.SWIPE_PILL);
         text("App to open  (package name)", Prefs.SWIPE_PKG);
         num("Width % of screen", Prefs.SWIPE_W);
         num("Height px  (0 = match the nav bar)", Prefs.SWIPE_H);
         num("Lift from bottom edge px", Prefs.SWIPE_Y);
         num("Swipe distance to trigger px", Prefs.SWIPE_DIST);
-        note("It sits on top of the nav bar in a corner, so it won't fight the home gesture. "
-                + "A tap is the most reliable trigger; a swipe fires early, before the system "
-                + "can claim it as a home gesture.");
+        note("Never shows inside apps. On the lock screen you'll be asked to unlock first, "
+                + "then Wallet opens. Screen-off isn't possible: with the display off the "
+                + "touchscreen doesn't send touches to apps \u2013 Samsung does that part in firmware.");
 
         // ---------------------------------------------------------- shade
         section("Shade shortcuts (for Nova gestures)");

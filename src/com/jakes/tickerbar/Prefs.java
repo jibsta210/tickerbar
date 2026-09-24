@@ -43,7 +43,10 @@ public final class Prefs {
     public static final String SWIPE_H       = "swipe_h";       // 0 = auto (nav bar height)
     public static final String SWIPE_Y       = "swipe_y";
     public static final String SWIPE_DIST    = "swipe_dist";
-    public static final String SWIPE_PILL    = "swipe_pill";    // draw the button icon
+    public static final String SWIPE_PILL    = "swipe_pill";    // draw the card
+    public static final String CARD_HOME     = "card_home";     // show on the home screen
+    public static final String CARD_LOCK     = "card_lock";     // show on the lock screen
+    public static final String WALLET_QUICK  = "wallet_quick";  // open straight to the default card
 
     // shade shortcuts
     public static final String SHADE_HOME   = "shade_home";
@@ -62,6 +65,7 @@ public final class Prefs {
         DEF.put(SWIPE_POS, 2);   DEF.put(SWIPE_W, 12);    DEF.put(SWIPE_H, 0);
         DEF.put(SWIPE_Y, 0);     DEF.put(SWIPE_DIST, 40); DEF.put(SWIPE_PILL, 1);
         DEF.put(SHADE_HOME, 1);
+        DEF.put(CARD_HOME, 1);   DEF.put(CARD_LOCK, 1);   DEF.put(WALLET_QUICK, 1);
     }
 
     private Prefs() {}

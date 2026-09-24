@@ -26,6 +26,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.DisplayCutout;
@@ -82,12 +83,19 @@ public class ShadeService extends AccessibilityService {
     private KeyguardManager keyguard;
     private boolean receiverOn;
     private boolean lastLocked;
-    private final Runnable syncR = new Runnable() { public void run() { syncLock(); } };
+    /** A lock-screen swipe queues the launch; it fires on unlock if that happens in time. */
+    private long pendingLaunchUntil;
+    private static final long PENDING_MS = 15000;
+    private final Runnable launchNowR = new Runnable() { public void run() { launchTarget(); } };
+    // screen on/off changes visibility even when lock state doesn't, so always re-apply
+    private final Runnable syncR = new Runnable() { public void run() { syncLock(); updateButton(); } };
     private final BroadcastReceiver screenR = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) pendingLaunchUntil = 0;
             // The unlock broadcast can arrive before the keyguard reports unlocked (or not
             // at all), so look again a few times rather than trusting a single signal.
             syncLock();
+            updateButton();
             ui.postDelayed(syncR, 300);
             ui.postDelayed(syncR, 1200);
             ui.postDelayed(syncR, 3000);
@@ -101,7 +109,13 @@ public class ShadeService extends AccessibilityService {
         boolean l = isLocked();
         if (l == lastLocked) return;
         lastLocked = l;
-        if (l) hideTickerNow();
+        Log.d("TickerBar", "lock changed locked=" + l + " pending=" + (pendingLaunchUntil > SystemClock.uptimeMillis()));
+        if (l) {
+            hideTickerNow();
+        } else if (pendingLaunchUntil > SystemClock.uptimeMillis()) {
+            pendingLaunchUntil = 0;
+            ui.postDelayed(launchNowR, 150);   // let the keyguard finish going away
+        }
         updateButton();
     }
 
@@ -122,6 +136,10 @@ public class ShadeService extends AccessibilityService {
         else registerReceiver(screenR, f);
         receiverOn = true;
         lastLocked = isLocked();
+        // Without reading screen content we can't ask what's in front, so guess until the
+        // first window change: locked at start (a reboot) means you'll most likely unlock to
+        // the home screen; unlocked (an update, toggling the service) means you're in an app.
+        onHome = lastLocked;
         buildTicker();
         applySettings();
     }
@@ -476,9 +494,13 @@ public class ShadeService extends AccessibilityService {
 
     private void updateButton() {
         if (wm == null) return;
-        boolean want = Prefs.on(this, Prefs.SWIPE_ON)
-                && (!Prefs.on(this, Prefs.SWIPE_HOME) || onHome)
-                && !isLocked();
+        // Samsung-style rules: home screen and/or lock screen, never inside apps.
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        boolean screenOn = pm == null || pm.isInteractive();
+        boolean locked = isLocked();
+        boolean want = Prefs.on(this, Prefs.SWIPE_ON) && screenOn
+                && (locked ? Prefs.on(this, Prefs.CARD_LOCK)
+                           : Prefs.on(this, Prefs.CARD_HOME) && onHome);
         if (!want) {
             if (button != null && buttonAttached) {
                 try { wm.removeViewImmediate(button); } catch (Exception ignored) {}
@@ -529,11 +551,31 @@ public class ShadeService extends AccessibilityService {
         return inset > 0 ? inset : dp(48);
     }
 
+    static final String GOOGLE_WALLET = "com.google.android.apps.walletnfcrel";
+    /** Wallet's own "hold to reader" entry point, showing the default card. Undocumented. */
+    static final String WALLET_QUICKDRAW = "com.google.android.apps.wallet.main.QUICKDRAW";
+
     private void launchTarget() {
+        if (isLocked()) {
+            // Never open over the lock screen. Queue the launch for when the phone unlocks,
+            // and always ask for an unlock: the system only sometimes treats a swipe on the
+            // card as an unlock gesture, and a second request alongside its own is harmless.
+            pendingLaunchUntil = SystemClock.uptimeMillis() + PENDING_MS;
+            Log.d("TickerBar", "launch while locked: queued + starting trampoline");
+            Intent t = new Intent(this, WalletLaunchActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            try { startActivity(t); } catch (Exception ignored) {}
+            return;
+        }
         String pkg = Prefs.str(this, Prefs.SWIPE_PKG).trim();
-        Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+        Intent i = null;
+        if (Prefs.on(this, Prefs.WALLET_QUICK) && GOOGLE_WALLET.equals(pkg)) {
+            Intent q = new Intent(WALLET_QUICKDRAW).setPackage(pkg);
+            if (q.resolveActivity(getPackageManager()) != null) i = q;   // else Wallet renamed it
+        }
+        if (i == null) i = getPackageManager().getLaunchIntentForPackage(pkg);
         if (i == null) {
-            Toast.makeText(this, "Wallet button: not installed – " + pkg, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Wallet card: not installed \u2013 " + pkg, Toast.LENGTH_LONG).show();
             return;
         }
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
