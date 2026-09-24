@@ -1,3 +1,4 @@
 build/
 *.keystore
 tickerbar.apk
+*.idsig
