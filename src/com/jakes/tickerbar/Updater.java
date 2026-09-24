@@ -126,6 +126,8 @@ public class Updater {
         Intent i = new Intent(ctx, InstallReceiver.class);
         PendingIntent p = PendingIntent.getBroadcast(ctx, id, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+        // the update kills this process; the service brings the app back once it's in
+        Prefs.get(ctx).edit().putLong(Prefs.RELAUNCH_AT, System.currentTimeMillis()).commit();
         session.commit(p.getIntentSender());
         session.close();
     }

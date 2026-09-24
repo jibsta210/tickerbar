@@ -22,6 +22,7 @@ public class InstallReceiver extends BroadcastReceiver {
                 Toast.makeText(c, "TickerBar updated", Toast.LENGTH_LONG).show();
                 break;
             default:
+                Prefs.get(c).edit().remove(Prefs.RELAUNCH_AT).apply();
                 String msg = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
                 Toast.makeText(c, "Update failed: " + msg, Toast.LENGTH_LONG).show();
         }

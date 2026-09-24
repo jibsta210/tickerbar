@@ -152,6 +152,23 @@ public class ShadeService extends AccessibilityService {
         onHome = lastLocked;
         buildTicker();
         applySettings();
+        reopenAfterUpdate();
+    }
+
+    /**
+     * A self-update kills the app mid-use. Reopen it where the user was: the service is
+     * allowed to start an activity from the background, the updated app isn't.
+     */
+    private void reopenAfterUpdate() {
+        long at = Prefs.get(this).getLong(Prefs.RELAUNCH_AT, 0);
+        if (at == 0) return;
+        Prefs.get(this).edit().remove(Prefs.RELAUNCH_AT).apply();
+        if (System.currentTimeMillis() - at > 3 * 60 * 1000L) return;
+        try {
+            startActivity(new Intent(this, MainActivity.class)
+                    .putExtra(MainActivity.EXTRA_UPDATED, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception ignored) {}
     }
 
     @Override public boolean onUnbind(Intent intent) {

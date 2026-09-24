@@ -66,6 +66,7 @@ public final class Prefs {
     // updates
     public static final String AUTO_UPDATE   = "auto_update";
     public static final String LAST_CHECK    = "last_update_check";
+    public static final String RELAUNCH_AT   = "relaunch_at";   // set just before a self-update
 
     // Google: 0 = the app's home feed (Discover cards), 1 = straight to the search box
     public static final String GOOGLE_MODE   = "google_mode";

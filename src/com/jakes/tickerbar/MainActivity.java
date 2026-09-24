@@ -35,6 +35,8 @@ import android.widget.Toast;
 /** Settings, built from framework views only, coloured from the system's Material You palette. */
 public class MainActivity extends Activity {
 
+    static final String EXTRA_UPDATED = "updated";
+
     private Palette pal;
     private LinearLayout col;
     private TextView updateLine;
@@ -198,7 +200,8 @@ public class MainActivity extends Activity {
         TextView title = tv("TickerBar", 26, pal.onSurface);
         title.setTypeface(MEDIUM);
         text.addView(title);
-        updateLine = tv("v" + versionName(), 13, pal.onSurfaceVariant);
+        updateLine = tv(getIntent().getBooleanExtra(EXTRA_UPDATED, false)
+                ? "Updated to v" + versionName() : "v" + versionName(), 13, pal.onSurfaceVariant);
         text.addView(updateLine);
         top.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         col.addView(top);
