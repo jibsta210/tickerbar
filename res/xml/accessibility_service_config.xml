@@ -3,6 +3,7 @@
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault"
-    android:canPerformGestures="false"
+    android:canRetrieveWindowContent="false"
     android:notificationTimeout="100"
+    android:settingsActivity="com.jakes.tickerbar.MainActivity"
     android:description="@string/acc_desc"/>
