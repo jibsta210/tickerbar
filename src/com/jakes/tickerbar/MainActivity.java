@@ -128,14 +128,30 @@ public class MainActivity extends Activity {
         cycle("Trigger", Prefs.SWIPE_TRIGGER, new int[]{2, 0, 1},
                 new String[]{"Swipe up only", "Tap or swipe up", "Tap only"});
         check("Show the card", Prefs.SWIPE_PILL);
+        num("Card opacity %", Prefs.CARD_OPACITY);
+        num("Card peek px  (0 = auto)", Prefs.CARD_PEEK);
         text("App to open  (package name)", Prefs.SWIPE_PKG);
         num("Width % of screen", Prefs.SWIPE_W);
-        num("Height px  (0 = match the nav bar)", Prefs.SWIPE_H);
+        num("Swipe area height px  (0 = the nav bar)", Prefs.SWIPE_H);
         num("Lift from bottom edge px", Prefs.SWIPE_Y);
         num("Swipe distance to trigger px", Prefs.SWIPE_DIST);
-        note("Never shows inside apps. On the lock screen you'll be asked to unlock first, "
+        note("The card lives inside the nav bar and rises from the bottom edge, so it never "
+                + "covers your dock, and taps on it pass through to your nav buttons. Never shows inside apps. On the lock screen you'll be asked to unlock first, "
                 + "then Wallet opens. Screen-off isn't possible: with the display off the "
                 + "touchscreen doesn't send touches to apps \u2013 Samsung does that part in firmware.");
+
+        // ---------------------------------------------------------- corner
+        section("Corner long-press");
+        check("Enable corner long-press", Prefs.CORNER_ON);
+        cycle("Corner", Prefs.CORNER_SIDE, new int[]{2, 0}, new String[]{"Bottom right", "Bottom left"});
+        cycle("Action", Prefs.CORNER_ACTION, new int[]{0, 1}, new String[]{"Google search", "Open an app"});
+        text("App to open  (package name, for \u201cOpen an app\u201d)", Prefs.CORNER_PKG);
+        num("Hold time ms", Prefs.CORNER_MS);
+        num("Zone width px  (0 = auto)", Prefs.CORNER_W);
+        check("Show a dot where the zone is", Prefs.CORNER_HINT);
+        note("Only a long-press triggers it, on every screen \u2013 inside apps too, and on the "
+                + "lock screen after you unlock. Taps and short presses pass straight through to "
+                + "your nav buttons.");
 
         // ---------------------------------------------------------- shade
         section("Shade shortcuts (for Nova gestures)");

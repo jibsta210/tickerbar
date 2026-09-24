@@ -47,6 +47,17 @@ public final class Prefs {
     public static final String CARD_HOME     = "card_home";     // show on the home screen
     public static final String CARD_LOCK     = "card_lock";     // show on the lock screen
     public static final String WALLET_QUICK  = "wallet_quick";  // open straight to the default card
+    public static final String CARD_OPACITY  = "card_opacity";  // %
+    public static final String CARD_PEEK     = "card_peek";     // px showing at rest; 0 = auto
+
+    // corner long-press
+    public static final String CORNER_ON     = "corner_on";
+    public static final String CORNER_SIDE   = "corner_side";    // 0 left, 2 right
+    public static final String CORNER_ACTION = "corner_action";  // 0 Google search, 1 open an app
+    public static final String CORNER_PKG    = "corner_pkg";
+    public static final String CORNER_MS     = "corner_ms";      // hold time
+    public static final String CORNER_W      = "corner_w";       // px, 0 = auto
+    public static final String CORNER_HINT   = "corner_hint";    // draw a dot where the zone is
 
     // shade shortcuts
     public static final String SHADE_HOME   = "shade_home";
@@ -66,6 +77,9 @@ public final class Prefs {
         DEF.put(SWIPE_Y, 0);     DEF.put(SWIPE_DIST, 40); DEF.put(SWIPE_PILL, 1);
         DEF.put(SHADE_HOME, 1);
         DEF.put(CARD_HOME, 1);   DEF.put(CARD_LOCK, 1);   DEF.put(WALLET_QUICK, 1);
+        DEF.put(CARD_OPACITY, 85); DEF.put(CARD_PEEK, 0);
+        DEF.put(CORNER_ON, 1);   DEF.put(CORNER_SIDE, 2); DEF.put(CORNER_ACTION, 0);
+        DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
     }
 
     private Prefs() {}

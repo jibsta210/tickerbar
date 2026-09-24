@@ -75,6 +75,10 @@ public class ShadeService extends AccessibilityService {
     private ButtonView button;
     private boolean buttonAttached;
 
+    // corner long-press zone
+    private CornerView corner;
+    private boolean cornerAttached;
+
     // foreground tracking
     private String launcherPkg = "";
     private boolean onHome = true;
@@ -83,15 +87,20 @@ public class ShadeService extends AccessibilityService {
     private KeyguardManager keyguard;
     private boolean receiverOn;
     private boolean lastLocked;
-    /** A lock-screen swipe queues the launch; it fires on unlock if that happens in time. */
-    private long pendingLaunchUntil;
+    /** A lock-screen gesture queues its target; it opens on unlock if that happens in time. */
+    private Intent pendingTarget;
+    private long pendingUntil;
     private static final long PENDING_MS = 15000;
-    private final Runnable launchNowR = new Runnable() { public void run() { launchTarget(); } };
+    private final Runnable openPendingR = new Runnable() { public void run() {
+        Intent t = pendingTarget;
+        pendingTarget = null;
+        if (t != null) openOrQueue(t);
+    }};
     // screen on/off changes visibility even when lock state doesn't, so always re-apply
     private final Runnable syncR = new Runnable() { public void run() { syncLock(); updateButton(); } };
     private final BroadcastReceiver screenR = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
-            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) pendingLaunchUntil = 0;
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) pendingTarget = null;
             // The unlock broadcast can arrive before the keyguard reports unlocked (or not
             // at all), so look again a few times rather than trusting a single signal.
             syncLock();
@@ -109,12 +118,13 @@ public class ShadeService extends AccessibilityService {
         boolean l = isLocked();
         if (l == lastLocked) return;
         lastLocked = l;
-        Log.d("TickerBar", "lock changed locked=" + l + " pending=" + (pendingLaunchUntil > SystemClock.uptimeMillis()));
+        Log.d("TickerBar", "lock changed locked=" + l + " pending=" + (pendingTarget != null));
         if (l) {
             hideTickerNow();
-        } else if (pendingLaunchUntil > SystemClock.uptimeMillis()) {
-            pendingLaunchUntil = 0;
-            ui.postDelayed(launchNowR, 150);   // let the keyguard finish going away
+        } else if (pendingTarget != null && pendingUntil > SystemClock.uptimeMillis()) {
+            ui.postDelayed(openPendingR, 150);   // let the keyguard finish going away
+        } else {
+            pendingTarget = null;
         }
         updateButton();
     }
@@ -196,9 +206,13 @@ public class ShadeService extends AccessibilityService {
             if (button != null && buttonAttached) {
                 try { wm.removeViewImmediate(button); } catch (Exception ignored) {}
             }
+            if (corner != null && cornerAttached) {
+                try { wm.removeViewImmediate(corner); } catch (Exception ignored) {}
+            }
         }
         ticker = null;
         buttonAttached = false;
+        cornerAttached = false;
     }
 
     // ============================================================ public API
@@ -511,6 +525,7 @@ public class ShadeService extends AccessibilityService {
 
     private void updateButton() {
         if (wm == null) return;
+        updateCorner();
         // Samsung-style rules: home screen and/or lock screen, never inside apps.
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         boolean screenOn = pm == null || pm.isInteractive();
@@ -538,11 +553,12 @@ public class ShadeService extends AccessibilityService {
         int sw = screenWidth();
         int pct = Math.max(5, Math.min(100, Prefs.n(this, Prefs.SWIPE_W)));
         int w = Math.max(dp(40), sw * pct / 100);
-        int nav = navZoneHeight();
+        // Exactly the nav bar: nothing above it, so the dock and home screen stay clear.
         int h = Prefs.n(this, Prefs.SWIPE_H);
-        if (h <= 0) h = nav + dp(30);            // the nav zone plus room to peek and lift
-        if (button != null) button.navLine = Math.max(0, h - nav);
-        WindowManager.LayoutParams lp = overlayParams(w, h, 0);
+        if (h <= 0) h = Math.max(dp(24), navZoneHeight());
+        if (button != null) button.navLine = h;   // the card comes up from below the screen
+        WindowManager.LayoutParams lp = overlayParams(w, h,
+                passing ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
         int pos = Prefs.n(this, Prefs.SWIPE_POS);
         lp.gravity = Gravity.BOTTOM
                 | (pos == 0 ? Gravity.LEFT : pos == 1 ? Gravity.CENTER_HORIZONTAL : Gravity.RIGHT);
@@ -574,18 +590,8 @@ public class ShadeService extends AccessibilityService {
     /** Wallet's own "hold to reader" entry point, showing the default card. Undocumented. */
     static final String WALLET_QUICKDRAW = "com.google.android.apps.wallet.main.QUICKDRAW";
 
+    /** The wallet card's target: Google Wallet's default card if possible, else the app. */
     private void launchTarget() {
-        if (isLocked()) {
-            // Never open over the lock screen. Queue the launch for when the phone unlocks,
-            // and always ask for an unlock: the system only sometimes treats a swipe on the
-            // card as an unlock gesture, and a second request alongside its own is harmless.
-            pendingLaunchUntil = SystemClock.uptimeMillis() + PENDING_MS;
-            Log.d("TickerBar", "launch while locked: queued + starting trampoline");
-            Intent t = new Intent(this, WalletLaunchActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
-            try { startActivity(t); } catch (Exception ignored) {}
-            return;
-        }
         String pkg = Prefs.str(this, Prefs.SWIPE_PKG).trim();
         Intent i = null;
         if (Prefs.on(this, Prefs.WALLET_QUICK) && GOOGLE_WALLET.equals(pkg)) {
@@ -597,9 +603,108 @@ public class ShadeService extends AccessibilityService {
             Toast.makeText(this, "Wallet card: not installed \u2013 " + pkg, Toast.LENGTH_LONG).show();
             return;
         }
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        try { startActivity(i); }
-        catch (Exception ex) { Toast.makeText(this, "Couldn't open " + pkg, Toast.LENGTH_LONG).show(); }
+        openOrQueue(i);
+    }
+
+    /**
+     * Opens a target now, or on the lock screen asks for an unlock and opens it afterwards.
+     * Nothing we launch ever appears over the lock screen itself.
+     */
+    private void openOrQueue(Intent target) {
+        target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        if (isLocked()) {
+            // The system only sometimes treats our gesture as an unlock, so always ask;
+            // a request alongside its own prompt is harmless.
+            pendingTarget = target;
+            pendingUntil = SystemClock.uptimeMillis() + PENDING_MS;
+            Log.d("TickerBar", "locked: queued target, requesting unlock");
+            Intent t = new Intent(this, WalletLaunchActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            try { startActivity(t); } catch (Exception ignored) {}
+            return;
+        }
+        try { startActivity(target); }
+        catch (Exception ex) { Toast.makeText(this, "Couldn't open that", Toast.LENGTH_LONG).show(); }
+    }
+
+    // ------------------------------------------------------------ pass-through
+
+    /**
+     * Our touch zones sit on top of the nav bar, so anything that isn't our own gesture has
+     * to reach the real nav buttons underneath. We make our windows untouchable for a moment
+     * and replay the press where it happened, with the same duration so long-presses survive.
+     */
+    private boolean passing, passHitSelf;
+    private int passTries;
+    private float passX, passY;
+    private long passDur;
+
+    void passThrough(float x, float y, long durationMs) {
+        if (passing) return;
+        passing = true;
+        passX = x;
+        passY = y;
+        passDur = Math.max(1, Math.min(1500, durationMs));
+        passTries = 0;
+        setZonesTouchable(false);
+        injectLater(48);   // give the flag change a moment to reach the input system
+    }
+
+    private void injectLater(long delay) {
+        ui.postDelayed(new Runnable() { public void run() {
+            passHitSelf = false;
+            android.graphics.Path p = new android.graphics.Path();
+            p.moveTo(passX, passY);
+            android.accessibilityservice.GestureDescription g =
+                    new android.accessibilityservice.GestureDescription.Builder()
+                            .addStroke(new android.accessibilityservice.GestureDescription
+                                    .StrokeDescription(p, 0, passDur))
+                            .build();
+            boolean ok = dispatchGesture(g, new GestureResultCallback() {
+                @Override public void onCompleted(android.accessibilityservice.GestureDescription d) { afterInject(); }
+                @Override public void onCancelled(android.accessibilityservice.GestureDescription d) { afterInject(); }
+            }, ui);
+            if (!ok) endPass();
+        }}, delay);
+    }
+
+    /**
+     * If the replayed press landed on our own zone, the untouchable flag hadn't reached the
+     * input system yet; try again with a longer gap instead of dropping the user's press.
+     */
+    private void afterInject() {
+        if (passHitSelf && passTries < 3) {
+            passTries++;
+            Log.d("TickerBar", "pass-through hit our own zone; retry " + passTries);
+            injectLater(80L * passTries);
+            return;
+        }
+        endPass();
+    }
+
+    /** Zones call this first: while a replay is in flight, touches reaching us are our own replay. */
+    boolean swallowIfPassing(MotionEvent e) {
+        if (!passing) return false;
+        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) passHitSelf = true;
+        return true;
+    }
+
+    private void endPass() {
+        ui.postDelayed(new Runnable() { public void run() {
+            passing = false;
+            setZonesTouchable(true);
+        }}, 40);
+    }
+
+    private void setZonesTouchable(boolean on) {
+        View[] zones = {buttonAttached ? button : null, cornerAttached ? corner : null};
+        for (View v : zones) {
+            if (v == null) continue;
+            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) v.getLayoutParams();
+            if (on) lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            try { wm.updateViewLayout(v, lp); } catch (Exception ignored) {}
+        }
     }
 
     // ------------------------------------------------------------ card graphic
@@ -609,6 +714,7 @@ public class ShadeService extends AccessibilityService {
 
     /** A plain white card with a soft edge, so it reads on light and dark wallpapers. */
     private void drawCard(Canvas c, RectF r, float alpha) {
+        alpha *= Math.max(5, Math.min(100, Prefs.n(this, Prefs.CARD_OPACITY))) / 100f;
         float rad = Math.min(r.width() * 0.045f, dp(14));
         Paint p = cardPaint;
         p.setShader(null);
@@ -627,8 +733,11 @@ public class ShadeService extends AccessibilityService {
     /** The card fills almost the whole button window's width. */
     private float cardWidth(float windowW) { return windowW * 0.96f; }
 
-    /** How much of the card peeks out above the nav bar at rest. */
-    private float peek() { return dp(12); }
+    /** How much of the card shows at rest, rising from the bottom edge of the screen. */
+    private float peek(int windowH) {
+        int set = Prefs.n(this, Prefs.CARD_PEEK);
+        return set > 0 ? Math.min(set, windowH) : Math.round(windowH * 0.45f);
+    }
 
     /**
      * A payment card tucked into the bottom edge, Samsung Pay style. Half of it peeks
@@ -639,7 +748,7 @@ public class ShadeService extends AccessibilityService {
         private final int slop;
         private float downX, downY, lastY, lift;
         private long downT;
-        private boolean fired, pressed, pulled;
+        private boolean fired, pressed, pulled, moved;
         private ValueAnimator liftAnim;
 
         ButtonView() {
@@ -647,9 +756,9 @@ public class ShadeService extends AccessibilityService {
             slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
         }
 
-        int navLine;   // y (in this window) where the nav bar starts; the card hides below it
+        int navLine;   // y (in this window) the card hides below: the bottom edge of the screen
 
-        private float restTop() { return navLine - peek(); }
+        private float restTop() { return navLine - peek(getHeight()); }
 
         private float maxLift() { return Math.max(0f, restTop() - dp(2)); }
 
@@ -699,6 +808,7 @@ public class ShadeService extends AccessibilityService {
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if (swallowIfPassing(e)) return true;
             int trig = Prefs.n(ShadeService.this, Prefs.SWIPE_TRIGGER);
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -707,11 +817,13 @@ public class ShadeService extends AccessibilityService {
                     lastY = downY;
                     downT = SystemClock.uptimeMillis();
                     fired = false;
+                    moved = false;
                     pressed = true;
                     animateLift(dp(5));
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     lastY = e.getRawY();
+                    if (Math.abs(e.getRawX() - downX) > slop || Math.abs(lastY - downY) > slop) moved = true;
                     if (!fired && trig != 1) {
                         if (liftAnim != null) liftAnim.cancel();
                         lift = Math.max(0f, downY - lastY) + dp(5);   // card follows the finger
@@ -720,15 +832,17 @@ public class ShadeService extends AccessibilityService {
                         if (downY - lastY >= Prefs.n(ShadeService.this, Prefs.SWIPE_DIST)) fire(220);
                     }
                     return true;
-                case MotionEvent.ACTION_UP:
-                    if (!fired && trig != 2
-                            && Math.abs(e.getRawX() - downX) < slop
-                            && Math.abs(e.getRawY() - downY) < slop
-                            && SystemClock.uptimeMillis() - downT < 500) {
-                        fire(180);
+                case MotionEvent.ACTION_UP: {
+                    long held = SystemClock.uptimeMillis() - downT;
+                    if (!fired && trig != 2 && !moved && held < 500) fire(180);
+                    if (!fired) {
+                        pressed = false;
+                        animateLift(0f);
+                        // not our gesture: hand the press to the nav bar underneath
+                        if (!moved) passThrough(downX, downY, held);
                     }
-                    if (!fired) { pressed = false; animateLift(0f); }
                     return true;
+                }
                 case MotionEvent.ACTION_CANCEL:
                     // The system's gesture recogniser steals upward swipes in its gesture
                     // zone from every window, even ones layered above the nav bar, and we
@@ -813,6 +927,104 @@ public class ShadeService extends AccessibilityService {
         Point p = new Point();
         d.getRealSize(p);
         return p.y;
+    }
+
+    // ============================================================ corner long-press
+
+    /** A small invisible zone in a nav-bar corner. Long-press runs its action, on any screen. */
+    private void updateCorner() {
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        boolean want = Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive());
+        if (!want) {
+            if (corner != null && cornerAttached) {
+                try { wm.removeViewImmediate(corner); } catch (Exception ignored) {}
+            }
+            cornerAttached = false;
+            return;
+        }
+        if (corner == null) corner = new CornerView();
+        int w = Prefs.n(this, Prefs.CORNER_W);
+        if (w <= 0) w = Math.max(dp(56), Math.round(screenWidth() * 0.15f));
+        int h = Math.max(dp(24), navZoneHeight());
+        WindowManager.LayoutParams lp = overlayParams(w, h,
+                passing ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
+        lp.gravity = Gravity.BOTTOM | (Prefs.n(this, Prefs.CORNER_SIDE) == 0 ? Gravity.LEFT : Gravity.RIGHT);
+        lp.setTitle("TickerBar corner");
+        try {
+            if (cornerAttached) wm.updateViewLayout(corner, lp);
+            else { wm.addView(corner, lp); cornerAttached = true; }
+        } catch (Exception ignored) {}
+        corner.invalidate();
+    }
+
+    private void runCornerAction() {
+        if (Prefs.n(this, Prefs.CORNER_ACTION) == 1) {
+            String pkg = Prefs.str(this, Prefs.CORNER_PKG).trim();
+            Intent i = pkg.isEmpty() ? null : getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i == null) {
+                Toast.makeText(this, "Corner: app not installed \u2013 " + pkg, Toast.LENGTH_LONG).show();
+                return;
+            }
+            openOrQueue(i);
+        } else {
+            openOrQueue(SearchActivity.searchIntent(this));
+        }
+    }
+
+    private final class CornerView extends View {
+        private final int slop;
+        private final Paint hint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float downX, downY;
+        private long downT;
+        private boolean fired, moved;
+        private final Runnable longPressR = new Runnable() { public void run() {
+            if (moved || fired) return;
+            fired = true;
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            runCornerAction();
+        }};
+
+        CornerView() {
+            super(ShadeService.this);
+            slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
+            hint.setColor(0x55FFFFFF);
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            if (!Prefs.on(ShadeService.this, Prefs.CORNER_HINT)) return;
+            float r = dp(3);
+            c.drawCircle(getWidth() / 2f, getHeight() / 2f, r, hint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            if (swallowIfPassing(e)) return true;
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = e.getRawX();
+                    downY = e.getRawY();
+                    downT = SystemClock.uptimeMillis();
+                    fired = false;
+                    moved = false;
+                    postDelayed(longPressR, Math.max(150, Prefs.n(ShadeService.this, Prefs.CORNER_MS)));
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (Math.abs(e.getRawX() - downX) > slop || Math.abs(e.getRawY() - downY) > slop) {
+                        moved = true;
+                        removeCallbacks(longPressR);
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    removeCallbacks(longPressR);
+                    // only a long-press is ours; a tap or short press belongs to the nav button
+                    if (!fired && !moved) passThrough(downX, downY, SystemClock.uptimeMillis() - downT);
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    removeCallbacks(longPressR);   // the system claimed a swipe
+                    return true;
+                default:
+                    return true;
+            }
+        }
     }
 
     // ============================================================ helpers
