@@ -6,4 +6,6 @@
     <string name="sc_notif_long">Open notifications</string>
     <string name="sc_cc_short">Control Centre</string>
     <string name="sc_cc_long">Open Control Centre</string>
+    <string name="sc_search_short">Google search</string>
+    <string name="sc_search_long">Google search</string>
 </resources>

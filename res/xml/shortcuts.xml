@@ -22,4 +22,15 @@
             android:targetPackage="com.jakes.tickerbar"
             android:targetClass="com.jakes.tickerbar.OpenControlCentreActivity"/>
     </shortcut>
+    <shortcut
+        android:shortcutId="google_search"
+        android:enabled="true"
+        android:icon="@drawable/ic_search"
+        android:shortcutShortLabel="@string/sc_search_short"
+        android:shortcutLongLabel="@string/sc_search_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.jakes.tickerbar"
+            android:targetClass="com.jakes.tickerbar.SearchActivity"/>
+    </shortcut>
 </shortcuts>

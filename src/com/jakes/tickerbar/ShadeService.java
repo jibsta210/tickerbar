@@ -357,9 +357,26 @@ public class ShadeService extends AccessibilityService {
         showing = false;
     }
 
+    /**
+     * Many apps repeat the title inside the text ("Mom" / "Mom: running late", or both the
+     * same). Shown as-is, the name appears twice, one either side of the camera cut-out.
+     */
+    static String[] tidy(String app, String title, String body) {
+        String a = app.trim(), t = title.trim(), b = body.trim();
+        if (t.isEmpty()) { t = b; b = ""; }
+        if (b.equalsIgnoreCase(t)) b = "";
+        else if (!t.isEmpty() && b.length() > t.length() && b.regionMatches(true, 0, t, 0, t.length())) {
+            String rest = b.substring(t.length()).replaceFirst("^[\\s:\\-\u2013\u2014|,]+", "");
+            if (!rest.isEmpty()) b = rest;
+        }
+        if (a.equalsIgnoreCase(t)) a = "";
+        return new String[]{a, t, b};
+    }
+
     private void display(String[] it, boolean animateIn) {
         int n = Math.max(1, Math.min(3, Prefs.n(this, Prefs.LINES)));
-        String app = it[0], title = it[1], body = it[2];
+        String[] tid = tidy(it[0], it[1], it[2]);
+        String app = tid[0], title = tid[1], body = tid[2];
         String[] texts;
         int[] styles;
         if (n == 1) {
@@ -521,8 +538,10 @@ public class ShadeService extends AccessibilityService {
         int sw = screenWidth();
         int pct = Math.max(5, Math.min(100, Prefs.n(this, Prefs.SWIPE_W)));
         int w = Math.max(dp(40), sw * pct / 100);
+        int nav = navZoneHeight();
         int h = Prefs.n(this, Prefs.SWIPE_H);
-        if (h <= 0) h = Math.max(dp(32), navZoneHeight()) + dp(14);
+        if (h <= 0) h = nav + dp(30);            // the nav zone plus room to peek and lift
+        if (button != null) button.navLine = Math.max(0, h - nav);
         WindowManager.LayoutParams lp = overlayParams(w, h, 0);
         int pos = Prefs.n(this, Prefs.SWIPE_POS);
         lp.gravity = Gravity.BOTTOM
@@ -588,39 +607,28 @@ public class ShadeService extends AccessibilityService {
     private final Paint cardPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF tmpR = new RectF();
 
-    /** A payment card: gradient face, gold chip, faint sheen and edge. */
+    /** A plain white card with a soft edge, so it reads on light and dark wallpapers. */
     private void drawCard(Canvas c, RectF r, float alpha) {
-        float rad = r.width() * 0.09f;
+        float rad = Math.min(r.width() * 0.045f, dp(14));
         Paint p = cardPaint;
-        p.setStyle(Paint.Style.FILL);
-        p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
-                0xFF4F6BFF, 0xFF9B5CFF, Shader.TileMode.CLAMP));
-        p.setAlpha(Math.round(255 * alpha));
-        c.drawRoundRect(r, rad, rad, p);
         p.setShader(null);
-
-        p.setColor(0xFFFFFFFF);                                   // sheen across the top
-        p.setAlpha(Math.round(38 * alpha));
-        tmpR.set(r.left, r.top, r.right, r.top + r.height() * 0.22f);
-        c.drawRoundRect(tmpR, rad, rad, p);
-
-        float chipW = r.width() * 0.2f, chipH = chipW * 0.76f;   // chip sits in the part that peeks out
-        tmpR.set(r.left + r.width() * 0.12f, r.top + r.height() * 0.26f,
-                r.left + r.width() * 0.12f + chipW, r.top + r.height() * 0.26f + chipH);
-        p.setColor(0xFFE9C46A);
-        p.setAlpha(Math.round(255 * alpha));
-        c.drawRoundRect(tmpR, chipW * 0.2f, chipW * 0.2f, p);
-
-        p.setStyle(Paint.Style.STROKE);                          // edge, so it reads on dark wallpaper
-        p.setStrokeWidth(dp(1));
+        p.setStyle(Paint.Style.FILL);
         p.setColor(0xFFFFFFFF);
-        p.setAlpha(Math.round(70 * alpha));
+        p.setAlpha(Math.round(242 * alpha));
+        c.drawRoundRect(r, rad, rad, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(dp(1));
+        p.setColor(0xFF000000);
+        p.setAlpha(Math.round(34 * alpha));
         c.drawRoundRect(r, rad, rad, p);
         p.setStyle(Paint.Style.FILL);
     }
 
-    /** Card size for a button window of the given width. */
-    private float cardWidth(float windowW) { return Math.min(windowW * 0.8f, dp(64)); }
+    /** The card fills almost the whole button window's width. */
+    private float cardWidth(float windowW) { return windowW * 0.96f; }
+
+    /** How much of the card peeks out above the nav bar at rest. */
+    private float peek() { return dp(12); }
 
     /**
      * A payment card tucked into the bottom edge, Samsung Pay style. Half of it peeks
@@ -639,10 +647,9 @@ public class ShadeService extends AccessibilityService {
             slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
         }
 
-        private float restTop() {
-            float ch = cardWidth(getWidth()) * 0.63f;
-            return getHeight() - ch * 0.5f;           // half the card below the edge
-        }
+        int navLine;   // y (in this window) where the nav bar starts; the card hides below it
+
+        private float restTop() { return navLine - peek(); }
 
         private float maxLift() { return Math.max(0f, restTop() - dp(2)); }
 
@@ -652,7 +659,10 @@ public class ShadeService extends AccessibilityService {
             float cw = cardWidth(w), ch = cw * 0.63f;
             float top = restTop() - Math.min(lift, maxLift());
             card.set((w - cw) / 2f, top, (w + cw) / 2f, top + ch);
-            drawCard(c, card, pressed ? 1f : 0.88f);
+            c.save();
+            c.clipRect(0, 0, w, navLine);          // tucked behind the nav bar
+            drawCard(c, card, pressed ? 1f : 0.9f);
+            c.restore();
         }
 
         private void animateLift(float to) {
@@ -741,8 +751,9 @@ public class ShadeService extends AccessibilityService {
 
     /** The card sliding up out of its slot, drawn in a tall untouchable window. */
     private void pullOut(final ButtonView from, final RectF start) {
-        final int winH = Math.round(screenHeight() * 0.45f);
+        final int winH = Math.round(screenHeight() * 0.6f);
         final int offset = winH - from.getHeight();   // button-window coords -> this window's
+        final int clipBottom = offset + from.navLine; // keep the card behind the nav bar
         final View v = new View(this) {
             float t;
             {
@@ -765,12 +776,15 @@ public class ShadeService extends AccessibilityService {
             final RectF r = new RectF();
             @Override protected void onDraw(Canvas c) {
                 float rise = t * winH * 0.55f;
-                float scale = 1f + 0.28f * t;
+                float scale = 1f + 0.06f * t;
                 float cx = start.centerX(), cy = start.centerY() + offset - rise;
                 float hw = start.width() * scale / 2f, hh = start.height() * scale / 2f;
                 r.set(cx - hw, cy - hh, cx + hw, cy + hh);
-                float alpha = t < 0.45f ? 1f : Math.max(0f, 1f - (t - 0.45f) / 0.55f);
+                float alpha = t < 0.55f ? 1f : Math.max(0f, 1f - (t - 0.55f) / 0.45f);
+                c.save();
+                c.clipRect(0, 0, getWidth(), clipBottom);
                 drawCard(c, r, alpha);
+                c.restore();
             }
         };
         WindowManager.LayoutParams blp = (WindowManager.LayoutParams) from.getLayoutParams();

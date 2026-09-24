@@ -148,6 +148,15 @@ public class MainActivity extends Activity {
             if (!ShadeService.quickSettings()) toast("Enable TickerBar in Accessibility first"); }});
 
         // ---------------------------------------------------------- updates
+        section("Google search");
+        note("Your power button can only reach Gemini, so TickerBar adds its own ways into "
+                + "the Google search box:\n"
+                + "  \u2022 Quick Settings tile \u201cGoogle search\u201d \u2013 add it by editing your Control Centre tiles\n"
+                + "  \u2022 Nova \u2192 Gestures \u2192 Shortcuts \u2192 TickerBar: Google search\n"
+                + "  \u2022 Long-press the TickerBar icon");
+        btn("Test: open Google search", new Runnable() { public void run() {
+            startActivity(new Intent(MainActivity.this, SearchActivity.class)); }});
+
         section("Updates");
         final TextView upd = note("");
         btn("Check for updates", new Runnable() { public void run() {

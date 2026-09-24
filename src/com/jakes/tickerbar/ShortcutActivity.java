@@ -17,19 +17,28 @@ public class ShortcutActivity extends Activity {
         super.onCreate(s);
         String alias = getIntent().getComponent() == null ? ""
                 : getIntent().getComponent().getClassName();
-        boolean cc = alias.endsWith("ControlCentreShortcut");
-        String label = cc ? "Control Centre" : "Notifications";
-        int icon = cc ? R.drawable.ic_cc : R.drawable.ic_notif;
-        Intent launch = new Intent(Intent.ACTION_MAIN).setClass(this,
-                cc ? OpenControlCentreActivity.class : OpenNotificationsActivity.class);
+        String label, id;
+        int icon;
+        Class<?> target;
+        if (alias.endsWith("ControlCentreShortcut")) {
+            label = "Control Centre"; id = "pin_control_centre"; icon = R.drawable.ic_cc;
+            target = OpenControlCentreActivity.class;
+        } else if (alias.endsWith("SearchShortcut")) {
+            label = "Google search"; id = "pin_google_search"; icon = R.drawable.ic_search;
+            target = SearchActivity.class;
+        } else {
+            label = "Notifications"; id = "pin_notifications"; icon = R.drawable.ic_notif;
+            target = OpenNotificationsActivity.class;
+        }
+        Intent launch = new Intent(Intent.ACTION_MAIN).setClass(this, target);
 
         Intent result = null;
         ShortcutManager sm = getSystemService(ShortcutManager.class);
         if (sm != null) {
             // distinct IDs: pinned shortcuts may not reuse a manifest shortcut's ID
-            ShortcutInfo info = new ShortcutInfo.Builder(this, cc ? "pin_control_centre" : "pin_notifications")
+            ShortcutInfo info = new ShortcutInfo.Builder(this, id)
                     .setShortLabel(label)
-                    .setLongLabel("Open " + label)
+                    .setLongLabel(label.startsWith("Google") ? label : "Open " + label)
                     .setIcon(Icon.createWithResource(this, icon))
                     .setIntent(launch)
                     .build();

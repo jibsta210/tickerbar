@@ -62,7 +62,7 @@ public final class Prefs {
         DEF.put(ANIM_IN, 4);     DEF.put(ANIM_OUT, 4);    DEF.put(ANIM_MS, 380);
         DEF.put(SCROLL_MODE, 0); DEF.put(SPEED, 160);     DEF.put(DELAY, 700);
         DEF.put(SWIPE_ON, 0);    DEF.put(SWIPE_HOME, 0);  DEF.put(SWIPE_TRIGGER, 2);
-        DEF.put(SWIPE_POS, 2);   DEF.put(SWIPE_W, 12);    DEF.put(SWIPE_H, 0);
+        DEF.put(SWIPE_POS, 1);   DEF.put(SWIPE_W, 55);    DEF.put(SWIPE_H, 0);
         DEF.put(SWIPE_Y, 0);     DEF.put(SWIPE_DIST, 40); DEF.put(SWIPE_PILL, 1);
         DEF.put(SHADE_HOME, 1);
         DEF.put(CARD_HOME, 1);   DEF.put(CARD_LOCK, 1);   DEF.put(WALLET_QUICK, 1);
@@ -93,12 +93,14 @@ public final class Prefs {
     public static void migrate(Context c) {
         SharedPreferences p = get(c);
         int v = p.getInt(SCHEMA, 1);
-        if (v >= 3) return;
+        if (v >= 4) return;
         SharedPreferences.Editor e = p.edit();
         // v1.3: the swipe strip became a nav-bar button, so its old geometry no longer fits
         if (v < 2) e.remove(SWIPE_H).remove(SWIPE_W).remove(SWIPE_POS).remove(SWIPE_Y).remove(SWIPE_DIST);
         // v1.4: the button is swipe-only by request, and the 3D flip is the default animation
-        e.remove(SWIPE_TRIGGER).remove(ANIM_IN).remove(ANIM_OUT).remove(ANIM_MS);
-        e.putInt(SCHEMA, 3).apply();
+        if (v < 3) e.remove(SWIPE_TRIGGER).remove(ANIM_IN).remove(ANIM_OUT).remove(ANIM_MS);
+        // v1.6: the card became a centred, card-width white card (Samsung Pay style)
+        e.remove(SWIPE_POS).remove(SWIPE_W);
+        e.putInt(SCHEMA, 4).apply();
     }
 }

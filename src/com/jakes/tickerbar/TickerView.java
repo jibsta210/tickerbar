@@ -133,7 +133,7 @@ public class TickerView extends View {
         for (Line l : lines) {
             float overflow = l.width - l.virtW;
             if (mode == MODE_OFF || overflow <= 0 || l.virtW <= 0) continue;
-            float dist = mode == MODE_REVEAL ? overflow : l.width + loopGap;
+            float dist = mode == MODE_REVEAL ? overflow : l.width + loopGap + l.virtW;
             end = Math.max(end, startAt + delay + (long) (dist * 1000f / speed));
         }
         return end == 0 ? 0 : Math.max(0, end + HOLD_MS - now);
@@ -253,7 +253,6 @@ public class TickerView extends View {
 
             float overflow = l.width - l.virtW;
             float u = 0;              // virtual x of the start of the text
-            boolean copies = false;   // loop mode draws a trailing repeat
 
             if (mode != MODE_OFF && overflow > 0) {
                 float t = (now - startAt - delay) / 1000f;
@@ -264,8 +263,11 @@ public class TickerView extends View {
                     u = -d;
                     if (d < overflow) animating = true;
                 } else {
-                    u = -((t * speed) % (l.width + loopGap));
-                    copies = true;
+                    // One copy at a time, like a news ticker: scroll off to the left, a short
+                    // blank, then back in from the right edge and home to the start.
+                    float cycle = l.width + loopGap + l.virtW;
+                    float p = (t * speed) % cycle;
+                    u = p <= l.width ? -p : l.virtW + loopGap - (p - l.width);
                     animating = true;
                 }
             }
@@ -278,7 +280,6 @@ public class TickerView extends View {
                 c.save();
                 c.clipRect(a, l.top, b, l.bottom);
                 c.drawText(l.text, x, l.baseline, l.paint);
-                if (copies) c.drawText(l.text, x + l.width + loopGap, l.baseline, l.paint);
                 c.restore();
                 vs += b - a;
             }
