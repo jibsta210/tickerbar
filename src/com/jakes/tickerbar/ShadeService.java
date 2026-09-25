@@ -34,6 +34,7 @@ import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.RoundedCorner;
+import android.view.Surface;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowInsets;
@@ -190,6 +191,8 @@ public class ShadeService extends AccessibilityService {
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
         ui.post(new Runnable() { public void run() { applySettings(); } });   // rotation moves the cutout
+        // and the nav bar, whose insets can settle a beat after the rotation itself
+        ui.postDelayed(new Runnable() { public void run() { if (wm != null) updateCorner(); } }, 400);
     }
 
     @Override public void onInterrupt() {}
@@ -731,17 +734,21 @@ public class ShadeService extends AccessibilityService {
         return lp;
     }
 
-    /** Height of the bottom gesture / navigation zone. */
-    private int navZoneHeight() {
-        int inset = 0;
+    /** The gesture / navigation insets on each edge; the 3-button bar moves to a side in landscape. */
+    private Insets navInsets() {
         if (Build.VERSION.SDK_INT >= 30) {
             try {
-                Insets in = wm.getCurrentWindowMetrics().getWindowInsets()
+                return wm.getCurrentWindowMetrics().getWindowInsets()
                         .getInsets(WindowInsets.Type.mandatorySystemGestures()
                                 | WindowInsets.Type.navigationBars());
-                inset = in.bottom;
             } catch (Exception ignored) {}
         }
+        return Insets.NONE;
+    }
+
+    /** Height of the bottom gesture / navigation zone. */
+    private int navZoneHeight() {
+        int inset = navInsets().bottom;
         if (inset <= 0) {
             Resources sys = Resources.getSystem();
             int id = sys.getIdentifier("navigation_bar_height", "dimen", "android");
@@ -1107,12 +1114,25 @@ public class ShadeService extends AccessibilityService {
             return;
         }
         if (corner == null) corner = new CornerView();
-        int w = Prefs.n(this, Prefs.CORNER_W);
-        if (w <= 0) w = Math.max(dp(56), Math.round(screenWidth() * 0.15f));
-        int h = Math.max(dp(24), navZoneHeight());
-        WindowManager.LayoutParams lp = overlayParams(w, h,
-                passing ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
-        lp.gravity = Gravity.BOTTOM | (Prefs.n(this, Prefs.CORNER_SIDE) == 0 ? Gravity.LEFT : Gravity.RIGHT);
+        // length along the bar: sized off the short edge so it's the same in either orientation
+        int len = Prefs.n(this, Prefs.CORNER_W);
+        if (len <= 0) len = Math.max(dp(56), Math.round(Math.min(screenWidth(), screenHeight()) * 0.15f));
+        boolean right = Prefs.n(this, Prefs.CORNER_SIDE) != 0;
+        int flags = passing ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0;
+        Insets nav = navInsets();
+        WindowManager.LayoutParams lp;
+        if (Math.max(nav.left, nav.right) > nav.bottom) {
+            // Landscape 3-button nav stands up along a side. Run the zone down it, at the end
+            // that holds the same button it covered in portrait (the buttons don't move either).
+            lp = overlayParams(Math.max(dp(24), Math.max(nav.left, nav.right)), len, flags);
+            Display d = display();
+            boolean seascape = d != null && d.getRotation() == Surface.ROTATION_270;
+            lp.gravity = (nav.right >= nav.left ? Gravity.RIGHT : Gravity.LEFT)
+                    | (right != seascape ? Gravity.TOP : Gravity.BOTTOM);
+        } else {
+            lp = overlayParams(len, Math.max(dp(24), navZoneHeight()), flags);
+            lp.gravity = Gravity.BOTTOM | (right ? Gravity.RIGHT : Gravity.LEFT);
+        }
         lp.setTitle("TickerBar corner");
         try {
             if (cornerAttached) wm.updateViewLayout(corner, lp);
