@@ -63,7 +63,8 @@ public final class Prefs {
     public static final String CORNER_HINT   = "corner_hint";    // draw a dot where the zone is
     public static final String CORNER_TRIGGER= "corner_trigger"; // 0 long-press, 1 double-tap
     public static final String CORNER_HIDE_VIDEO = "corner_hide_video"; // step aside for fullscreen video
-    public static final String HIDE_FRONT    = "hide_front_app"; // no ticker for the app you're already in
+    public static final String HIDE_FRONT    = "hide_front_app"; // v1.9.6 switch, migrated to FRONT_MODE
+    public static final String FRONT_MODE    = "front_mode";     // app on screen: 0 show all, 1 skip what it clears, 2 hide all
 
     // updates
     public static final String AUTO_UPDATE   = "auto_update";
@@ -96,7 +97,7 @@ public final class Prefs {
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
         DEF.put(GOOGLE_MODE, 0);
         DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
-        DEF.put(CORNER_HIDE_VIDEO, 1); DEF.put(HIDE_FRONT, 1);
+        DEF.put(CORNER_HIDE_VIDEO, 1); DEF.put(FRONT_MODE, 1);
     }
 
     private Prefs() {}
@@ -123,6 +124,14 @@ public final class Prefs {
     /** One-off resets when a default changes meaning. */
     public static void migrate(Context c) {
         SharedPreferences p = get(c);
+        // v1.9.7: "quiet for the app you're in" grew a smarter default; switched off stays off.
+        // Keyed on the old setting itself rather than the schema, so it runs exactly once
+        // whatever schema number an install has reached.
+        if (p.contains(HIDE_FRONT)) {
+            SharedPreferences.Editor f = p.edit();
+            if (p.getInt(HIDE_FRONT, 1) == 0) f.putInt(FRONT_MODE, 0);
+            f.remove(HIDE_FRONT).apply();
+        }
         int v = p.getInt(SCHEMA, 1);
         if (v >= 4) return;
         SharedPreferences.Editor e = p.edit();

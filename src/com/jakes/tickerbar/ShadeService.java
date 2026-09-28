@@ -277,6 +277,13 @@ public class ShadeService extends AccessibilityService {
         dispatch(it, false);
     }
 
+    /** A notification was removed (the app cleared it, or the user did). */
+    public static void recall(final String key) {
+        final ShadeService s = self;
+        if (s == null || key == null) return;
+        s.ui.post(new Runnable() { public void run() { s.forget(key); } });
+    }
+
     public static boolean preview() {
         ShadeService s = self;
         android.graphics.drawable.Icon ic = s == null ? null
@@ -489,8 +496,9 @@ public class ShadeService extends AccessibilityService {
             }
         }
         if (it.autoCancel) TickerListener.cancel(it.key);
-        // you're heading into that app: its other queued notifications would only flash past
-        if (Prefs.on(this, Prefs.HIDE_FRONT) && it.pkg != null) {
+        // "hide all": you're heading into that app, so its queued notifications would only
+        // flash past (the default relies on the app clearing what you read, via recall)
+        if (Prefs.n(this, Prefs.FRONT_MODE) == 2 && it.pkg != null) {
             java.util.Iterator<Item> q = queue.iterator();
             while (q.hasNext()) if (it.pkg.equals(q.next().pkg)) q.remove();
         }
@@ -503,7 +511,21 @@ public class ShadeService extends AccessibilityService {
         // The lock screen hides sensitive notification content; scrolling it across a
         // locked phone would bypass that, so the ticker stays quiet until unlock.
         if (isLocked()) return;
-        if (!force && fromFrontApp(item)) return;   // you're already looking at it
+        if (!force && fromFrontApp(item)) {
+            // You're in that app. Messaging apps clear the notification for the chat you
+            // have open straight after posting it, so hold it a moment: if it's recalled,
+            // you were already reading it; if not, it's news (another chat, say).
+            int mode = Prefs.n(this, Prefs.FRONT_MODE);
+            if (mode == 2 || item.key == null) return;
+            hold(item);
+            return;
+        }
+        place(item);
+    }
+
+    /** Onto the ticker now, or into the queue behind what's showing. */
+    private void place(Item item) {
+        if (ticker == null || isLocked()) return;
         if (showing && Prefs.on(this, Prefs.QUEUE)) {
             if (queue.size() >= 8) queue.pollFirst();
             queue.addLast(item);
@@ -513,18 +535,40 @@ public class ShadeService extends AccessibilityService {
     }
 
     /**
-     * A notification from the app you're using is one you're already looking at (a new
-     * message in the chat you have open). We can't tell which chat is open without
-     * reading the screen, so the rule is per app, like the app's own in-app alerts.
+     * A notification from the app you're using may be one you're already looking at (a new
+     * message in the chat you have open). We can't see which chat is open without reading
+     * the screen, but the app knows: it clears that chat's notification. FRONT_MODE picks
+     * between trusting that (skip what it clears) and hiding the whole app.
      */
     private boolean fromFrontApp(Item it) {
         return it != null && it.pkg != null && it.pkg.equals(frontPkg)
-                && Prefs.on(this, Prefs.HIDE_FRONT);
+                && Prefs.n(this, Prefs.FRONT_MODE) != 0;
     }
 
-    /** Switching to an app clears its notifications from the ticker and the queue. */
+    private static final long RECALL_GRACE_MS = 1200;
+    /** Notifications from the app on screen, waiting to see whether the app clears them. */
+    private final java.util.HashMap<String, Item> held = new java.util.HashMap<String, Item>();
+
+    private void hold(final Item item) {
+        held.put(item.key, item);   // a newer post for the same chat replaces the older one
+        ui.postDelayed(new Runnable() { public void run() {
+            if (held.get(item.key) != item) return;   // recalled, or superseded
+            held.remove(item.key);
+            place(item);
+        }}, RECALL_GRACE_MS);
+    }
+
+    /** Take a removed notification off the ticker, out of the queue and out of the hold. */
+    private void forget(String key) {
+        held.remove(key);
+        java.util.Iterator<Item> i = queue.iterator();
+        while (i.hasNext()) if (key.equals(i.next().key)) i.remove();
+        if (showing && current != null && key.equals(current.key)) advance();
+    }
+
+    /** "Hide all": switching to an app clears its notifications from the ticker and the queue. */
     private void dropFrontApp() {
-        if (!Prefs.on(this, Prefs.HIDE_FRONT) || frontPkg == null) return;
+        if (Prefs.n(this, Prefs.FRONT_MODE) != 2 || frontPkg == null) return;
         java.util.Iterator<Item> i = queue.iterator();
         while (i.hasNext()) if (frontPkg.equals(i.next().pkg)) i.remove();
         if (showing && fromFrontApp(current)) advance();
@@ -533,6 +577,7 @@ public class ShadeService extends AccessibilityService {
     private void hideTickerNow() {
         ui.removeCallbacks(hideR);
         queue.clear();
+        held.clear();
         current = null;
         setTickerTouchable(false);
         if (ticker != null) {

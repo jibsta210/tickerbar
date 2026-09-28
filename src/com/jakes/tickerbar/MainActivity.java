@@ -81,8 +81,8 @@ public class MainActivity extends Activity {
         switchRow(c, "Queue notifications", "Off: the newest one replaces what's showing", Prefs.QUEUE);
         switchRow(c, "Skip silent notifications", null, Prefs.SKIP_SILENT);
         switchRow(c, "Skip ongoing ones", "Media, downloads, running services", Prefs.SKIP_ONGOING);
-        switchRow(c, "Quiet for the app you're in",
-                "No WhatsApp tickers while WhatsApp is open", Prefs.HIDE_FRONT);
+        choiceRow(c, "While you're in that app", Prefs.FRONT_MODE, new int[]{1, 2, 0},
+                new String[]{"Skip what it clears", "Hide all its notifications", "Show everything"});
         textRow(c, "Ignored apps", "Package names, comma separated", Prefs.IGNORE);
 
         // ---------------------------------------------------------- motion

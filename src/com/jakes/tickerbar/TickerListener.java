@@ -61,7 +61,10 @@ public class TickerListener extends NotificationListenerService {
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {
-        if (sbn != null) last.remove(sbn.getKey());
+        if (sbn == null) return;
+        last.remove(sbn.getKey());
+        // read in the app, swiped away, or replaced: the ticker shouldn't keep showing it
+        ShadeService.recall(sbn.getKey());
     }
 
     private boolean isSilent(String key) {
