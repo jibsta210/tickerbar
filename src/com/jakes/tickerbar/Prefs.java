@@ -62,6 +62,7 @@ public final class Prefs {
     public static final String CORNER_W      = "corner_w";       // px, 0 = auto
     public static final String CORNER_HINT   = "corner_hint";    // draw a dot where the zone is
     public static final String CORNER_TRIGGER= "corner_trigger"; // 0 long-press, 1 double-tap
+    public static final String CORNER_HIDE_VIDEO = "corner_hide_video"; // step aside for fullscreen video
 
     // updates
     public static final String AUTO_UPDATE   = "auto_update";
@@ -94,6 +95,7 @@ public final class Prefs {
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
         DEF.put(GOOGLE_MODE, 0);
         DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
+        DEF.put(CORNER_HIDE_VIDEO, 1);
     }
 
     private Prefs() {}

@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
         numberRow(c, "Card peek  · 0 = auto", Prefs.CARD_PEEK, "px");
         numberRow(c, "Width", Prefs.SWIPE_W, "%");
         numberRow(c, "Swipe area height  · 0 = nav bar", Prefs.SWIPE_H, "px");
-        numberRow(c, "Lift from bottom edge", Prefs.SWIPE_Y, "px");
+        numberRow(c, "Raise or lower  \u00b7 negative sinks it", Prefs.SWIPE_Y, "px");
         numberRow(c, "Swipe distance", Prefs.SWIPE_DIST, "px");
         textRow(c, "App to open", "Package name", Prefs.SWIPE_PKG);
         note(c, "Lives inside the nav bar, never inside apps. Taps on it pass through to your nav buttons. "
@@ -129,6 +129,8 @@ public class MainActivity extends Activity {
         numberRow(c, "Long-press hold time", Prefs.CORNER_MS, "ms");
         numberRow(c, "Zone width  · 0 = auto", Prefs.CORNER_W, "px");
         switchRow(c, "Show a dot where the zone is", null, Prefs.CORNER_HINT);
+        switchRow(c, "Step aside for fullscreen video",
+                "Hidden while the app on screen plays video in landscape", Prefs.CORNER_HIDE_VIDEO);
         note(c, "Anything that isn't your gesture passes straight through to the nav button underneath. "
                 + "In double-tap mode a single tap waits ~0.3 s to see if a second one follows.");
 

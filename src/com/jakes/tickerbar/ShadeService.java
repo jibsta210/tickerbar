@@ -3,6 +3,7 @@ package com.jakes.tickerbar;
 import android.accessibilityservice.AccessibilityService;
 import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.IntentFilter;
 import android.graphics.LinearGradient;
@@ -45,6 +46,10 @@ import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.Toast;
 
+import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -84,6 +89,7 @@ public class ShadeService extends AccessibilityService {
     // foreground tracking
     private String launcherPkg = "";
     private boolean onHome = true;
+    private String frontPkg;   // the app on screen, from window changes
 
     // lock state: nothing of ours appears on the lock screen
     private KeyguardManager keyguard;
@@ -207,6 +213,10 @@ public class ShadeService extends AccessibilityService {
         boolean ownApp = pkg.equals(getPackageName()) && e.getClassName() != null
                 && MainActivity.class.getName().contentEquals(e.getClassName());
         if (!ownApp && isTransient(pkg)) return;
+        if (!pkg.equals(frontPkg)) {
+            frontPkg = pkg;
+            updateCorner();   // the corner steps aside while the app in front plays fullscreen video
+        }
         boolean home = pkg.equals(launcherPkg);
         if (home != onHome) {
             onHome = home;
@@ -225,6 +235,7 @@ public class ShadeService extends AccessibilityService {
 
     private void teardown() {
         if (receiverOn) { try { unregisterReceiver(screenR); } catch (Exception ignored) {} receiverOn = false; }
+        stopMediaWatch();
         ui.removeCallbacksAndMessages(null);
         queue.clear();
         showing = false;
@@ -906,7 +917,12 @@ public class ShadeService extends AccessibilityService {
     /** How much of the card shows at rest, rising from the bottom edge of the screen. */
     private float peek(int windowH) {
         int set = Prefs.n(this, Prefs.CARD_PEEK);
-        return set > 0 ? Math.min(set, windowH) : Math.round(windowH * 0.45f);
+        float p = set > 0 ? Math.min(set, windowH) : Math.round(windowH * 0.45f);
+        // The window can't go below the screen edge, so a negative lift sinks the card
+        // into its slot instead; a sliver always stays so there's something to swipe.
+        int lift = Prefs.n(this, Prefs.SWIPE_Y);
+        if (lift < 0) p += lift;
+        return Math.max(dp(3), p);
     }
 
     /**
@@ -1105,7 +1121,8 @@ public class ShadeService extends AccessibilityService {
     /** A small invisible zone in a nav-bar corner. Long-press runs its action, on any screen. */
     private void updateCorner() {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
-        boolean want = Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive());
+        boolean want = Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive())
+                && !videoInFront();
         if (!want) {
             if (corner != null && cornerAttached) {
                 try { wm.removeViewImmediate(corner); } catch (Exception ignored) {}
@@ -1153,6 +1170,89 @@ public class ShadeService extends AccessibilityService {
         } else {
             openOrQueue(SearchActivity.searchIntent(this));
         }
+    }
+
+    // ------------------------------------------------------------ fullscreen video
+
+    /*
+     * An overlay can't tell when an app hides the system bars: its own insets never change
+     * (checked on Android 16), and asking the window list would mean reading screen content.
+     * Fullscreen video is the case that matters (the corner sits on the player's controls
+     * and steals double-tap-to-seek), and that's knowable: the app in front has a media
+     * session and the phone is in landscape. Media sessions are visible to us through
+     * notification access, which the ticker already has.
+     */
+    private MediaSessionManager msm;
+    private boolean mediaWatching;
+    private final List<MediaController> watched = new ArrayList<MediaController>();
+
+    private final MediaController.Callback mediaCb = new MediaController.Callback() {
+        @Override public void onPlaybackStateChanged(PlaybackState state) { updateCorner(); }
+        @Override public void onSessionDestroyed() { watchSessions(); updateCorner(); }
+    };
+
+    private final MediaSessionManager.OnActiveSessionsChangedListener sessionsL =
+            new MediaSessionManager.OnActiveSessionsChangedListener() {
+        public void onActiveSessionsChanged(List<MediaController> controllers) {
+            watchSessions();
+            updateCorner();
+        }
+    };
+
+    /** Needs notification access; retried each time it matters until it's granted. */
+    private void startMediaWatch() {
+        if (mediaWatching) return;
+        if (msm == null) msm = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
+        if (msm == null) return;
+        try {
+            msm.addOnActiveSessionsChangedListener(sessionsL, new ComponentName(this, TickerListener.class), ui);
+            mediaWatching = true;
+            watchSessions();
+        } catch (Exception ignored) {
+            // no notification access yet: fullscreen video can't be recognised
+        }
+    }
+
+    private void stopMediaWatch() {
+        if (msm != null && mediaWatching) {
+            try { msm.removeOnActiveSessionsChangedListener(sessionsL); } catch (Exception ignored) {}
+        }
+        mediaWatching = false;
+        for (MediaController mc : watched) {
+            try { mc.unregisterCallback(mediaCb); } catch (Exception ignored) {}
+        }
+        watched.clear();
+    }
+
+    /** Follow play/pause/stop on every active session. */
+    private void watchSessions() {
+        for (MediaController mc : watched) {
+            try { mc.unregisterCallback(mediaCb); } catch (Exception ignored) {}
+        }
+        watched.clear();
+        if (msm == null) return;
+        try {
+            for (MediaController mc : msm.getActiveSessions(new ComponentName(this, TickerListener.class))) {
+                mc.registerCallback(mediaCb, ui);
+                watched.add(mc);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** The app on screen has a live media session and the phone is sideways. */
+    private boolean videoInFront() {
+        if (frontPkg == null || !Prefs.on(this, Prefs.CORNER_HIDE_VIDEO)) return false;
+        if (screenWidth() <= screenHeight()) return false;
+        startMediaWatch();
+        for (MediaController mc : watched) {
+            if (!frontPkg.equals(mc.getPackageName())) continue;
+            PlaybackState s = mc.getPlaybackState();
+            if (s == null) continue;
+            int st = s.getState();
+            if (st != PlaybackState.STATE_NONE && st != PlaybackState.STATE_STOPPED
+                    && st != PlaybackState.STATE_ERROR) return true;
+        }
+        return false;
     }
 
     private final class CornerView extends View {
