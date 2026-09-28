@@ -216,6 +216,7 @@ public class ShadeService extends AccessibilityService {
         if (!pkg.equals(frontPkg)) {
             frontPkg = pkg;
             updateCorner();   // the corner steps aside while the app in front plays fullscreen video
+            dropFrontApp();
         }
         boolean home = pkg.equals(launcherPkg);
         if (home != onHome) {
@@ -488,6 +489,11 @@ public class ShadeService extends AccessibilityService {
             }
         }
         if (it.autoCancel) TickerListener.cancel(it.key);
+        // you're heading into that app: its other queued notifications would only flash past
+        if (Prefs.on(this, Prefs.HIDE_FRONT) && it.pkg != null) {
+            java.util.Iterator<Item> q = queue.iterator();
+            while (q.hasNext()) if (it.pkg.equals(q.next().pkg)) q.remove();
+        }
         advance();
     }
 
@@ -497,12 +503,31 @@ public class ShadeService extends AccessibilityService {
         // The lock screen hides sensitive notification content; scrolling it across a
         // locked phone would bypass that, so the ticker stays quiet until unlock.
         if (isLocked()) return;
+        if (!force && fromFrontApp(item)) return;   // you're already looking at it
         if (showing && Prefs.on(this, Prefs.QUEUE)) {
             if (queue.size() >= 8) queue.pollFirst();
             queue.addLast(item);
             return;
         }
         display(item, !showing);
+    }
+
+    /**
+     * A notification from the app you're using is one you're already looking at (a new
+     * message in the chat you have open). We can't tell which chat is open without
+     * reading the screen, so the rule is per app, like the app's own in-app alerts.
+     */
+    private boolean fromFrontApp(Item it) {
+        return it != null && it.pkg != null && it.pkg.equals(frontPkg)
+                && Prefs.on(this, Prefs.HIDE_FRONT);
+    }
+
+    /** Switching to an app clears its notifications from the ticker and the queue. */
+    private void dropFrontApp() {
+        if (!Prefs.on(this, Prefs.HIDE_FRONT) || frontPkg == null) return;
+        java.util.Iterator<Item> i = queue.iterator();
+        while (i.hasNext()) if (frontPkg.equals(i.next().pkg)) i.remove();
+        if (showing && fromFrontApp(current)) advance();
     }
 
     private void hideTickerNow() {
