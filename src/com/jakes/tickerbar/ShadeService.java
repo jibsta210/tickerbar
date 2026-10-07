@@ -46,6 +46,10 @@ import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.Toast;
 
+import android.media.AudioManager;
+import android.view.KeyEvent;
+import java.util.HashSet;
+
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
@@ -65,6 +69,7 @@ import java.util.List;
 public class ShadeService extends AccessibilityService {
 
     private static ShadeService self;
+    private final HashSet<Integer> volumeKeys = new HashSet<Integer>();
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private WindowManager wm;
@@ -183,6 +188,7 @@ public class ShadeService extends AccessibilityService {
     }
 
     @Override public boolean onUnbind(Intent intent) {
+        volumeKeys.clear();
         teardown();
         if (self == this) self = null;
         return super.onUnbind(intent);
@@ -201,7 +207,35 @@ public class ShadeService extends AccessibilityService {
         ui.postDelayed(new Runnable() { public void run() { if (wm != null) updateCorner(); } }, 400);
     }
 
-    @Override public void onInterrupt() {}
+    @Override public void onInterrupt() { volumeKeys.clear(); }
+
+    @Override protected boolean onKeyEvent(KeyEvent event) {
+        int key = event.getKeyCode();
+        if (key != KeyEvent.KEYCODE_VOLUME_UP && key != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
+        if (event.getAction() == KeyEvent.ACTION_UP) return volumeKeys.remove(key);
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (event.getRepeatCount() == 0) {
+            if (!Prefs.on(this, Prefs.VOLUME_ON) || audio.getMode() != AudioManager.MODE_NORMAL) return false;
+        } else if (!volumeKeys.contains(key)) return false;
+        int old = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+        int step = Prefs.n(this, Prefs.VOLUME_STEP);
+        if (step != 1 && step != 2 && step != 5 && step != 10) step = 5;
+        int next = Math.max(audio.getStreamMinVolume(AudioManager.STREAM_MUSIC),
+                Math.min(audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+                        old + (key == KeyEvent.KEYCODE_VOLUME_UP ? step : -step)));
+        try {
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, AudioManager.FLAG_SHOW_UI);
+            volumeKeys.add(key);
+            Log.i("TickerBarVolume", "button " + old + " -> " + next
+                    + "; actual=" + audio.getStreamVolume(AudioManager.STREAM_MUSIC));
+            return true;
+        } catch (SecurityException e) {
+            Log.w("TickerBarVolume", "Media volume change denied", e);
+            // A failed initial press belongs to Android; preserve any already-consumed stream.
+            return volumeKeys.contains(key);
+        }
+    }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
         if (e == null || e.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;

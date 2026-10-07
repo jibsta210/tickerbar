@@ -155,6 +155,14 @@ public class MainActivity extends Activity {
         note(c, "Bind “TickerBar: Notifications” and “TickerBar: Control Centre” "
                 + "in Nova → Gestures → Shortcuts.");
 
+        // ---------------------------------------------------------- volume
+        c = card("Volume buttons");
+        switchRow(c, "Fine volume control", "Smaller media-volume steps with the physical buttons", Prefs.VOLUME_ON);
+        choiceRow(c, "Levels per press", Prefs.VOLUME_STEP, new int[]{1, 2, 5, 10},
+                new String[]{"1 · finest", "2", "5 · default", "10"});
+        note(c, "Hold a button to repeat. Uses your phone’s existing volume levels (150 on POCO F9 Ultra). "
+                + "Call volume keeps its normal behavior. Turn this off to restore normal buttons.");
+
         // ---------------------------------------------------------- updates
         c = card("Updates");
         switchRow(c, "Update automatically", "Checks when you open TickerBar", Prefs.AUTO_UPDATE);

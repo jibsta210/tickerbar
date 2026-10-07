@@ -22,8 +22,7 @@ echo "[3/5] javac"
 find "$P/src" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
 javac -nowarn -Xlint:none -source 17 -target 17 \
   -classpath "$JAR" \
-  -d "$OUT/classes" @"$OUT/sources.txt" 2>&1 \
-  | grep -vE "^Note:|bootstrap class path|source value|target value|warning" || true
+  -d "$OUT/classes" @"$OUT/sources.txt"
 if [ -z "$(find "$OUT/classes" -name '*.class' -print -quit)" ]; then
   echo "COMPILE FAILED - no classes produced"; exit 1
 fi

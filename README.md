@@ -23,13 +23,17 @@ and HyperOS between them wouldn't do these things.
   through to the nav buttons underneath.
 - **Shortcuts** to open the notification shade and Control Centre separately, which
   HyperOS exposes no intent for, plus a Google Quick Settings tile.
+- **Fine volume buttons** adjust media volume by 1, 2, 5 or 10 native levels per press
+  (default 5), using the existing accessibility service. Holds repeat; call volume
+  keeps its normal behavior. Disable under Volume buttons to restore normal keys.
 - **Updates itself** from this repo's GitHub releases whenever you open it.
 
 ## Permissions
 
 | Permission | Why |
 |---|---|
-| Accessibility | draws the ticker, wallet card and corner zone above system UI, opens the shade |
+| Accessibility | draws the ticker, wallet card and corner zone above system UI, opens the shade, handles fine media-volume buttons |
+| Modify audio settings | sets media volume to the selected level |
 | Notification access | reading notifications for the ticker |
 
 On MIUI you may need **App info → ⋮ → Allow restricted settings** before notification

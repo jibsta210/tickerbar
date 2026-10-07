@@ -66,6 +66,10 @@ public final class Prefs {
     public static final String HIDE_FRONT    = "hide_front_app"; // v1.9.6 switch, migrated to FRONT_MODE
     public static final String FRONT_MODE    = "front_mode";     // app on screen: 0 show all, 1 skip what it clears, 2 hide all
 
+    // fine media volume buttons
+    public static final String VOLUME_ON = "volume_buttons_on";
+    public static final String VOLUME_STEP = "volume_button_step";
+
     // updates
     public static final String AUTO_UPDATE   = "auto_update";
     public static final String LAST_CHECK    = "last_update_check";
@@ -80,6 +84,7 @@ public final class Prefs {
     private static final String SCHEMA = "schema";
     private static final HashMap<String, Integer> DEF = new HashMap<String, Integer>();
     static {
+        DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);
         DEF.put(PAD, 120);       DEF.put(TEXT, 13);       DEF.put(OPACITY, 100);
