@@ -1,6 +1,10 @@
 package com.jakes.tickerbar;
 
 import android.app.PendingIntent;
+import android.app.Activity;
+import android.app.KeyguardManager;
+import android.util.Log;
+import java.util.concurrent.atomic.AtomicBoolean;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
@@ -18,6 +22,38 @@ public class Updater {
 
     public static final String REPO = "jibsta210/tickerbar";
     private static final Handler UI = new Handler(Looper.getMainLooper());
+
+    private static final AtomicBoolean BUSY = new AtomicBoolean();
+    private static Intent pendingConfirmation;
+    private static java.lang.ref.WeakReference<Activity> foreground = new java.lang.ref.WeakReference<Activity>(null);
+
+    static void foreground(Activity activity) { foreground = new java.lang.ref.WeakReference<Activity>(activity); }
+    static void background(Activity activity) {
+        if (foreground.get() == activity) foreground.clear();
+    }
+
+    static boolean ready(Context ctx) {
+        KeyguardManager keyguard = (KeyguardManager) ctx.getSystemService(Context.KEYGUARD_SERVICE);
+        return ctx instanceof Activity && foreground.get() == ctx && !((Activity) ctx).isFinishing()
+                && !((Activity) ctx).isDestroyed() && ((Activity) ctx).hasWindowFocus()
+                && (keyguard == null || !keyguard.isKeyguardLocked());
+    }
+
+    static void finished() { BUSY.set(false); pendingConfirmation = null; }
+
+    static void confirmWhenVisible(Intent intent) {
+        pendingConfirmation = intent;
+        Activity activity = foreground.get();
+        if (activity != null) resumeConfirmation(activity);
+    }
+
+    static boolean resumeConfirmation(Activity activity) {
+        if (pendingConfirmation == null || !ready(activity)) return false;
+        Intent intent = pendingConfirmation;
+        pendingConfirmation = null;
+        activity.startActivity(intent);
+        return true;
+    }
 
     public interface Cb { void msg(String s); }
 
@@ -46,7 +82,7 @@ public class Updater {
      * @return true if a check was started
      */
     public static boolean autoCheck(Context ctx, Cb cb) {
-        if (!Prefs.on(ctx, Prefs.AUTO_UPDATE)) return false;
+        if (!ready(ctx) || BUSY.get() || !Prefs.on(ctx, Prefs.AUTO_UPDATE)) return false;
         long now = System.currentTimeMillis();
         long last = Prefs.get(ctx).getLong(Prefs.LAST_CHECK, 0);
         if (now - last < 60 * 1000L) return false;   // just skips re-checks when bouncing back from a settings screen
@@ -56,6 +92,8 @@ public class Updater {
     }
 
     public static void checkAndInstall(final Context ctx, final Cb cb) {
+        if (!BUSY.compareAndSet(false, true)) { post(cb, "Update already in progress"); return; }
+        Log.i("TickerBarUpdate", "Checking release; foreground=" + ready(ctx));
         new Thread(new Runnable() { public void run() {
             try {
                 String cur = ctx.getPackageManager()
@@ -65,7 +103,7 @@ public class Updater {
                 JSONObject rel = new JSONObject(get(
                         "https://api.github.com/repos/" + REPO + "/releases/latest"));
                 String tag = rel.optString("tag_name", "");
-                if (cmp(tag, cur) <= 0) { post(cb, "Up to date \u00b7 v" + cur); return; }
+                if (cmp(tag, cur) <= 0) { finished(); post(cb, "Up to date \u00b7 v" + cur); return; }
 
                 String url = null;
                 JSONArray assets = rel.optJSONArray("assets");
@@ -75,12 +113,13 @@ public class Updater {
                         url = a.optString("browser_download_url"); break;
                     }
                 }
-                if (url == null) { post(cb, "Release " + tag + " has no APK asset"); return; }
+                if (url == null) { finished(); post(cb, "Release " + tag + " has no APK asset"); return; }
 
                 post(cb, "Downloading " + tag + "\u2026");
-                install(ctx, url);
-                post(cb, "Installing " + tag + " \u2013 TickerBar restarts when it's done");
+                install(ctx, url, cb);
             } catch (Exception e) {
+                finished();
+                Log.e("TickerBarUpdate", "Update preparation failed", e);
                 post(cb, "Couldn't check for updates \u2013 " + e.getClass().getSimpleName());
             }
         }}).start();
@@ -99,36 +138,57 @@ public class Updater {
         return bo.toString("UTF-8");
     }
 
-    private static void install(Context ctx, String apkUrl) throws Exception {
-        PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
+    private static void install(final Context ctx, String apkUrl, final Cb cb) throws Exception {
+        final PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams sp = new PackageInstaller.SessionParams(
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL);
         sp.setAppPackageName(ctx.getPackageName());
         if (android.os.Build.VERSION.SDK_INT >= 31) {
-            // Once TickerBar installed itself, Android 12+ lets it update without a prompt.
-            // The first time (installed from a browser or adb) the system still asks.
-            sp.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+            // HyperOS rejects the silent path with INSTALL_FAILED_ABORTED: Permission denied.
+            // Ask for the supported system confirmation on the first attempt.
+            sp.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED);
         }
-        int id = pi.createSession(sp);
-        PackageInstaller.Session session = pi.openSession(id);
-
-        HttpURLConnection c = (HttpURLConnection) new URL(apkUrl).openConnection();
-        c.setInstanceFollowRedirects(true);
-        c.setRequestProperty("User-Agent", "TickerBar");
-        c.setConnectTimeout(15000); c.setReadTimeout(60000);
-        InputStream in = c.getInputStream();
-        OutputStream out = session.openWrite("tickerbar", 0, -1);
-        byte[] b = new byte[16384]; int n;
-        while ((n = in.read(b)) > 0) out.write(b, 0, n);
-        session.fsync(out);
-        out.close(); in.close(); c.disconnect();
-
-        Intent i = new Intent(ctx, InstallReceiver.class);
-        PendingIntent p = PendingIntent.getBroadcast(ctx, id, i,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
-        // the update kills this process; the service brings the app back once it's in
-        Prefs.get(ctx).edit().putLong(Prefs.RELAUNCH_AT, System.currentTimeMillis()).commit();
-        session.commit(p.getIntentSender());
-        session.close();
+        final int id = pi.createSession(sp);
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(apkUrl).openConnection();
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("User-Agent", "TickerBar");
+            c.setConnectTimeout(15000); c.setReadTimeout(60000);
+            try (PackageInstaller.Session session = pi.openSession(id);
+                 InputStream in = c.getInputStream();
+                 OutputStream out = session.openWrite("tickerbar", 0, -1)) {
+                byte[] b = new byte[16384]; int n;
+                while ((n = in.read(b)) > 0) out.write(b, 0, n);
+                session.fsync(out);
+            } finally { c.disconnect(); }
+        } catch (Exception e) {
+            pi.abandonSession(id);
+            throw e;
+        }
+        UI.post(new Runnable() { public void run() {
+            if (!ready(ctx)) {
+                pi.abandonSession(id);
+                Prefs.get(ctx).edit().remove(Prefs.LAST_CHECK).apply();
+                finished();
+                cb.msg("Update available — reopen TickerBar to install");
+                Log.i("TickerBarUpdate", "Deferred install: app is no longer visible and unlocked");
+                return;
+            }
+            try (PackageInstaller.Session session = pi.openSession(id)) {
+                Intent i = new Intent(ctx, InstallReceiver.class);
+                PendingIntent p = PendingIntent.getBroadcast(ctx, id, i,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+                Prefs.get(ctx).edit().putLong(Prefs.RELAUNCH_AT, System.currentTimeMillis()).commit();
+                Log.i("TickerBarUpdate", "Committing session " + id + " with system confirmation");
+                session.commit(p.getIntentSender());
+                cb.msg("Confirm the update — TickerBar restarts when it is installed");
+            } catch (Exception e) {
+                pi.abandonSession(id);
+                Prefs.get(ctx).edit().remove(Prefs.RELAUNCH_AT).apply();
+                finished();
+                Log.e("TickerBarUpdate", "Could not start installation", e);
+                cb.msg("Could not start update — " + e.getClass().getSimpleName());
+            }
+        }});
     }
 }

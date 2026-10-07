@@ -10,18 +10,23 @@ public class InstallReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context c, Intent i) {
         int status = i.getIntExtra(PackageInstaller.EXTRA_STATUS,
                 PackageInstaller.STATUS_FAILURE);
+        android.util.Log.i("TickerBarUpdate", "Installer status=" + status + " message="
+                + i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
         switch (status) {
             case PackageInstaller.STATUS_PENDING_USER_ACTION:
                 Intent confirm = i.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm != null) {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    c.startActivity(confirm);
+                    // Launch only from the visible activity; otherwise resume on next open.
+                    Updater.confirmWhenVisible(confirm);
                 }
                 break;
             case PackageInstaller.STATUS_SUCCESS:
+                Updater.finished();
                 Toast.makeText(c, "TickerBar updated", Toast.LENGTH_LONG).show();
                 break;
             default:
+                Updater.finished();
                 Prefs.get(c).edit().remove(Prefs.RELAUNCH_AT).apply();
                 String msg = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
                 Toast.makeText(c, "Update failed: " + msg, Toast.LENGTH_LONG).show();

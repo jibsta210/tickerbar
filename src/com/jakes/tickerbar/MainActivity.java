@@ -37,6 +37,16 @@ public class MainActivity extends Activity {
 
     static final String EXTRA_UPDATED = "updated";
 
+    private boolean resumed;
+    private final android.os.Handler updateHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable autoUpdate = new Runnable() { public void run() {
+        if (!resumed || !Updater.ready(MainActivity.this)) return;
+        if (Updater.resumeConfirmation(MainActivity.this)) return;
+        if (Updater.autoCheck(MainActivity.this, new Updater.Cb() {
+            public void msg(String m) { updateLine.setText(m); }
+        })) updateLine.setText("Checking for updates…");
+    }};
+
     private Palette pal;
     private LinearLayout col;
     private TextView updateLine;
@@ -180,6 +190,8 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        resumed = true;
+        Updater.foreground(this);
         String l = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
         boolean nl = l != null && l.contains(getPackageName() + "/");
         String a = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
@@ -189,9 +201,25 @@ public class MainActivity extends Activity {
         chip(chipNotif, nl ? "Notifications on" : "Notifications off", nl ? 1 : -1);
         ShadeService.refresh();
 
-        if (Updater.autoCheck(this, new Updater.Cb() {
-            public void msg(String m) { updateLine.setText(m); }
-        })) updateLine.setText("Checking for updates…");
+        scheduleAutoUpdate();
+    }
+
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (focused) scheduleAutoUpdate();
+        else updateHandler.removeCallbacks(autoUpdate);
+    }
+
+    private void scheduleAutoUpdate() {
+        updateHandler.removeCallbacks(autoUpdate);
+        if (resumed) updateHandler.postDelayed(autoUpdate, 600);
+    }
+
+    @Override protected void onPause() {
+        resumed = false;
+        Updater.background(this);
+        updateHandler.removeCallbacks(autoUpdate);
+        super.onPause();
     }
 
     // ================================================================= header

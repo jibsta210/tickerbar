@@ -26,7 +26,9 @@ and HyperOS between them wouldn't do these things.
 - **Fine volume buttons** adjust media volume by 1, 2, 5 or 10 native levels per press
   (default 5), using the existing accessibility service. Holds repeat; call volume
   keeps its normal behavior. Disable under Volume buttons to restore normal keys.
-- **Updates itself** from this repo's GitHub releases whenever you open it.
+- **Checks for updates** from this repo's GitHub releases when you open it, downloads
+  automatically, then shows the system install confirmation. Waits until the app is
+  visible and unlocked; avoids the silent-install path rejected by HyperOS.
 
 ## Permissions
 
