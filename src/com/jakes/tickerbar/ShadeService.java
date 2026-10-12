@@ -207,17 +207,50 @@ public class ShadeService extends AccessibilityService {
         ui.postDelayed(new Runnable() { public void run() { if (wm != null) updateCorner(); } }, 400);
     }
 
-    @Override public void onInterrupt() { volumeKeys.clear(); }
+    @Override public void onInterrupt() { volumeKeys.clear(); stopVolumeRepeat(); }
 
     @Override protected boolean onKeyEvent(KeyEvent event) {
-        int key = event.getKeyCode();
+        final int key = event.getKeyCode();
         if (key != KeyEvent.KEYCODE_VOLUME_UP && key != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
-        if (event.getAction() == KeyEvent.ACTION_UP) return volumeKeys.remove(key);
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            stopVolumeRepeat();
+            return volumeKeys.remove(key);
+        }
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+        // Holding: the system's key repeats don't reliably reach an accessibility service,
+        // so we run our own repeat and just swallow any that do arrive.
+        if (event.getRepeatCount() > 0) return volumeKeys.contains(key);
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
-        if (event.getRepeatCount() == 0) {
-            if (!Prefs.on(this, Prefs.VOLUME_ON) || audio.getMode() != AudioManager.MODE_NORMAL) return false;
-        } else if (!volumeKeys.contains(key)) return false;
+        if (!Prefs.on(this, Prefs.VOLUME_ON) || audio.getMode() != AudioManager.MODE_NORMAL) return false;
+        if (!stepVolume(key)) return false;
+        volumeKeys.add(key);
+        stopVolumeRepeat();
+        heldKey = key;
+        heldSince = SystemClock.uptimeMillis();
+        ui.postDelayed(volumeRepeatR, VOLUME_HOLD_MS);
+        return true;
+    }
+
+    private static final long VOLUME_HOLD_MS = 400, VOLUME_REPEAT_MS = 90, VOLUME_HOLD_MAX_MS = 8000;
+    private int heldKey;
+    private long heldSince;
+
+    /** Keeps stepping while a volume button is held; gives up if the release never arrives. */
+    private final Runnable volumeRepeatR = new Runnable() { public void run() {
+        if (heldKey == 0 || !volumeKeys.contains(heldKey)
+                || SystemClock.uptimeMillis() - heldSince > VOLUME_HOLD_MAX_MS) { heldKey = 0; return; }
+        if (!stepVolume(heldKey)) { heldKey = 0; return; }
+        ui.postDelayed(this, VOLUME_REPEAT_MS);
+    }};
+
+    private void stopVolumeRepeat() {
+        heldKey = 0;
+        ui.removeCallbacks(volumeRepeatR);
+    }
+
+    /** One step of media volume; false when Android refused or there's nowhere left to go. */
+    private boolean stepVolume(int key) {
+        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         int old = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
         int step = Prefs.n(this, Prefs.VOLUME_STEP);
         if (step != 1 && step != 2 && step != 5 && step != 10) step = 5;
@@ -226,14 +259,12 @@ public class ShadeService extends AccessibilityService {
                         old + (key == KeyEvent.KEYCODE_VOLUME_UP ? step : -step)));
         try {
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, AudioManager.FLAG_SHOW_UI);
-            volumeKeys.add(key);
             Log.i("TickerBarVolume", "button " + old + " -> " + next
                     + "; actual=" + audio.getStreamVolume(AudioManager.STREAM_MUSIC));
             return true;
         } catch (SecurityException e) {
             Log.w("TickerBarVolume", "Media volume change denied", e);
-            // A failed initial press belongs to Android; preserve any already-consumed stream.
-            return volumeKeys.contains(key);
+            return false;
         }
     }
 
