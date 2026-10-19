@@ -222,6 +222,10 @@ public class ShadeService extends AccessibilityService {
         if (event.getRepeatCount() > 0) return volumeKeys.contains(key);
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         if (!Prefs.on(this, Prefs.VOLUME_ON) || audio.getMode() != AudioManager.MODE_NORMAL) return false;
+        // Only take the buttons when they'd change this phone's media volume anyway: something
+        // playing here, nothing casting. Otherwise (casting, ringer, nothing playing) the
+        // system knows what the press is for, so it gets it untouched.
+        if (!audio.isMusicActive() || castSession() != null) return false;
         if (!stepVolume(key)) return false;
         volumeKeys.add(key);
         stopVolumeRepeat();
@@ -250,20 +254,6 @@ public class ShadeService extends AccessibilityService {
 
     /** One step of media volume; false when Android refused or there's nowhere left to go. */
     private boolean stepVolume(int key) {
-        // Casting: the buttons belong to the cast device, as they would without us.
-        MediaController cast = castSession();
-        if (cast != null) {
-            try {
-                cast.adjustVolume(key == KeyEvent.KEYCODE_VOLUME_UP
-                        ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
-                Log.i("TickerBarVolume", "cast volume " + (key == KeyEvent.KEYCODE_VOLUME_UP ? "up" : "down")
-                        + " on " + cast.getPackageName());
-                return true;
-            } catch (Exception e) {
-                Log.w("TickerBarVolume", "Cast volume change failed", e);
-                return false;
-            }
-        }
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         int old = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
         int step = Prefs.n(this, Prefs.VOLUME_STEP);
