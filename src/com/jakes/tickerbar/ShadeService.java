@@ -250,6 +250,20 @@ public class ShadeService extends AccessibilityService {
 
     /** One step of media volume; false when Android refused or there's nowhere left to go. */
     private boolean stepVolume(int key) {
+        // Casting: the buttons belong to the cast device, as they would without us.
+        MediaController cast = castSession();
+        if (cast != null) {
+            try {
+                cast.adjustVolume(key == KeyEvent.KEYCODE_VOLUME_UP
+                        ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                Log.i("TickerBarVolume", "cast volume " + (key == KeyEvent.KEYCODE_VOLUME_UP ? "up" : "down")
+                        + " on " + cast.getPackageName());
+                return true;
+            } catch (Exception e) {
+                Log.w("TickerBarVolume", "Cast volume change failed", e);
+                return false;
+            }
+        }
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         int old = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
         int step = Prefs.n(this, Prefs.VOLUME_STEP);
@@ -1335,6 +1349,22 @@ public class ShadeService extends AccessibilityService {
     };
 
     /** Needs notification access; retried each time it matters until it's granted. */
+    /** An active session playing on another device (Chromecast etc.) whose volume we can change; playing ones first. */
+    private MediaController castSession() {
+        startMediaWatch();
+        MediaController paused = null;
+        for (MediaController mc : watched) {
+            MediaController.PlaybackInfo pi;
+            try { pi = mc.getPlaybackInfo(); } catch (Exception e) { continue; }
+            if (pi == null || pi.getPlaybackType() != MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE
+                    || pi.getVolumeControl() == android.media.VolumeProvider.VOLUME_CONTROL_FIXED) continue;
+            PlaybackState st = mc.getPlaybackState();
+            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) return mc;
+            if (paused == null) paused = mc;
+        }
+        return paused;
+    }
+
     private void startMediaWatch() {
         if (mediaWatching) return;
         if (msm == null) msm = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
