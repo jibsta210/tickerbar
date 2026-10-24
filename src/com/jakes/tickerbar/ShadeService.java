@@ -306,13 +306,21 @@ public class ShadeService extends AccessibilityService {
             if (next == AudioManager.RINGER_MODE_SILENT || mode == AudioManager.RINGER_MODE_SILENT) {
                 if (nm != null && !nm.isNotificationPolicyAccessGranted()) {
                     Log.w("TickerBarVolume", "silent needs Do Not Disturb access");
+                    if (!repeat) android.widget.Toast.makeText(this,
+                            "TickerBar needs Do Not Disturb access for silent (TickerBar \u2192 Allow silent mode)",
+                            android.widget.Toast.LENGTH_LONG).show();
                     showRinger(audio);
-                    return !repeat;   // swallow the press; Settings shows how to grant access
+                    return false;
                 }
             }
             if (dnd && nm != null)   // leaving silent: Do Not Disturb has to go off as well
                 nm.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_ALL);
             audio.setRingerMode(next);
+            // HyperOS ignores a silent ringer mode from apps; its silent is Do Not Disturb, so
+            // switch that on directly when the ringer didn't take
+            if (next == AudioManager.RINGER_MODE_SILENT && nm != null
+                    && nm.getCurrentInterruptionFilter() <= android.app.NotificationManager.INTERRUPTION_FILTER_ALL)
+                nm.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY);
             if (next == AudioManager.RINGER_MODE_NORMAL)
                 audio.setStreamVolume(AudioManager.STREAM_RING, min, AudioManager.FLAG_SHOW_UI);
             else showRinger(audio);
