@@ -69,6 +69,7 @@ public final class Prefs {
     // fine media volume buttons
     public static final String VOLUME_ON = "volume_buttons_on";
     public static final String VOLUME_STEP = "volume_button_step";
+    public static final String ONE_SHADE    = "one_shade";      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts
     public static final String VOL_REPEAT_MS = "volume_repeat_ms"; // between steps while held
@@ -88,7 +89,7 @@ public final class Prefs {
     private static final String SCHEMA = "schema";
     private static final HashMap<String, Integer> DEF = new HashMap<String, Integer>();
     static {
-        DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5); DEF.put(RINGER_CYCLE, 0);
+        DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5); DEF.put(RINGER_CYCLE, 0); DEF.put(ONE_SHADE, 0);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);
@@ -108,6 +109,12 @@ public final class Prefs {
         DEF.put(GOOGLE_MODE, 0);
         DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
         DEF.put(CORNER_HIDE_VIDEO, 1); DEF.put(FRONT_MODE, 1);
+    }
+
+    static {
+        // one-shade tiles: the first six sit in the first row, the rest only when expanded
+        for (int i = 0; i < UnifiedShade.TILE_IDS.length; i++)
+            DEF.put(UnifiedShade.placeKey(UnifiedShade.TILE_IDS[i]), UnifiedShade.defaultPlace(i));
     }
 
     private Prefs() {}

@@ -156,6 +156,22 @@ public class MainActivity extends Activity {
                 + "TickerBar shortcut for Nova gestures.");
 
         // ---------------------------------------------------------- shade
+        c = card("One shade");
+        switchRow(c, "One shade like stock Android",
+                "Pull down from the status bar for quick settings and notifications together", Prefs.ONE_SHADE);
+        actionRow(c, "Allow brightness and auto-rotate", "Lets the shade's slider and rotate tile change them",
+                new Runnable() { public void run() {
+                    try { startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                            Uri.parse("package:" + getPackageName()))); }
+                    catch (Exception e) { toast("Open Settings \u2192 Apps \u2192 TickerBar \u2192 Modify system settings"); } }});
+        for (int i = 0; i < UnifiedShade.TILE_IDS.length; i++)
+            choiceRow(c, UnifiedShade.TILE_NAMES[i], UnifiedShade.placeKey(UnifiedShade.TILE_IDS[i]),
+                    new int[]{UnifiedShade.PLACE_BOTH, UnifiedShade.PLACE_GRID, UnifiedShade.PLACE_HIDDEN},
+                    new String[]{"First row + expanded", "Expanded only", "Hidden"});
+        note(c, "The first row shows up to six tiles. Wi-Fi, Bluetooth, mobile data, airplane mode and "
+                + "location are switched by Android itself, so those tiles open its panel for them. "
+                + "The lock screen and landscape keep the system shade.");
+
         c = card("Shade shortcuts");
         switchRow(c, "Only from the home screen", null, Prefs.SHADE_HOME);
         actionRow(c, "Open notifications", null, new Runnable() { public void run() {

@@ -78,6 +78,9 @@ public class ShadeService extends AccessibilityService {
     private TickerView ticker;
     private WindowManager.LayoutParams tickerLp;
     private Item current;   // what the ticker is showing, for tap-to-open
+    private UnifiedShade shade;          // the one-shade replacement, when switched on
+    private CatcherView catcher;         // strip over the status bar that catches the pull
+    private boolean catcherAttached, tickerTakesTouch;
     private boolean showing;
     private final ArrayDeque<Item> queue = new ArrayDeque<Item>();
     private final Runnable hideR = new Runnable() { public void run() { maybeHide(); } };
@@ -116,6 +119,7 @@ public class ShadeService extends AccessibilityService {
             if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) {
                 pendingTarget = null;
                 hideTickerNow();   // never carry notification text onto the lock screen
+                if (shade != null) shade.closeNow();
             }
             // The unlock broadcast can arrive before the keyguard reports unlocked (or not
             // at all), so look again a few times rather than trusting a single signal.
@@ -202,6 +206,7 @@ public class ShadeService extends AccessibilityService {
 
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
+        if (shade != null) shade.closeNow();   // laid out for the old size
         ui.post(new Runnable() { public void run() { applySettings(); } });   // rotation moves the cutout
         // and the nav bar, whose insets can settle a beat after the rotation itself
         ui.postDelayed(new Runnable() { public void run() { if (wm != null) updateCorner(); } }, 400);
@@ -378,6 +383,7 @@ public class ShadeService extends AccessibilityService {
         if (!ownApp && isTransient(pkg)) return;
         if (!pkg.equals(frontPkg)) {
             frontPkg = pkg;
+            if (shade != null && shade.isOpen()) shade.closeNow();   // something opened over it
             updateCorner();   // the corner steps aside while the app in front plays fullscreen video
             dropFrontApp();
         }
@@ -399,6 +405,11 @@ public class ShadeService extends AccessibilityService {
 
     private void teardown() {
         if (receiverOn) { try { unregisterReceiver(screenR); } catch (Exception ignored) {} receiverOn = false; }
+        if (shade != null) shade.closeNow();
+        if (catcher != null && catcherAttached && wm != null) {
+            try { wm.removeViewImmediate(catcher); } catch (Exception ignored) {}
+        }
+        catcherAttached = false;
         stopMediaWatch();
         ui.removeCallbacksAndMessages(null);
         queue.clear();
@@ -428,12 +439,23 @@ public class ShadeService extends AccessibilityService {
 
     public static boolean notifications() {
         ShadeService s = self;
+        if (s != null && s.oneShade()) { s.openShade(); return true; }
         return s != null && s.performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
     }
 
     public static boolean quickSettings() {
         ShadeService s = self;
+        if (s != null && s.oneShade()) { s.openShade(); return true; }
         return s != null && s.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS);
+    }
+
+    /** The listener saw a post or removal: keep an open shade's list current. */
+    public static void notificationsChanged() {
+        final ShadeService s = self;
+        if (s == null) return;
+        s.ui.post(new Runnable() { public void run() {
+            if (s.shade != null && s.shade.isOpen()) s.shade.refreshNotifications();
+        }});
     }
 
     public static void post(Item it) {
@@ -574,6 +596,8 @@ public class ShadeService extends AccessibilityService {
         if (flags == tickerLp.flags) return;
         tickerLp.flags = flags;
         try { wm.updateViewLayout(ticker, tickerLp); } catch (Exception ignored) {}
+        tickerTakesTouch = on;   // the ticker sits under the catcher; let its taps through
+        updateCatcher();
     }
 
     /**
@@ -621,6 +645,7 @@ public class ShadeService extends AccessibilityService {
     /** A pull down on the ticker opens the shade the status bar would have. */
     private void pullShade(float x) {
         hideTickerNow();
+        if (oneShade()) { openShade(); return; }
         // HyperOS splits the shade: pulling from the right opens Control Centre
         String make = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(java.util.Locale.ROOT);
         boolean split = make.contains("xiaomi") || make.contains("redmi") || make.contains("poco");
@@ -634,23 +659,7 @@ public class ShadeService extends AccessibilityService {
         if (it == null) return;
         if (isLocked()) { hideTickerNow(); return; }
         boolean opened = false;
-        if (it.intent != null) {
-            try {
-                android.os.Bundle opts = null;
-                if (Build.VERSION.SDK_INT >= 34) {
-                    // lend the app our right to start an activity from the background,
-                    // the way the shade does when you tap a notification
-                    android.app.ActivityOptions o = android.app.ActivityOptions.makeBasic();
-                    o.setPendingIntentBackgroundActivityStartMode(
-                            android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
-                    opts = o.toBundle();
-                }
-                it.intent.send(this, 0, null, null, null, null, opts);
-                opened = true;
-            } catch (Exception ignored) {
-                // cancelled by the app since it posted; fall back to opening the app
-            }
-        }
+        if (it.intent != null) opened = sendPending(it.intent);   // false: cancelled since; open the app
         if (!opened && it.pkg != null) {
             Intent launch = getPackageManager().getLaunchIntentForPackage(it.pkg);
             if (launch != null) {
@@ -689,6 +698,7 @@ public class ShadeService extends AccessibilityService {
     /** Onto the ticker now, or into the queue behind what's showing. */
     private void place(Item item) {
         if (ticker == null || isLocked()) return;
+        if (shade != null && shade.isOpen()) return;   // it's in the list you're looking at
         if (showing && Prefs.on(this, Prefs.QUEUE)) {
             if (queue.size() >= 8) queue.pollFirst();
             queue.addLast(item);
@@ -937,6 +947,7 @@ public class ShadeService extends AccessibilityService {
     private void updateButton() {
         if (wm == null) return;
         updateCorner();
+        updateCatcher();
         // Samsung-style rules: home screen and/or lock screen, never inside apps.
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         boolean screenOn = pm == null || pm.isInteractive();
@@ -1112,13 +1123,154 @@ public class ShadeService extends AccessibilityService {
     }
 
     private void setZonesTouchable(boolean on) {
-        View[] zones = {buttonAttached ? button : null, cornerAttached ? corner : null};
+        View[] zones = {buttonAttached ? button : null, cornerAttached ? corner : null,
+                catcherAttached ? catcher : null};
         for (View v : zones) {
             if (v == null) continue;
             WindowManager.LayoutParams lp = (WindowManager.LayoutParams) v.getLayoutParams();
-            if (on) lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            if (on && !(v == catcher && tickerTakesTouch)) lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
             else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
             try { wm.updateViewLayout(v, lp); } catch (Exception ignored) {}
+        }
+    }
+
+    // ------------------------------------------------------------ one shade
+
+    /** Send a notification's intent as the shade would, lending our right to start activities. */
+    boolean sendPending(android.app.PendingIntent pi) {
+        try {
+            android.os.Bundle opts = null;
+            if (Build.VERSION.SDK_INT >= 34) {
+                android.app.ActivityOptions o = android.app.ActivityOptions.makeBasic();
+                o.setPendingIntentBackgroundActivityStartMode(
+                        android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                opts = o.toBundle();
+            }
+            pi.send(this, 0, null, null, null, null, opts);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean oneShade() { return Prefs.on(this, Prefs.ONE_SHADE); }
+
+    private UnifiedShade shade() {
+        if (shade == null) shade = new UnifiedShade(this);
+        return shade;
+    }
+
+    void openShade() {
+        if (wm == null || isLocked()) { performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS); return; }
+        hideTickerNow();
+        shade().openAnimated();
+    }
+
+    void startFromShade(Intent i) {
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try { startActivity(i); }
+        catch (Exception e) { Toast.makeText(this, "Couldn't open that", Toast.LENGTH_SHORT).show(); }
+    }
+
+    /** Inline replies need the system shade's text box. */
+    void closeShadeAndOpenSystem() {
+        if (shade != null) shade.closeNow();
+        performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+    }
+
+    void shadeClosed() { updateCatcher(); }
+
+    WindowManager windows() { return wm; }
+    WindowManager.LayoutParams overlay(int w, int h, int flags) { return overlayParams(w, h, flags); }
+    int px(float dp) { return dp(dp); }
+    int screenH() { return screenHeight(); }
+    int navBar() { return navZoneHeight(); }
+
+    /** Status bar band, including a cut-out that reaches lower than it. */
+    int statusBar() {
+        int sb = 0;
+        Resources sys = Resources.getSystem();
+        int id = sys.getIdentifier("status_bar_height", "dimen", "android");
+        if (id > 0) sb = sys.getDimensionPixelSize(id);
+        int cut = 0;
+        for (Rect r : cutoutRects) if (r.top <= 0) cut = Math.max(cut, r.bottom);
+        return Math.max(sb, cut);
+    }
+
+    /**
+     * Pulls from the status bar come to us instead of HyperOS's split panels. Not on the lock
+     * screen (the keyguard has its own shade) and not in landscape, where fullscreen apps
+     * draw under the top edge.
+     */
+    private void updateCatcher() {
+        if (wm == null) return;
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        boolean want = oneShade() && (pm == null || pm.isInteractive()) && !isLocked()
+                && screenWidth() < screenHeight() && (shade == null || !shade.isOpen());
+        if (!want) {
+            if (catcher != null && catcherAttached) {
+                try { wm.removeViewImmediate(catcher); } catch (Exception ignored) {}
+            }
+            catcherAttached = false;
+            return;
+        }
+        if (catcher == null) catcher = new CatcherView();
+        WindowManager.LayoutParams lp = overlayParams(WindowManager.LayoutParams.MATCH_PARENT, statusBar(),
+                passing || tickerTakesTouch ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.setTitle("TickerBar shade catcher");
+        try {
+            if (catcherAttached) wm.updateViewLayout(catcher, lp);
+            else { wm.addView(catcher, lp); catcherAttached = true; }
+        } catch (Exception ignored) {}
+    }
+
+    /** The strip over the status bar: a pull drags the shade down; anything else passes through. */
+    private final class CatcherView extends View {
+        private float x0, y0;
+        private long t0;
+        private boolean dragging;
+        private android.view.VelocityTracker vt;
+
+        CatcherView() { super(ShadeService.this); }
+
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            if (swallowIfPassing(e)) return true;
+            int slop = ViewConfiguration.get(ShadeService.this).getScaledTouchSlop();
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    x0 = e.getRawX(); y0 = e.getRawY(); t0 = SystemClock.uptimeMillis(); dragging = false;
+                    if (vt != null) vt.recycle();
+                    vt = android.view.VelocityTracker.obtain();
+                    vt.addMovement(e);
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    if (vt != null) vt.addMovement(e);
+                    float dy = e.getRawY() - y0;
+                    if (!dragging && dy > slop) {
+                        dragging = true;
+                        hideTickerNow();
+                        shade().beginDrag();
+                    }
+                    if (dragging) shade().drag(dy);
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    float v = 0;
+                    if (vt != null) { vt.addMovement(e); vt.computeCurrentVelocity(1000); v = vt.getYVelocity(); vt.recycle(); vt = null; }
+                    if (dragging) {
+                        dragging = false;
+                        shade().endDrag(e.getActionMasked() == MotionEvent.ACTION_UP ? v : 0);
+                    } else if (e.getActionMasked() == MotionEvent.ACTION_UP) {
+                        // a tap: hand it to whatever is under the status bar
+                        passThrough(e.getRawX(), e.getRawY(), SystemClock.uptimeMillis() - t0);
+                    }
+                    return true;
+                }
+                default:
+                    return true;
+            }
         }
     }
 

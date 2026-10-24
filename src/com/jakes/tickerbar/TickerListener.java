@@ -24,10 +24,31 @@ public class TickerListener extends NotificationListenerService {
         try { l.cancelNotification(key); } catch (Exception ignored) {}
     }
 
+    /** Everything currently posted, for the shade; null without notification access. */
+    static StatusBarNotification[] active() {
+        TickerListener l = self;
+        if (l == null) return null;
+        try { return l.getActiveNotifications(); } catch (Exception e) { return null; }
+    }
+
+    static RankingMap ranking() {
+        TickerListener l = self;
+        if (l == null) return null;
+        try { return l.getCurrentRanking(); } catch (Exception e) { return null; }
+    }
+
+    /** The shade's Clear all: what the user could swipe away, nothing ongoing. */
+    static void cancelAll() {
+        TickerListener l = self;
+        if (l == null) return;
+        try { l.cancelAllNotifications(); } catch (Exception ignored) {}
+    }
+
     /** Last text shown per notification key, so repeat updates don't re-ticker. */
     private final HashMap<String, String> last = new HashMap<String, String>();
 
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
+        ShadeService.notificationsChanged();
         if (sbn == null || sbn.getNotification() == null) return;
         Notification n = sbn.getNotification();
         String pkg = sbn.getPackageName();
@@ -63,6 +84,7 @@ public class TickerListener extends NotificationListenerService {
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
         last.remove(sbn.getKey());
+        ShadeService.notificationsChanged();
         // read in the app, swiped away, or replaced: the ticker shouldn't keep showing it
         ShadeService.recall(sbn.getKey());
     }

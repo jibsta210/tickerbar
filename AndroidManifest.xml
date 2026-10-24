@@ -1,14 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="26"
-    android:versionName="1.9.16">
+    android:versionCode="27"
+    android:versionName="1.10.0">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <!-- Do Not Disturb access: switching the ringer into and out of silent -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
+    <!-- one shade: brightness and rotation (user-granted), and showing radio states -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- lets its own updates install without a confirm dialog (Android 12+) -->
