@@ -54,8 +54,10 @@ public class TickerListener extends NotificationListenerService {
         String pkg = sbn.getPackageName();
         String key = sbn.getKey();
 
+        if (!getPackageName().equals(pkg)) remember(pkg);
         if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
         if (getPackageName().equals(pkg)) return;
+        if (Prefs.hidden(this, pkg)) return;
         if (Prefs.on(this, Prefs.SKIP_ONGOING)
                 && (sbn.isOngoing() || (n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0)) return;
         if (isIgnored(pkg)) return;
@@ -94,6 +96,18 @@ public class TickerListener extends NotificationListenerService {
         if (map == null) return false;
         Ranking r = new Ranking();
         return map.getRanking(key, r) && r.getImportance() < NotificationManager.IMPORTANCE_DEFAULT;
+    }
+
+    private final java.util.HashSet<String> remembered = new java.util.HashSet<String>();
+
+    /** Keep a list of apps that notify, so settings can offer them for hiding. */
+    private void remember(String pkg) {
+        if (!remembered.add(pkg)) return;
+        java.util.Set<String> seen = Prefs.set(this, Prefs.SEEN_APPS);
+        if (seen.add(pkg)) {
+            while (seen.size() > 300) seen.remove(seen.iterator().next());
+            Prefs.putSet(this, Prefs.SEEN_APPS, seen);
+        }
     }
 
     private boolean isIgnored(String pkg) {

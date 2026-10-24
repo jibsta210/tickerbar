@@ -898,6 +898,7 @@ final class UnifiedShade {
             boolean summary = (s.getNotification().flags & Notification.FLAG_GROUP_SUMMARY) != 0;
             if (summary && groupsWithChildren.contains(s.getGroupKey())) continue;
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
+            if (Prefs.hidden(svc, s.getPackageName())) continue;
             out.add(s);
         }
         return out;
@@ -1002,6 +1003,14 @@ final class UnifiedShade {
             if (n.contentIntent != null) svc.sendPending(n.contentIntent);
             if ((n.flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(s.getKey());
             close();
+        }});
+        // long-press: never show this app here (or on the ticker) again
+        card.setOnLongClickListener(new View.OnLongClickListener() { public boolean onLongClick(View v) {
+            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            Prefs.setHidden(svc, s.getPackageName(), true);
+            svc.toast("Hidden: " + appLabel(s.getPackageName()) + " \u2014 undo in TickerBar \u2192 Hidden apps");
+            refreshNotifications();
+            return true;
         }});
         if (s.isClearable()) swipeToDismiss(card, s.getKey());
         return card;

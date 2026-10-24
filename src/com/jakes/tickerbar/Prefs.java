@@ -69,6 +69,8 @@ public final class Prefs {
     // fine media volume buttons
     public static final String VOLUME_ON = "volume_buttons_on";
     public static final String VOLUME_STEP = "volume_button_step";
+    public static final String HIDDEN_APPS  = "hidden_apps";    // packages kept out of the shade and the ticker
+    public static final String SEEN_APPS    = "seen_apps";      // packages that have notified, for the hide list
     public static final String ONE_SHADE    = "one_shade";      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts
@@ -137,6 +139,25 @@ public final class Prefs {
 
     public static void put(Context c, String key, int v)    { get(c).edit().putInt(key, v).apply(); }
     public static void put(Context c, String key, String v) { get(c).edit().putString(key, v).apply(); }
+
+    /** A comma-separated package set stored under key. */
+    public static java.util.Set<String> set(Context c, String key) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<String>();
+        for (String p : str(c, key).split(",")) if (!p.trim().isEmpty()) out.add(p.trim());
+        return out;
+    }
+
+    public static void putSet(Context c, String key, java.util.Set<String> v) {
+        put(c, key, android.text.TextUtils.join(",", v));
+    }
+
+    public static boolean hidden(Context c, String pkg) { return set(c, HIDDEN_APPS).contains(pkg); }
+
+    public static void setHidden(Context c, String pkg, boolean hide) {
+        java.util.Set<String> s = set(c, HIDDEN_APPS);
+        if (hide) s.add(pkg); else s.remove(pkg);
+        putSet(c, HIDDEN_APPS, s);
+    }
 
     /** One-off resets when a default changes meaning. */
     public static void migrate(Context c) {

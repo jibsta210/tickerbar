@@ -172,6 +172,11 @@ public class MainActivity extends Activity {
                 + "location are switched by Android itself, so those tiles open its panel for them. "
                 + "The lock screen and landscape keep the system shade.");
 
+        c = card("Hidden apps");
+        note(c, "Apps switched on here never appear in the one shade or on the ticker. Tip: long-press a "
+                + "notification in the shade to hide its app. HyperOS's own shade and lock screen still show them.");
+        hiddenAppRows(c);
+
         c = card("Shade shortcuts");
         switchRow(c, "Only from the home screen", null, Prefs.SHADE_HOME);
         actionRow(c, "Open notifications", null, new Runnable() { public void run() {
@@ -381,6 +386,40 @@ public class MainActivity extends Activity {
         if (end != null) r.addView(end);
         card.addView(r);
         return r;
+    }
+
+    /** One switch per app that has notified (plus any already hidden), by name. */
+    private void hiddenAppRows(LinearLayout card) {
+        java.util.Set<String> pkgs = new java.util.TreeSet<String>(Prefs.set(this, Prefs.SEEN_APPS));
+        pkgs.addAll(Prefs.set(this, Prefs.HIDDEN_APPS));
+        android.service.notification.StatusBarNotification[] now = TickerListener.active();
+        if (now != null) for (android.service.notification.StatusBarNotification n : now) pkgs.add(n.getPackageName());
+        pkgs.remove(getPackageName());
+        if (pkgs.isEmpty()) { note(card, "Apps show up here once they've sent a notification."); return; }
+        final android.content.pm.PackageManager pm = getPackageManager();
+        java.util.List<String[]> named = new java.util.ArrayList<String[]>();
+        for (String p : pkgs) {
+            String label = p;
+            try { label = pm.getApplicationLabel(pm.getApplicationInfo(p, 0)).toString(); } catch (Exception ignored) {}
+            named.add(new String[]{label, p});
+        }
+        java.util.Collections.sort(named, new java.util.Comparator<String[]>() {
+            public int compare(String[] a, String[] b) { return a[0].compareToIgnoreCase(b[0]); }
+        });
+        int[][] states = {new int[]{android.R.attr.state_checked}, new int[]{}};
+        for (final String[] app : named) {
+            final Switch sw = new Switch(this);
+            sw.setChecked(Prefs.hidden(this, app[1]));
+            sw.setThumbTintList(new ColorStateList(states, new int[]{pal.onPrimary, pal.outline}));
+            sw.setTrackTintList(new ColorStateList(states, new int[]{pal.primary, pal.surfaceHigh}));
+            sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                    Prefs.setHidden(MainActivity.this, app[1], on);
+                    changed();
+                }});
+            LinearLayout r = row(card, app[0], app[0].equals(app[1]) ? null : app[1], sw);
+            r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+        }
     }
 
     private void switchRow(LinearLayout card, String title, String subtitle, final String key) {
