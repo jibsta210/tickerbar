@@ -172,6 +172,10 @@ public class MainActivity extends Activity {
                 new String[]{"1 · finest", "2", "5 · default", "10"});
         switchRow(c, "Ringer like stock Android",
                 "When nothing's playing: ring \u2192 vibrate \u2192 silent on the volume buttons", Prefs.RINGER_CYCLE);
+        actionRow(c, "Allow silent mode", "Do Not Disturb access, needed to switch to silent",
+                new Runnable() { public void run() {
+                    try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)); }
+                    catch (Exception e) { toast("Open Settings \u2192 Notifications \u2192 Do Not Disturb access"); } }});
         note(c, "Hold a button to repeat. Uses your phone’s existing volume levels (150 on POCO F9 Ultra). "
                 + "Call volume keeps its normal behavior. Turn this off to restore normal buttons.");
 

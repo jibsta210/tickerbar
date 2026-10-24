@@ -229,6 +229,7 @@ public class ShadeService extends AccessibilityService {
         boolean media = audio.isMusicActive();
         if (!Prefs.on(this, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
         heldRinger = !media;
+        boundarySince = 0;
         if (!stepVolume(key, false)) return false;
         volumeKeys.add(key);
         stopVolumeRepeat();
@@ -263,49 +264,69 @@ public class ShadeService extends AccessibilityService {
     /**
      * Stock Android's order, which HyperOS splits across two controls: down goes ringer
      * levels -> vibrate -> silent, up goes silent -> vibrate -> lowest ring -> louder.
-     * Holding only moves through ring levels; changing mode always takes a fresh press.
+     * A hold moves through ring levels and, after a short pause at each boundary, on into
+     * the next mode, so the bottom is easy to land on without needing a second press.
      */
     private boolean stepRinger(int key, boolean repeat) {
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         boolean up = key == KeyEvent.KEYCODE_VOLUME_UP;
-        int mode = audio.getRingerMode();
+        android.app.NotificationManager nm =
+                (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        // HyperOS's "silent" is Do Not Disturb, a switch separate from the ringer mode
+        boolean dnd = nm != null && nm.getCurrentInterruptionFilter()
+                > android.app.NotificationManager.INTERRUPTION_FILTER_ALL;
+        int mode = dnd ? AudioManager.RINGER_MODE_SILENT : audio.getRingerMode();
         int vol = audio.getStreamVolume(AudioManager.STREAM_RING);
         int min = Math.max(1, audio.getStreamMinVolume(AudioManager.STREAM_RING));
         int max = audio.getStreamMaxVolume(AudioManager.STREAM_RING);
+        boolean ringing = mode == AudioManager.RINGER_MODE_NORMAL && vol > 0;
         try {
-            if (mode == AudioManager.RINGER_MODE_NORMAL && vol > 0) {
-                if (up && vol < max || !up && vol > min) {
-                    audio.setStreamVolume(AudioManager.STREAM_RING, vol + (up ? 1 : -1), AudioManager.FLAG_SHOW_UI);
-                } else if (!up && !repeat) {
-                    audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
-                    showRinger(audio);
-                } else {
-                    return false;   // at the top, or a hold reaching the bottom: stop there
-                }
-            } else if (repeat) {
-                return false;
-            } else if (mode == AudioManager.RINGER_MODE_VIBRATE) {
-                if (up) {
-                    audio.setRingerMode(AudioManager.RINGER_MODE_NORMAL);
-                    audio.setStreamVolume(AudioManager.STREAM_RING, min, AudioManager.FLAG_SHOW_UI);
-                } else {
-                    audio.setRingerMode(AudioManager.RINGER_MODE_SILENT);
-                    showRinger(audio);
-                }
-            } else {   // silent (or a normal mode left at 0)
-                if (!up) { showRinger(audio); return true; }
-                audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
-                showRinger(audio);
+            if (ringing && (up ? vol < max : vol > min)) {
+                boundarySince = 0;
+                audio.setStreamVolume(AudioManager.STREAM_RING, vol + (up ? 1 : -1), AudioManager.FLAG_SHOW_UI);
+                return true;
             }
+            // the next step changes mode (or there's nowhere to go)
+            int next;
+            if (ringing) next = up ? -1 : AudioManager.RINGER_MODE_VIBRATE;
+            else if (mode == AudioManager.RINGER_MODE_VIBRATE)
+                next = up ? AudioManager.RINGER_MODE_NORMAL : AudioManager.RINGER_MODE_SILENT;
+            else next = up ? AudioManager.RINGER_MODE_VIBRATE : -1;
+            if (next < 0) {   // loudest, or already silent: show where we are, stop any hold
+                if (!repeat) showRinger(audio);
+                return !repeat;
+            }
+            if (repeat) {
+                // a held button pauses at each boundary before crossing it
+                long now = SystemClock.uptimeMillis();
+                if (boundarySince == 0) boundarySince = now;
+                if (now - boundarySince < RINGER_PAUSE_MS) return true;
+            }
+            boundarySince = 0;
+            if (next == AudioManager.RINGER_MODE_SILENT || mode == AudioManager.RINGER_MODE_SILENT) {
+                if (nm != null && !nm.isNotificationPolicyAccessGranted()) {
+                    Log.w("TickerBarVolume", "silent needs Do Not Disturb access");
+                    showRinger(audio);
+                    return !repeat;   // swallow the press; Settings shows how to grant access
+                }
+            }
+            if (dnd && nm != null)   // leaving silent: Do Not Disturb has to go off as well
+                nm.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_ALL);
+            audio.setRingerMode(next);
+            if (next == AudioManager.RINGER_MODE_NORMAL)
+                audio.setStreamVolume(AudioManager.STREAM_RING, min, AudioManager.FLAG_SHOW_UI);
+            else showRinger(audio);
             Log.i("TickerBarVolume", "ringer " + mode + "/" + vol + " -> "
                     + audio.getRingerMode() + "/" + audio.getStreamVolume(AudioManager.STREAM_RING));
             return true;
         } catch (SecurityException e) {
-            // silent needs Do Not Disturb access on some builds
             Log.w("TickerBarVolume", "Ringer change denied", e);
             return false;
         }
     }
+
+    private static final long RINGER_PAUSE_MS = 600;
+    private long boundarySince;   // when a held button reached a ring/vibrate/silent boundary
 
     /** Bring up the system's volume panel on the ringer so the new mode shows. */
     private void showRinger(AudioManager audio) {
