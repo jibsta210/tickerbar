@@ -1013,6 +1013,8 @@ final class UnifiedShade {
      * Stock Clear all: the entries sweep off to the side one after another from the bottom,
      * then the shade rolls up.
      */
+    private static final long SWEEP_MS = 220;
+
     private void clearAll() {
         swipingCard = true;   // hold list rebuilds while they animate out
         List<View> views = new ArrayList<View>(clearable);
@@ -1020,15 +1022,15 @@ final class UnifiedShade {
         for (int i = views.size() - 1; i >= 0; i--) {
             View v = views.get(i);
             if (v.getParent() == null) continue;
-            v.animate().translationX(v.getWidth() * 1.1f).alpha(0f).setStartDelay(delay).setDuration(220)
+            v.animate().translationX(v.getWidth() * 1.1f).alpha(0f).setStartDelay(delay).setDuration(SWEEP_MS)
                     .setInterpolator(new android.view.animation.AccelerateInterpolator(1.2f)).start();
-            delay += 45;
+            delay += SWEEP_MS / 10;   // the next one leaves when this one is ~10% of the way out
         }
         root.postDelayed(new Runnable() { public void run() {
             TickerListener.cancelAll();
             swipingCard = false;
             close();
-        }}, delay + 260);
+        }}, delay + SWEEP_MS + 40);
     }
 
     /** "Silent" gets its own clear button, like stock. */
