@@ -71,7 +71,11 @@ public final class Prefs {
     public static final String VOLUME_STEP = "volume_button_step";
     public static final String HIDDEN_APPS  = "hidden_apps";    // packages kept out of the shade and the ticker
     public static final String SEEN_APPS    = "seen_apps";      // packages that have notified, for the hide list
-    public static final String ONE_SHADE    = "one_shade";      // stock-Android single shade instead of HyperOS's split
+    public static final String ONE_SHADE    = "one_shade";
+    public static final String SHADE_THEME  = "shade_theme";    // 0 match system, 1 dark, 2 light
+    public static final String SHADE_ACCENT = "shade_accent";   // UnifiedShade.ACCENTS index, 0 system
+    public static final String SHADE_ALPHA  = "shade_alpha";    // panel opacity %
+    public static final String SHADE_BLUR   = "shade_blur";     // blur behind, dp (0 off)      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts
     public static final String VOL_REPEAT_MS = "volume_repeat_ms"; // between steps while held
@@ -92,6 +96,7 @@ public final class Prefs {
     private static final HashMap<String, Integer> DEF = new HashMap<String, Integer>();
     static {
         DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5); DEF.put(RINGER_CYCLE, 0); DEF.put(ONE_SHADE, 0);
+        DEF.put(SHADE_THEME, 0); DEF.put(SHADE_ACCENT, 0); DEF.put(SHADE_ALPHA, 95); DEF.put(SHADE_BLUR, 36);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);

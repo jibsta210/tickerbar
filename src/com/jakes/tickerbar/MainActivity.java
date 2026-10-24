@@ -79,7 +79,7 @@ public class MainActivity extends Activity {
         page.setBackgroundColor(pal.bg);
         page.addView(sv);
         setContentView(page);
-        edgeToEdge(page);
+        edgeToEdge(sv);   // the scroller takes the insets; the menu runs edge to edge
 
         header();
 
@@ -174,6 +174,13 @@ public class MainActivity extends Activity {
                     try { startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
                             Uri.parse("package:" + getPackageName()))); }
                     catch (Exception e) { toast("Open Settings \u2192 Apps \u2192 TickerBar \u2192 Modify system settings"); } }});
+        int[] accentIds = new int[UnifiedShade.ACCENTS.length];
+        for (int i = 0; i < accentIds.length; i++) accentIds[i] = i;
+        choiceRow(c, "Shade colours", Prefs.SHADE_THEME, new int[]{0, 1, 2},
+                new String[]{"Match system theme", "Always dark", "Always light"});
+        choiceRow(c, "Accent", Prefs.SHADE_ACCENT, accentIds, UnifiedShade.ACCENT_NAMES);
+        numberRow(c, "Panel opacity", Prefs.SHADE_ALPHA, "%");
+        numberRow(c, "Blur behind  \u00b7 0 = off", Prefs.SHADE_BLUR, "dp");
         for (int i = 0; i < UnifiedShade.TILE_IDS.length; i++)
             choiceRow(c, UnifiedShade.TILE_NAMES[i], UnifiedShade.placeKey(UnifiedShade.TILE_IDS[i]),
                     new int[]{UnifiedShade.PLACE_BOTH, UnifiedShade.PLACE_GRID, UnifiedShade.PLACE_HIDDEN},
@@ -280,11 +287,16 @@ public class MainActivity extends Activity {
         scrim.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { closeDrawer(); } });
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(12), dp(28), dp(12), dp(24));
+        int topInset = 0, bottomInset = 0;
+        WindowInsets wi = page.getRootWindowInsets();
+        if (wi != null && Build.VERSION.SDK_INT >= 30) {
+            android.graphics.Insets b = wi.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            topInset = b.top; bottomInset = b.bottom;
+        }
+        panel.setPadding(dp(12), topInset + dp(20), dp(12), bottomInset + dp(24));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(pal.surface);
         bg.setCornerRadii(new float[]{0, 0, dp(28), dp(28), dp(28), dp(28), 0, 0});
-        panel.setBackground(bg);
         panel.setClickable(true);
         TextView t = tv("Settings", 22, pal.onSurface);
         t.setTypeface(MEDIUM);
@@ -307,6 +319,8 @@ public class MainActivity extends Activity {
             panel.addView(item, lp);
         }
         ScrollView ps = new ScrollView(this);
+        ps.setFillViewport(true);
+        ps.setBackground(bg);   // the panel's surface reaches top to bottom
         ps.addView(panel);
         int w = Math.min(dp(320), Math.round(getResources().getDisplayMetrics().widthPixels * 0.8f));
         scrim.addView(ps, new android.widget.FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -354,6 +368,16 @@ public class MainActivity extends Activity {
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(4), dp(18), 0, dp(14));
 
+        ImageView menu = new ImageView(this);
+        menu.setImageResource(R.drawable.qs_menu);
+        menu.setImageTintList(ColorStateList.valueOf(pal.onSurface));
+        menu.setPadding(dp(12), dp(12), dp(12), dp(12));
+        menu.setBackground(ripple(round(pal.surface, dp(24)), pal.onSurface));
+        menu.setContentDescription("Settings sections");
+        menu.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { openDrawer(); } });
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(dp(48), dp(48));
+        ml.setMarginEnd(dp(10));
+        top.addView(menu, ml);
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.mipmap.ic_launcher);
         top.addView(icon, new LinearLayout.LayoutParams(dp(56), dp(56)));
@@ -368,14 +392,6 @@ public class MainActivity extends Activity {
                 ? "Updated to v" + versionName() : "v" + versionName(), 13, pal.onSurfaceVariant);
         text.addView(updateLine);
         top.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ImageView menu = new ImageView(this);
-        menu.setImageResource(R.drawable.qs_menu);
-        menu.setImageTintList(ColorStateList.valueOf(pal.onSurface));
-        menu.setPadding(dp(12), dp(12), dp(12), dp(12));
-        menu.setBackground(ripple(round(pal.surface, dp(24)), pal.onSurface));
-        menu.setContentDescription("Settings sections");
-        menu.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { openDrawer(); } });
-        top.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
         col.addView(top);
 
         LinearLayout chips = new LinearLayout(this);

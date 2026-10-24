@@ -1140,7 +1140,10 @@ public class ShadeService extends AccessibilityService {
     // ------------------------------------------------------------ one shade
 
     /** Send a notification's intent as the shade would, lending our right to start activities. */
-    boolean sendPending(android.app.PendingIntent pi) {
+    boolean sendPending(android.app.PendingIntent pi) { return sendPending(pi, null); }
+
+    /** With fill-in extras: how an inline reply reaches the app. */
+    boolean sendPending(android.app.PendingIntent pi, Intent fill) {
         try {
             android.os.Bundle opts = null;
             if (Build.VERSION.SDK_INT >= 34) {
@@ -1149,7 +1152,7 @@ public class ShadeService extends AccessibilityService {
                         android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
                 opts = o.toBundle();
             }
-            pi.send(this, 0, null, null, null, null, opts);
+            pi.send(this, 0, fill, null, null, null, opts);
             return true;
         } catch (Exception e) {
             return false;
@@ -1603,6 +1606,12 @@ public class ShadeService extends AccessibilityService {
 
     /** Needs notification access; retried each time it matters until it's granted. */
     /** An active session playing on another device (Chromecast etc.) whose volume we can change; playing ones first. */
+    /** Live media sessions, for the shade's player. */
+    List<MediaController> mediaSessions() {
+        startMediaWatch();
+        return new ArrayList<MediaController>(watched);
+    }
+
     private MediaController castSession() {
         startMediaWatch();
         MediaController paused = null;

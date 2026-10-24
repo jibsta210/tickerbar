@@ -37,6 +37,13 @@ public class TickerListener extends NotificationListenerService {
         try { return l.getCurrentRanking(); } catch (Exception e) { return null; }
     }
 
+    /** Snooze from the shade's long-press menu; it comes back after ms. */
+    static void snooze(String key, long ms) {
+        TickerListener l = self;
+        if (l == null || key == null) return;
+        try { l.snoozeNotification(key, ms); } catch (Exception ignored) {}
+    }
+
     /** The shade's Clear all: what the user could swipe away, nothing ongoing. */
     static void cancelAll() {
         TickerListener l = self;

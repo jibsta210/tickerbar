@@ -19,6 +19,7 @@ import android.graphics.drawable.RippleDrawable;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
 import android.location.LocationManager;
+import android.media.session.MediaController;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
@@ -79,6 +80,13 @@ final class UnifiedShade {
     static final int ROW_MAX = 6;
 
     static String placeKey(String id) { return "qs_place_" + id; }
+
+    /** Accent choices; 0 is the system's own (Material You). */
+    static final int[] ACCENTS = {0, 0xFF4F7DF3, 0xFF14A8A0, 0xFF3FA35B, 0xFFE5A50A, 0xFFEE6A50,
+            0xFFE0559A, 0xFF8B5CF6, 0xFF8A8F98};
+    static final String[] ACCENT_NAMES = {"Match system", "Blue", "Teal", "Green", "Amber", "Coral",
+            "Pink", "Purple", "Graphite"};
+    private int panelA = 0xF2;
 
     static int defaultPlace(int index) { return index < ROW_MAX ? PLACE_BOTH : PLACE_GRID; }
 
@@ -177,7 +185,10 @@ final class UnifiedShade {
             root.setAlpha(1f);
             return true;
         }
-        pal = Palette.of(svc);
+        pal = Palette.of(svc, Prefs.n(svc, Prefs.SHADE_THEME));
+        int ai = Prefs.n(svc, Prefs.SHADE_ACCENT);
+        if (ai > 0 && ai < ACCENTS.length) pal = pal.withAccent(ACCENTS[ai]);
+        panelA = Math.round(255 * Math.max(40, Math.min(100, Prefs.n(svc, Prefs.SHADE_ALPHA))) / 100f);
         build();
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
@@ -186,9 +197,12 @@ final class UnifiedShade {
         lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;   // focus: back key closes us
         if (Build.VERSION.SDK_INT >= 31) {
             lp.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
-            lp.setBlurBehindRadius(svc.px(36));
+            int blur = Math.max(0, Math.min(120, Prefs.n(svc, Prefs.SHADE_BLUR)));
+            if (blur > 0) lp.setBlurBehindRadius(svc.px(blur));
+            else lp.flags &= ~WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
             lp.dimAmount = 0f;
         }
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;   // inline replies
         lp.setTitle("TickerBar shade");
         try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
         attached = true;
@@ -210,7 +224,11 @@ final class UnifiedShade {
         refreshers.clear();
         fixed.clear();
         openGroups.clear();
+        openCards.clear();
         swipingCard = false;
+        replying = false;
+        if (mediaCtl != null) { try { mediaCtl.unregisterCallback(mediaCb); } catch (Exception ignored) {} mediaCtl = null; }
+        if (root != null) root.removeCallbacks(mediaTick);
         svc.shadeClosed();
     }
 
@@ -248,11 +266,16 @@ final class UnifiedShade {
                         float up = y0 - e.getRawY();
                         int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
                         if (up > slop * 2 && up > Math.abs(e.getRawX() - x0) && !scroll.canScrollVertically(1)) {
+                            if (expanded) {   // stock: the first swipe up folds the controls, the next closes
+                                pulledOpen = true;
+                                setExpanded(false);
+                                return true;
+                            }
                             dragging = true;
                             return true;
                         }
                         // pulling down with the list at its top opens the full quick settings
-                        if (!expanded && -up > svc.px(56) && -up > Math.abs(e.getRawX() - x0) * 1.5f
+                        if (!expanded && -up > svc.px(32) && -up > Math.abs(e.getRawX() - x0) * 1.2f
                                 && !scroll.canScrollVertically(-1)) {
                             pulledOpen = true;
                             setExpanded(true);
@@ -328,7 +351,7 @@ final class UnifiedShade {
         // keep the header clear of the corner curve, and of a camera cut-out in the middle
         qs.setPadding(svc.px(16) + topR / 4, Math.max(svc.px(14), topR / 3), svc.px(16) + topR / 4, svc.px(12));
         GradientDrawable qsBg = new GradientDrawable();
-        qsBg.setColor(Palette.alpha(pal.surface, 0xF2));
+        qsBg.setColor(Palette.alpha(pal.surface, panelA));
         qsBg.setCornerRadii(new float[]{topR, topR, topR, topR, svc.px(32), svc.px(32), svc.px(32), svc.px(32)});
         qs.setBackground(qsBg);
         qs.setLayoutTransition(new LayoutTransition());
@@ -376,8 +399,8 @@ final class UnifiedShade {
                     v.getParent().requestDisallowInterceptTouchEvent(true);   // this drag is ours, not a scroll
                 } else if (e.getActionMasked() == MotionEvent.ACTION_MOVE && !done) {
                     float dy = e.getRawY() - y0;
-                    if (dy > svc.px(48) && !expanded) { done = true; setExpanded(true); }
-                    else if (dy < -svc.px(48)) { done = true; if (expanded) setExpanded(false); else close(); }
+                    if (dy > svc.px(28) && !expanded) { done = true; setExpanded(true); }
+                    else if (dy < -svc.px(28)) { done = true; if (expanded) setExpanded(false); else close(); }
                 }
                 return true;
             }
@@ -412,7 +435,23 @@ final class UnifiedShade {
         date.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         date.setTextColor(pal.onSurfaceVariant);
         date.setPadding(svc.px(12), svc.px(8), 0, 0);
-        h.addView(date, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout dateCol = new LinearLayout(svc);
+        dateCol.setOrientation(LinearLayout.VERTICAL);
+        dateCol.addView(date);
+        final TextView batt = tv("", 13, pal.onSurfaceVariant);
+        batt.setPadding(svc.px(12), 0, 0, 0);
+        dateCol.addView(batt);
+        h.addView(dateCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        fixed.add(new Runnable() { public void run() {
+            Intent b = svc.registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (b == null) return;
+            int level = b.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+            int scale = b.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+            int st = b.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, 0);
+            boolean charging = st == android.os.BatteryManager.BATTERY_STATUS_CHARGING
+                    || st == android.os.BatteryManager.BATTERY_STATUS_FULL;
+            if (level >= 0) batt.setText(Math.round(100f * level / scale) + "%" + (charging ? "  \u26a1 Charging" : ""));
+        }});
 
         ImageView power = new ImageView(svc);
         power.setImageResource(R.drawable.qs_power);
@@ -532,6 +571,7 @@ final class UnifiedShade {
             if (place == PLACE_HIDDEN) continue;
             Tile t = tile(TILE_IDS[i]);
             if (t == null) continue;
+            tileIds.put(t, TILE_IDS[i]);
             grid.add(t);
             if (place == PLACE_BOTH && row.size() < ROW_MAX) row.add(t);
         }
@@ -565,6 +605,7 @@ final class UnifiedShade {
         wrap.setGravity(Gravity.CENTER);
         wrap.addView(v, new LinearLayout.LayoutParams(svc.px(54), svc.px(54)));
         v.setOnClickListener(new View.OnClickListener() { public void onClick(View x) { press(x); t.tap(); refreshTiles(); } });
+        v.setOnLongClickListener(openSettings(t));
         refreshers.add(new Runnable() { public void run() {
             boolean on = t.active();
             v.setBackground(ripple(round(on ? pal.primary : pal.surfaceHigh, svc.px(27))));
@@ -596,6 +637,7 @@ final class UnifiedShade {
         text.addView(state);
         p.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         p.setOnClickListener(new View.OnClickListener() { public void onClick(View x) { press(x); t.tap(); refreshTiles(); } });
+        p.setOnLongClickListener(openSettings(t));
         refreshers.add(new Runnable() { public void run() {
             boolean on = t.active();
             p.setBackground(ripple(round(on ? pal.primary : pal.surfaceHigh, svc.px(34))));
@@ -605,6 +647,39 @@ final class UnifiedShade {
             state.setText(t.state());
         }});
         return p;
+    }
+
+    private final HashMap<Tile, String> tileIds = new HashMap<Tile, String>();
+
+    /** Long-press a tile: its full settings page. */
+    private View.OnLongClickListener openSettings(final Tile t) {
+        return new View.OnLongClickListener() { public boolean onLongClick(View v) {
+            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            String id = tileIds.get(t);
+            String a;
+            switch (id == null ? "" : id) {
+                case "wifi": a = Settings.ACTION_WIFI_SETTINGS; break;
+                case "data": a = Settings.ACTION_DATA_ROAMING_SETTINGS; break;
+                case "bluetooth": a = Settings.ACTION_BLUETOOTH_SETTINGS; break;
+                case "hotspot": a = "android.settings.TETHER_SETTINGS"; break;
+                case "dnd": a = "android.settings.ZEN_MODE_SETTINGS"; break;
+                case "sound": a = Settings.ACTION_SOUND_SETTINGS; break;
+                case "rotate": case "reading": a = Settings.ACTION_DISPLAY_SETTINGS; break;
+                case "location": a = Settings.ACTION_LOCATION_SOURCE_SETTINGS; break;
+                case "nfc": a = Settings.ACTION_NFC_SETTINGS; break;
+                case "airplane": a = Settings.ACTION_AIRPLANE_MODE_SETTINGS; break;
+                case "battery": a = Settings.ACTION_BATTERY_SAVER_SETTINGS; break;
+                case "ultra": case "reverse": openBattery(); return true;
+                case "recorder": {
+                    Intent i = recorderIntent();
+                    if (i != null) launch(i);
+                    return true;
+                }
+                default: return false;
+            }
+            if (!launchFirst(new Intent(a))) launch(new Intent(Settings.ACTION_SETTINGS));
+            return true;
+        }};
     }
 
     private void press(View v) {
@@ -861,65 +936,122 @@ final class UnifiedShade {
         final String group;
         final List<StatusBarNotification> kids = new ArrayList<StatusBarNotification>();
         StatusBarNotification summary;
+        int section;   // 0 conversations, 1 notifications, 2 silent
         Entry(String g) { group = g; }
     }
 
-    private final HashSet<String> openGroups = new HashSet<String>();   // expanded while the shade is up
-    private boolean swipingCard, refreshPending;
+    private final HashSet<String> openGroups = new HashSet<String>();    // expanded groups
+    private final HashSet<String> openCards = new HashSet<String>();     // expanded single notifications
+    private boolean swipingCard, refreshPending, replying;
+    private NotificationListenerService.RankingMap rankMap;
 
     /** Called when notifications change while the shade is open. */
     void refreshNotifications() {
         if (!attached || notifBox == null) return;
-        if (swipingCard) { refreshPending = true; return; }   // don't pull the card from under the finger
+        // never rebuild under a finger, or while a reply is being typed
+        if (swipingCard || replying) { refreshPending = true; return; }
         refreshPending = false;
         notifBox.removeAllViews();
+        rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
-        List<Entry> list = entries(all);
+
+        MediaController player = playerSession();
+        if (player != null) {
+            View m = mediaCard(player);
+            if (m != null) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.bottomMargin = svc.px(10);
+                notifBox.addView(m, lp);
+            }
+        }
+
+        List<Entry> list = entries(all, player);
         boolean anyClearable = false;
         for (Entry en : list) for (StatusBarNotification k : en.kids) if (k.isClearable()) anyClearable = true;
 
         if (list.isEmpty()) {
-            TextView none = tv(all == null ? "Notification access is off" : "No notifications", 14, pal.onSurfaceVariant);
-            none.setGravity(Gravity.CENTER);
-            none.setPadding(0, svc.px(28), 0, svc.px(28));
-            notifBox.addView(none);
+            if (player == null) {
+                TextView none = tv(all == null ? "Notification access is off" : "No notifications", 14, pal.onSurfaceVariant);
+                none.setGravity(Gravity.CENTER);
+                none.setPadding(0, svc.px(28), 0, svc.px(28));
+                notifBox.addView(none);
+            }
         } else {
-            for (Entry en : list) {
-                View c = en.kids.size() >= 2 ? groupCard(en) : card(en.kids.get(0), false);
-                if (c == null) continue;
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.bottomMargin = svc.px(3);
-                notifBox.addView(c, lp);
+            int[] count = new int[3];
+            for (Entry en : list) count[en.section]++;
+            boolean several = (count[0] > 0 ? 1 : 0) + (count[1] > 0 ? 1 : 0) + (count[2] > 0 ? 1 : 0) > 1;
+            String[] heads = {"Conversations", "Notifications", "Silent"};
+            for (int sec = 0; sec < 3; sec++) {
+                if (count[sec] == 0) continue;
+                if (several) notifBox.addView(sectionHeader(heads[sec], sec == 2 ? list : null));
+                for (Entry en : list) {
+                    if (en.section != sec) continue;
+                    View c = en.kids.size() >= 2 ? groupCard(en) : card(en.kids.get(0), false);
+                    if (c == null) continue;
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.bottomMargin = svc.px(3);
+                    notifBox.addView(c, lp);
+                }
             }
         }
 
-        LinearLayout foot = new LinearLayout(svc);
-        foot.setGravity(Gravity.CENTER_VERTICAL);
-        foot.setPadding(svc.px(4), svc.px(10), svc.px(4), 0);
-        foot.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         if (anyClearable) {
+            LinearLayout foot = new LinearLayout(svc);
+            foot.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            foot.setPadding(svc.px(4), svc.px(10), svc.px(4), 0);
             foot.addView(pill("Clear all", new View.OnClickListener() { public void onClick(View v) {
                 TickerListener.cancelAll();
                 close();
             }}));
+            notifBox.addView(foot);
         }
-        notifBox.addView(foot);
+    }
+
+    /** "Silent" gets its own clear button, like stock. */
+    private View sectionHeader(String title, final List<Entry> clearSilent) {
+        LinearLayout h = new LinearLayout(svc);
+        h.setGravity(Gravity.CENTER_VERTICAL);
+        h.setPadding(svc.px(12), svc.px(12), svc.px(4), svc.px(6));
+        TextView t = tv(title, 14, pal.onSurface);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        h.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (clearSilent != null) {
+            TextView x = tv("✕", 15, pal.onSurfaceVariant);
+            x.setPadding(svc.px(12), svc.px(4), svc.px(12), svc.px(4));
+            x.setBackground(ripple(null));
+            x.setContentDescription("Clear silent notifications");
+            x.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                for (Entry en : clearSilent) {
+                    if (en.section != 2) continue;
+                    for (StatusBarNotification k : en.kids) if (k.isClearable()) TickerListener.cancel(k.getKey());
+                }
+            }});
+            h.addView(x);
+        }
+        return h;
+    }
+
+    private NotificationListenerService.Ranking rank(String key) {
+        if (rankMap == null) return null;
+        NotificationListenerService.Ranking r = new NotificationListenerService.Ranking();
+        return rankMap.getRanking(key, r) ? r : null;
     }
 
     /**
      * Ranking order, gathered into groups the way stock Android does: everything sharing a
      * group key (an app's explicit group, or the system's auto-group) is one entry, led by
-     * its highest-ranked member; a summary only stands alone when it has no children.
+     * its highest-ranked member; a summary only stands alone when it has no children. The
+     * media notification the player already shows is left out.
      */
-    private List<Entry> entries(StatusBarNotification[] all) {
+    private List<Entry> entries(StatusBarNotification[] all, MediaController player) {
         List<Entry> out = new ArrayList<Entry>();
         if (all == null) return out;
         HashMap<String, StatusBarNotification> byKey = new HashMap<String, StatusBarNotification>();
         for (StatusBarNotification s : all) byKey.put(s.getKey(), s);
         List<String> keys = new ArrayList<String>();
-        NotificationListenerService.RankingMap rm = TickerListener.ranking();
-        if (rm != null) for (String k : rm.getOrderedKeys()) if (byKey.containsKey(k)) keys.add(k);
+        if (rankMap != null) for (String k : rankMap.getOrderedKeys()) if (byKey.containsKey(k)) keys.add(k);
         for (StatusBarNotification s : all) if (!keys.contains(s.getKey())) keys.add(s.getKey());
 
         HashMap<String, Entry> groups = new HashMap<String, Entry>();
@@ -927,6 +1059,7 @@ final class UnifiedShade {
             StatusBarNotification s = byKey.get(k);
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
+            if (player != null && s.getPackageName().equals(player.getPackageName()) && isMedia(s)) continue;
             String g = s.getGroupKey() != null ? s.getGroupKey() : s.getKey();
             Entry en = groups.get(g);
             if (en == null) { en = new Entry(g); groups.put(g, en); out.add(en); }
@@ -936,10 +1069,185 @@ final class UnifiedShade {
         List<Entry> shown = new ArrayList<Entry>();
         for (Entry en : out) {
             if (en.kids.isEmpty() && en.summary != null) en.kids.add(en.summary);
-            if (!en.kids.isEmpty()) shown.add(en);
+            if (en.kids.isEmpty()) continue;
+            NotificationListenerService.Ranking r = rank(en.kids.get(0).getKey());
+            boolean convo = r != null && Build.VERSION.SDK_INT >= 30 && r.isConversation();
+            boolean silent = r != null && r.getImportance() < NotificationManager.IMPORTANCE_DEFAULT;
+            en.section = silent ? 2 : convo ? 0 : 1;
+            shown.add(en);
         }
         return shown;
     }
+
+    private static boolean isMedia(StatusBarNotification s) {
+        Bundle ex = s.getNotification().extras;
+        return ex != null && ex.containsKey(Notification.EXTRA_MEDIA_SESSION);
+    }
+
+    // ------------------------------------------------------------ media player
+
+    private SeekBar mediaSeek;
+    private TextView mediaPos, mediaDur;
+    private MediaController mediaCtl;
+    private final MediaController.Callback mediaCb = new MediaController.Callback() {
+        @Override public void onPlaybackStateChanged(android.media.session.PlaybackState s) { refreshNotifications(); }
+        @Override public void onMetadataChanged(android.media.MediaMetadata m) { refreshNotifications(); }
+    };
+    private final Runnable mediaTick = new Runnable() { public void run() {
+        if (!attached || mediaCtl == null || mediaSeek == null) return;
+        android.media.session.PlaybackState st = mediaCtl.getPlaybackState();
+        if (st != null && !mediaSeek.isPressed()) {
+            long pos = position(st);
+            mediaSeek.setProgress((int) Math.min(Integer.MAX_VALUE, pos));
+            mediaPos.setText(DateUtils.formatElapsedTime(pos / 1000));
+        }
+        root.postDelayed(this, 1000);
+    }};
+
+    private static long position(android.media.session.PlaybackState st) {
+        long pos = st.getPosition();
+        if (st.getState() == android.media.session.PlaybackState.STATE_PLAYING) {
+            pos += (long) ((android.os.SystemClock.elapsedRealtime() - st.getLastPositionUpdateTime())
+                    * st.getPlaybackSpeed());
+        }
+        return Math.max(0, pos);
+    }
+
+    /** Playing first, then paused; only sessions that have something to show. */
+    private MediaController playerSession() {
+        MediaController paused = null;
+        for (MediaController mc : svc.mediaSessions()) {
+            if (Prefs.hidden(svc, mc.getPackageName())) continue;
+            android.media.session.PlaybackState st = mc.getPlaybackState();
+            if (st == null || mc.getMetadata() == null) continue;
+            int s = st.getState();
+            if (s == android.media.session.PlaybackState.STATE_PLAYING
+                    || s == android.media.session.PlaybackState.STATE_BUFFERING) return mc;
+            if (s == android.media.session.PlaybackState.STATE_PAUSED && paused == null) paused = mc;
+        }
+        return paused;
+    }
+
+    private View mediaCard(final MediaController mc) {
+        android.media.MediaMetadata md = mc.getMetadata();
+        if (md == null) return null;
+        if (mediaCtl != mc) {
+            if (mediaCtl != null) try { mediaCtl.unregisterCallback(mediaCb); } catch (Exception ignored) {}
+            mediaCtl = mc;
+            mc.registerCallback(mediaCb, root.getHandler());
+        }
+        CharSequence title = md.getText(android.media.MediaMetadata.METADATA_KEY_TITLE);
+        if (TextUtils.isEmpty(title)) title = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+        CharSequence artist = md.getText(android.media.MediaMetadata.METADATA_KEY_ARTIST);
+        if (TextUtils.isEmpty(artist)) artist = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
+        android.graphics.Bitmap art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART);
+        if (art == null) art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART);
+        if (art == null) art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+        long dur = md.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
+        android.media.session.PlaybackState st = mc.getPlaybackState();
+        final boolean playing = st != null && st.getState() == android.media.session.PlaybackState.STATE_PLAYING;
+
+        LinearLayout box = new LinearLayout(svc);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(svc.px(16), svc.px(16), svc.px(16), svc.px(12));
+        box.setBackground(ripple(round(Palette.alpha(pal.primaryContainer, panelA), svc.px(28))));
+        box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            PendingIntent pi = mc.getSessionActivity();
+            if (pi != null) svc.sendPending(pi); else svc.startFromShade(launchIntent(mc.getPackageName()));
+            close();
+        }});
+
+        LinearLayout top = new LinearLayout(svc);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        if (art != null) {
+            ImageView a = new ImageView(svc);
+            a.setImageBitmap(art);
+            a.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            a.setClipToOutline(true);
+            a.setBackground(round(pal.surfaceHigh, svc.px(14)));
+            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(svc.px(64), svc.px(64));
+            alp.setMarginEnd(svc.px(14));
+            top.addView(a, alp);
+        }
+        LinearLayout words = new LinearLayout(svc);
+        words.setOrientation(LinearLayout.VERTICAL);
+        TextView t = tv(TextUtils.isEmpty(title) ? appLabel(mc.getPackageName()).toString() : title.toString(),
+                16, pal.onPrimaryContainer);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(t);
+        TextView ar = tv((TextUtils.isEmpty(artist) ? "" : artist + "  ·  ") + appLabel(mc.getPackageName()),
+                13, Palette.alpha(pal.onPrimaryContainer, 0xBB));
+        ar.setSingleLine(true);
+        ar.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(ar);
+        top.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        box.addView(top);
+
+        if (dur > 0) {
+            LinearLayout prog = new LinearLayout(svc);
+            prog.setGravity(Gravity.CENTER_VERTICAL);
+            mediaPos = tv("", 11, Palette.alpha(pal.onPrimaryContainer, 0xBB));
+            mediaDur = tv(DateUtils.formatElapsedTime(dur / 1000), 11, Palette.alpha(pal.onPrimaryContainer, 0xBB));
+            mediaSeek = new SeekBar(svc);
+            mediaSeek.setMax((int) Math.min(Integer.MAX_VALUE, dur));
+            mediaSeek.setProgressTintList(ColorStateList.valueOf(pal.primary));
+            mediaSeek.setThumbTintList(ColorStateList.valueOf(pal.primary));
+            mediaSeek.setProgressBackgroundTintList(ColorStateList.valueOf(Palette.alpha(pal.onPrimaryContainer, 0x55)));
+            mediaSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                public void onProgressChanged(SeekBar s, int p, boolean user) {
+                    if (user) mediaPos.setText(DateUtils.formatElapsedTime(p / 1000));
+                }
+                public void onStartTrackingTouch(SeekBar s) { s.getParent().requestDisallowInterceptTouchEvent(true); }
+                public void onStopTrackingTouch(SeekBar s) { mc.getTransportControls().seekTo(s.getProgress()); }
+            });
+            prog.addView(mediaPos);
+            prog.addView(mediaSeek, new LinearLayout.LayoutParams(0, svc.px(36), 1));
+            prog.addView(mediaDur);
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            pl.topMargin = svc.px(8);
+            box.addView(prog, pl);
+            root.removeCallbacks(mediaTick);
+            root.post(mediaTick);
+        } else {
+            mediaSeek = null;
+        }
+
+        LinearLayout ctl = new LinearLayout(svc);
+        ctl.setGravity(Gravity.CENTER);
+        ctl.addView(mediaButton(R.drawable.qs_prev, "Previous", false, new Runnable() { public void run() {
+            mc.getTransportControls().skipToPrevious(); }}));
+        ctl.addView(mediaButton(playing ? R.drawable.qs_pause : R.drawable.qs_play, playing ? "Pause" : "Play", true,
+                new Runnable() { public void run() {
+                    if (playing) mc.getTransportControls().pause(); else mc.getTransportControls().play(); }}));
+        ctl.addView(mediaButton(R.drawable.qs_next, "Next", false, new Runnable() { public void run() {
+            mc.getTransportControls().skipToNext(); }}));
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        cl.topMargin = svc.px(4);
+        box.addView(ctl, cl);
+        return box;
+    }
+
+    private View mediaButton(int icon, String desc, boolean main, final Runnable r) {
+        ImageView b = new ImageView(svc);
+        b.setImageResource(icon);
+        b.setContentDescription(desc);
+        int size = svc.px(main ? 56 : 48);
+        b.setPadding(svc.px(main ? 15 : 12), svc.px(main ? 15 : 12), svc.px(main ? 15 : 12), svc.px(main ? 15 : 12));
+        b.setImageTintList(ColorStateList.valueOf(main ? pal.onPrimary : pal.onPrimaryContainer));
+        b.setBackground(ripple(main ? round(pal.primary, size / 2) : null));
+        b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { press(v); r.run(); } });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+        lp.setMarginStart(svc.px(10));
+        lp.setMarginEnd(svc.px(10));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    // ------------------------------------------------------------ groups and cards
 
     /** A stock-style group: collapsed it previews the latest messages; expanded, each is its own. */
     private View groupCard(final Entry en) {
@@ -948,21 +1256,13 @@ final class UnifiedShade {
         final LinearLayout box = new LinearLayout(svc);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(svc.px(16), svc.px(14), svc.px(8), svc.px(10));
-        box.setBackground(ripple(round(Palette.alpha(pal.surface, 0xF2), svc.px(24))));
+        box.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(24))));
 
         LinearLayout top = appLine(lead, en.kids.size());
-        final ImageView chev = new ImageView(svc);
-        chev.setImageResource(R.drawable.qs_chevron);
-        chev.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
-        chev.setRotation(open ? 180f : 0f);
-        chev.setPadding(svc.px(6), svc.px(6), svc.px(6), svc.px(6));
-        chev.setBackground(ripple(round(pal.surfaceHigh, svc.px(16))));
-        chev.setContentDescription(open ? "Collapse" : "Expand");
-        chev.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+        top.addView(chevron(open, new Runnable() { public void run() {
             if (open) openGroups.remove(en.group); else openGroups.add(en.group);
             refreshNotifications();
-        }});
-        top.addView(chev, new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        }}), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
         box.addView(top);
 
         if (!open) {
@@ -1017,14 +1317,29 @@ final class UnifiedShade {
                 box.addView(c, lp);
             }
         }
-        box.setOnLongClickListener(hideApp(lead.getPackageName()));
+        final List<StatusBarNotification> all = new ArrayList<StatusBarNotification>(en.kids);
+        if (en.summary != null && !all.contains(en.summary)) all.add(en.summary);
+        View menu = menuRow(lead, all);
+        box.addView(menu);
+        box.setOnLongClickListener(toggleMenu(menu));
         boolean clearable = false;
         for (StatusBarNotification k : en.kids) if (k.isClearable()) clearable = true;
         if (clearable) swipeToDismiss(box, new Runnable() { public void run() {
-            for (StatusBarNotification k : en.kids) if (k.isClearable()) TickerListener.cancel(k.getKey());
-            if (en.summary != null && en.summary.isClearable()) TickerListener.cancel(en.summary.getKey());
+            for (StatusBarNotification k : all) if (k.isClearable()) TickerListener.cancel(k.getKey());
         }});
         return box;
+    }
+
+    private ImageView chevron(boolean open, final Runnable toggle) {
+        ImageView chev = new ImageView(svc);
+        chev.setImageResource(R.drawable.qs_chevron);
+        chev.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
+        chev.setRotation(open ? 180f : 0f);
+        chev.setPadding(svc.px(6), svc.px(6), svc.px(6), svc.px(6));
+        chev.setBackground(ripple(round(pal.surfaceHigh, svc.px(16))));
+        chev.setContentDescription(open ? "Collapse" : "Expand");
+        chev.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { toggle.run(); } });
+        return chev;
     }
 
     private Intent launchIntent(String pkg) {
@@ -1047,7 +1362,7 @@ final class UnifiedShade {
         small.setPadding(svc.px(4), svc.px(4), svc.px(4), svc.px(4));
         small.setBackground(round(accent, svc.px(12)));
         top.addView(small, new LinearLayout.LayoutParams(svc.px(24), svc.px(24)));
-        TextView app = tv(appLabel(s.getPackageName()) + (count > 1 ? "  \u00b7  " + count : "") + "  \u00b7  "
+        TextView app = tv(appLabel(s.getPackageName()) + (count > 1 ? "  ·  " + count : "") + "  ·  "
                 + DateUtils.getRelativeTimeSpanString(s.getPostTime(), System.currentTimeMillis(),
                 DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE), 12, pal.onSurfaceVariant);
         app.setPadding(svc.px(8), 0, 0, 0);
@@ -1056,14 +1371,94 @@ final class UnifiedShade {
         return top;
     }
 
-    private View.OnLongClickListener hideApp(final String pkg) {
+    /** Long-press menu, stock style: snooze, the app's notification settings, or hide the app. */
+    private View menuRow(final StatusBarNotification s, final List<StatusBarNotification> all) {
+        final LinearLayout m = new LinearLayout(svc);
+        m.setGravity(Gravity.CENTER_VERTICAL);
+        m.setPadding(0, svc.px(10), 0, 0);
+        m.setVisibility(View.GONE);
+        final String[] labels = {"15m", "1h", "2h"};
+        final long[] times = {15 * 60000L, 60 * 60000L, 120 * 60000L};
+        TextView z = tv("Snooze", 13, pal.onSurfaceVariant);
+        z.setPadding(0, 0, svc.px(6), 0);
+        m.addView(z);
+        for (int i = 0; i < labels.length; i++) {
+            final long ms = times[i];
+            TextView b = pill(labels[i], new View.OnClickListener() { public void onClick(View v) {
+                for (StatusBarNotification k : all) TickerListener.snooze(k.getKey(), ms);
+                svc.toast("Snoozed");
+            }});
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd(svc.px(6));
+            m.addView(b, lp);
+        }
+        m.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
+        TextView set = pill("⚙", new View.OnClickListener() { public void onClick(View v) {
+            Intent i;
+            String ch = s.getNotification().getChannelId();
+            if (ch != null) i = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, s.getPackageName()).putExtra(Settings.EXTRA_CHANNEL_ID, ch);
+            else i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, s.getPackageName());
+            launch(i);
+        }});
+        set.setContentDescription("Notification settings");
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        sl.setMarginEnd(svc.px(6));
+        m.addView(set, sl);
+        final TextView hide = pill("Hide app", null);
+        hide.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            if (hide.getTag() == null) {   // first tap only arms it
+                hide.setTag(Boolean.TRUE);
+                hide.setText("Tap again to hide");
+                hide.setTextColor(0xFFFFFFFF);
+                hide.setBackground(ripple(round(pal.dark ? 0xFFB3261E : 0xFFD32F2F, svc.px(18))));
+                hide.postDelayed(new Runnable() { public void run() {   // disarm if not confirmed
+                    hide.setTag(null);
+                    hide.setText("Hide app");
+                    hide.setTextColor(pal.onSurface);
+                    hide.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
+                }}, 3000);
+                return;
+            }
+            Prefs.setHidden(svc, s.getPackageName(), true);
+            svc.toast("Hidden: " + appLabel(s.getPackageName()) + " — undo in TickerBar → Hidden apps");
+            refreshNotifications();
+        }});
+        m.addView(hide);
+        return m;
+    }
+
+    private View.OnLongClickListener toggleMenu(final View menu) {
         return new View.OnLongClickListener() { public boolean onLongClick(View v) {
             v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
-            Prefs.setHidden(svc, pkg, true);
-            svc.toast("Hidden: " + appLabel(pkg) + " \u2014 undo in TickerBar \u2192 Hidden apps");
-            refreshNotifications();
+            menu.setVisibility(menu.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
             return true;
         }};
+    }
+
+    /** The action that takes a typed reply, if the app offers one. */
+    private static Notification.Action replyAction(Notification n) {
+        if (n.actions == null) return null;
+        for (Notification.Action a : n.actions) {
+            if (a == null || a.actionIntent == null || a.getRemoteInputs() == null) continue;
+            for (android.app.RemoteInput ri : a.getRemoteInputs()) if (ri.getAllowFreeFormInput()) return a;
+        }
+        return null;
+    }
+
+    /** Send a reply through the app's own reply action, as the system shade does. */
+    private void reply(Notification.Action a, CharSequence text, boolean choice) {
+        android.app.RemoteInput[] ris = a.getRemoteInputs();
+        Intent fill = new Intent();
+        Bundle res = new Bundle();
+        for (android.app.RemoteInput ri : ris) res.putCharSequence(ri.getResultKey(), text);
+        android.app.RemoteInput.addResultsToIntent(ris, fill, res);
+        if (Build.VERSION.SDK_INT >= 28) android.app.RemoteInput.setResultsSource(fill,
+                choice ? android.app.RemoteInput.SOURCE_CHOICE : android.app.RemoteInput.SOURCE_FREE_FORM_INPUT);
+        boolean ok = svc.sendPending(a.actionIntent, fill);
+        svc.toast(ok ? "Sent" : "Couldn't send");
     }
 
     /** One notification. Inside an open group it drops the app line and sits on the group's surface. */
@@ -1073,16 +1468,19 @@ final class UnifiedShade {
         CharSequence title = ex == null ? null : ex.getCharSequence(Notification.EXTRA_TITLE);
         CharSequence body = text(n);
         if (TextUtils.isEmpty(title) && TextUtils.isEmpty(body)) return null;
+        final boolean open = openCards.contains(s.getKey());
 
         final LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout top = null;
         if (child) {
             card.setPadding(svc.px(14), svc.px(10), svc.px(14), svc.px(10));
             card.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
         } else {
             card.setPadding(svc.px(16), svc.px(14), svc.px(16), svc.px(12));
-            card.setBackground(ripple(round(Palette.alpha(pal.surface, 0xF2), svc.px(24))));
-            card.addView(appLine(s, 1));
+            card.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(24))));
+            top = appLine(s, 1);
+            card.addView(top);
         }
 
         // title + text, with the sender's picture on the right when there is one
@@ -1099,13 +1497,13 @@ final class UnifiedShade {
         }
         if (!TextUtils.isEmpty(body)) {
             TextView b = tv(body.toString(), 14, pal.onSurfaceVariant);
-            b.setMaxLines(child ? 3 : 4);
+            b.setMaxLines(open ? 30 : child ? 3 : 4);
             b.setEllipsize(TextUtils.TruncateAt.END);
             words.addView(b);
         }
         mid.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Icon large = n.getLargeIcon();
-        if (large != null) {
+        if (large != null && !open) {
             try {
                 Drawable d = large.loadDrawable(svc);
                 if (d != null) {
@@ -1125,16 +1523,96 @@ final class UnifiedShade {
         if (!child) mp.topMargin = svc.px(6);
         card.addView(mid, mp);
 
-        // actions (replies need the system shade's text box, so those open the notification)
+        // expand: the whole text, and the picture for picture notifications
+        Drawable picture = picture(n);
+        boolean expandable = picture != null || (body != null && (body.length() > 110 || body.toString().contains("\n")));
+        if (expandable && top != null) {
+            top.addView(chevron(open, new Runnable() { public void run() {
+                if (open) openCards.remove(s.getKey()); else openCards.add(s.getKey());
+                refreshNotifications();
+            }}), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        }
+        if (open && picture != null) {
+            ImageView pic = new ImageView(svc);
+            pic.setImageDrawable(picture);
+            pic.setAdjustViewBounds(true);
+            pic.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            pic.setClipToOutline(true);
+            pic.setBackground(round(pal.surfaceHigh, svc.px(16)));
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            pl.topMargin = svc.px(10);
+            card.addView(pic, pl);
+        }
+
+        // smart replies the system suggested for this message
+        final Notification.Action replyA = replyAction(n);
+        NotificationListenerService.Ranking r = rank(s.getKey());
+        if (replyA != null && r != null && Build.VERSION.SDK_INT >= 29) {
+            List<CharSequence> smart = r.getSmartReplies();
+            if (smart != null && !smart.isEmpty()) {
+                LinearLayout chips = new LinearLayout(svc);
+                chips.setPadding(0, svc.px(8), 0, 0);
+                int shown = 0;
+                for (final CharSequence q : smart) {
+                    if (shown++ >= 3) break;
+                    TextView c = pill(q.toString(), new View.OnClickListener() { public void onClick(View v) {
+                        reply(replyA, q, true);
+                    }});
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.setMarginEnd(svc.px(8));
+                    chips.addView(c, lp);
+                }
+                android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(svc);
+                hs.setHorizontalScrollBarEnabled(false);
+                hs.addView(chips);
+                card.addView(hs);
+            }
+        }
+
+        // the inline reply box, shown when Reply is tapped
+        final LinearLayout replyBox = new LinearLayout(svc);
+        replyBox.setGravity(Gravity.CENTER_VERTICAL);
+        replyBox.setVisibility(View.GONE);
+        replyBox.setPadding(svc.px(4), svc.px(8), 0, 0);
+        final android.widget.EditText input = new android.widget.EditText(svc);
+        input.setHint("Reply");
+        input.setHintTextColor(pal.onSurfaceVariant);
+        input.setTextColor(pal.onSurface);
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        input.setBackground(round(pal.surfaceHigh, svc.px(22)));
+        input.setPadding(svc.px(16), svc.px(10), svc.px(16), svc.px(10));
+        input.setMaxLines(4);
+        replyBox.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        ImageView send = new ImageView(svc);
+        send.setImageResource(R.drawable.qs_send);
+        send.setImageTintList(ColorStateList.valueOf(pal.onPrimary));
+        send.setPadding(svc.px(11), svc.px(11), svc.px(11), svc.px(11));
+        send.setBackground(ripple(round(pal.primary, svc.px(22))));
+        send.setContentDescription("Send");
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(svc.px(44), svc.px(44));
+        sendLp.setMarginStart(svc.px(8));
+        replyBox.addView(send, sendLp);
+
+        // actions: replies open the inline box; the rest fire straight away
         if (n.actions != null && n.actions.length > 0) {
             LinearLayout acts = new LinearLayout(svc);
             acts.setPadding(0, svc.px(8), 0, 0);
             int shown = 0;
             for (final Notification.Action a : n.actions) {
                 if (a == null || TextUtils.isEmpty(a.title) || a.actionIntent == null || shown >= 3) continue;
-                final boolean reply = a.getRemoteInputs() != null && a.getRemoteInputs().length > 0;
+                final boolean isReply = a == replyA;
                 TextView b = pill(a.title.toString(), new View.OnClickListener() { public void onClick(View v) {
-                    if (reply) { svc.closeShadeAndOpenSystem(); return; }
+                    if (isReply) {
+                        replyBox.setVisibility(View.VISIBLE);
+                        replying = true;
+                        input.requestFocus();
+                        android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
+                                svc.getSystemService(Context.INPUT_METHOD_SERVICE);
+                        if (imm != null) imm.showSoftInput(input, 0);
+                        return;
+                    }
                     svc.sendPending(a.actionIntent);
                     close();
                 }});
@@ -1146,74 +1624,107 @@ final class UnifiedShade {
             }
             if (shown > 0) card.addView(acts);
         }
+        card.addView(replyBox, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        send.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            CharSequence msg = input.getText();
+            if (replyA == null || TextUtils.isEmpty(msg)) return;
+            reply(replyA, msg.toString(), false);
+            input.setText("");
+            replyBox.setVisibility(View.GONE);
+            android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
+                    svc.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+            replying = false;
+            if (refreshPending) refreshNotifications();
+        }});
+
+        List<StatusBarNotification> one = new ArrayList<StatusBarNotification>();
+        one.add(s);
+        View menu = menuRow(s, one);
+        card.addView(menu);
 
         card.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
             if (n.contentIntent != null) svc.sendPending(n.contentIntent);
             if ((n.flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(s.getKey());
             close();
         }});
-        card.setOnLongClickListener(hideApp(s.getPackageName()));   // never show this app here again
+        card.setOnLongClickListener(toggleMenu(menu));
         if (s.isClearable()) swipeToDismiss(card, new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } });
         return card;
     }
 
+    /** A picture notification's image, if it has one. */
+    private Drawable picture(Notification n) {
+        Bundle ex = n.extras;
+        if (ex == null) return null;
+        try {
+            android.graphics.Bitmap bm = ex.getParcelable(Notification.EXTRA_PICTURE);
+            if (bm != null) return new android.graphics.drawable.BitmapDrawable(svc.getResources(), bm);
+            if (Build.VERSION.SDK_INT >= 31) {
+                Icon ic = ex.getParcelable(Notification.EXTRA_PICTURE_ICON);
+                if (ic != null) return ic.loadDrawable(svc);
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
     /**
      * Stock-style swipe: the card stays under the finger (back and forth, as long as you
-     * hold it), fading as it travels; let go past ~40% or flick and it flies off at your
-     * speed while the list closes the gap, otherwise it springs back.
+     * hold it), fading as it travels. Any sideways movement means it's not a tap; a quick
+     * flick of a couple of centimetres is enough to dismiss, and so is dragging past ~35%.
      */
     private void swipeToDismiss(final View card, final Runnable dismiss) {
         card.setOnTouchListener(new View.OnTouchListener() {
-            float x0, y0; boolean swiping; VelocityTracker vt;
+            float x0, y0; boolean swiping, moved; VelocityTracker vt;
             public boolean onTouch(View v, MotionEvent e) {
                 int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
+                if (vt != null && e.getActionMasked() != MotionEvent.ACTION_DOWN) vt.addMovement(e);
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        x0 = e.getRawX(); y0 = e.getRawY(); swiping = false;
+                        x0 = e.getRawX(); y0 = e.getRawY(); swiping = false; moved = false;
                         v.animate().cancel();
                         if (vt != null) vt.recycle();
                         vt = VelocityTracker.obtain(); vt.addMovement(e);
                         return false;   // let the click / scroll machinery see it too
                     case MotionEvent.ACTION_MOVE: {
-                        if (vt != null) vt.addMovement(e);
-                        float dx = e.getRawX() - x0;
-                        if (!swiping && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(e.getRawY() - y0)) {
+                        float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
+                        if (Math.abs(dx) > slop / 2f) moved = true;   // sideways at all: not a tap
+                        if (!swiping && Math.abs(dx) > slop * 0.7f && Math.abs(dx) > Math.abs(dy)) {
                             swiping = true;
                             swipingCard = true;
                             v.getParent().requestDisallowInterceptTouchEvent(true);
-                            v.cancelLongPress();   // holding it while you swipe must not hide the app
+                            v.cancelLongPress();   // holding it while you swipe must not open the menu
                             v.setPressed(false);
                         }
                         if (swiping) {
                             float w = Math.max(1, v.getWidth());
                             v.setTranslationX(dx);
-                            float f = Math.min(1f, Math.abs(dx) / (w * 0.85f));
-                            v.setAlpha(1f - f * f * 0.9f - f * 0.1f);
+                            float f = Math.min(1f, Math.abs(dx) / (w * 0.8f));
+                            v.setAlpha(1f - f * f * 0.85f - f * 0.1f);
                             return true;
                         }
+                        if (moved) { v.cancelLongPress(); v.setPressed(false); }
                         return false;
                     }
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL: {
-                        if (!swiping) { if (vt != null) { vt.recycle(); vt = null; } return false; }
-                        swiping = false;
                         float vx = 0;
-                        if (vt != null) { vt.addMovement(e); vt.computeCurrentVelocity(1000); vx = vt.getXVelocity(); vt.recycle(); vt = null; }
-                        float dx = v.getTranslationX(), w = Math.max(1, v.getWidth());
-                        boolean fling = Math.abs(vx) > 1000 && Math.signum(vx) == Math.signum(dx);
-                        if (e.getActionMasked() == MotionEvent.ACTION_UP && (Math.abs(dx) > w * 0.4f || fling)) {
-                            float to = Math.signum(dx == 0 ? vx : dx) * w * 1.1f;
-                            long ms = (long) Math.max(110, Math.min(260,
-                                    Math.abs(to - dx) / Math.max(1600, Math.abs(vx)) * 1000));
-                            v.animate().translationX(to).alpha(0f).setDuration(ms)
-                                    .setInterpolator(new DecelerateInterpolator())
-                                    .withEndAction(new Runnable() { public void run() {
-                                        swipingCard = false;
-                                        ViewGroup parent = (ViewGroup) card.getParent();
-                                        if (parent != null) parent.removeView(card);   // the list slides up to close the gap
-                                        dismiss.run();
-                                        if (refreshPending) refreshNotifications();
-                                    }}).start();
+                        if (vt != null) { vt.computeCurrentVelocity(1000); vx = vt.getXVelocity(); vt.recycle(); vt = null; }
+                        float dx = swiping ? v.getTranslationX() : e.getRawX() - x0;
+                        float w = Math.max(1, v.getWidth());
+                        boolean up = e.getActionMasked() == MotionEvent.ACTION_UP;
+                        boolean fling = Math.abs(vx) > 650 && Math.signum(vx) == Math.signum(dx)
+                                && Math.abs(dx) > svc.px(12);
+                        if (!swiping) {
+                            // a flick so quick it never registered as a drag: still a dismiss, never a tap
+                            if (up && fling) { fly(v, dx, vx, dismiss); return true; }
+                            if (moved) { v.setPressed(false); return true; }   // swallow: no accidental open
+                            return false;
+                        }
+                        swiping = false;
+                        if (up && (Math.abs(dx) > w * 0.35f || fling)) {
+                            fly(v, dx, vx, dismiss);
                         } else {
                             v.animate().translationX(0).alpha(1f).setDuration(280)
                                     .setInterpolator(new android.view.animation.OvershootInterpolator(1.4f))
@@ -1229,6 +1740,23 @@ final class UnifiedShade {
                 }
             }
         });
+    }
+
+    /** Off the side at the finger's speed; the list then closes the gap. */
+    private void fly(final View v, float dx, float vx, final Runnable dismiss) {
+        swipingCard = true;
+        float w = Math.max(1, v.getWidth());
+        float to = Math.signum(dx == 0 ? vx : dx) * w * 1.1f;
+        long ms = (long) Math.max(100, Math.min(240, Math.abs(to - v.getTranslationX()) / Math.max(1800, Math.abs(vx)) * 1000));
+        v.animate().translationX(to).alpha(0f).setDuration(ms)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(new Runnable() { public void run() {
+                    swipingCard = false;
+                    ViewGroup parent = (ViewGroup) v.getParent();
+                    if (parent != null) parent.removeView(v);
+                    dismiss.run();
+                    if (refreshPending) refreshNotifications();
+                }}).start();
     }
 
     private static CharSequence text(Notification n) {

@@ -33,8 +33,11 @@ final class Palette {
                 == Configuration.UI_MODE_NIGHT_YES;
     }
 
-    static Palette of(Context c) {
-        boolean dark = isDark(c);
+    static Palette of(Context c) { return of(c, 0); }
+
+    /** mode: 0 follow the system's light/dark, 1 always dark, 2 always light. */
+    static Palette of(Context c, int mode) {
+        boolean dark = mode == 1 || (mode != 2 && isDark(c));
         if (Build.VERSION.SDK_INT >= 31) {
             if (dark) return new Palette(true,
                     col(c, android.R.color.system_neutral1_900),
@@ -66,6 +69,28 @@ final class Palette {
     }
 
     private static int col(Context c, int id) { return c.getColor(id); }
+
+    /** The same palette with another accent; containers are derived from it. */
+    Palette withAccent(int accent) {
+        accent |= 0xFF000000;
+        boolean light = luminance(accent) > 0.45;
+        int on = light ? 0xFF111111 : 0xFFFFFFFF;
+        int container = blend(accent, dark ? 0xFF000000 : 0xFFFFFFFF, 0.62f);
+        int onContainer = dark ? blend(accent, 0xFFFFFFFF, 0.75f) : blend(accent, 0xFF000000, 0.6f);
+        return new Palette(dark, bg, surface, surfaceHigh, onSurface, onSurfaceVariant, outline,
+                accent, on, container, onContainer);
+    }
+
+    static double luminance(int c) {
+        return (0.2126 * ((c >> 16) & 0xFF) + 0.7152 * ((c >> 8) & 0xFF) + 0.0722 * (c & 0xFF)) / 255.0;
+    }
+
+    static int blend(int a, int b, float t) {
+        int r = Math.round(((a >> 16) & 0xFF) * (1 - t) + ((b >> 16) & 0xFF) * t);
+        int g = Math.round(((a >> 8) & 0xFF) * (1 - t) + ((b >> 8) & 0xFF) * t);
+        int bl = Math.round((a & 0xFF) * (1 - t) + (b & 0xFF) * t);
+        return 0xFF000000 | (r << 16) | (g << 8) | bl;
+    }
 
     /** Same colour at a given alpha (0-255). */
     static int alpha(int color, int a) { return (color & 0x00FFFFFF) | (a << 24); }
