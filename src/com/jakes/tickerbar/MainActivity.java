@@ -172,6 +172,9 @@ public class MainActivity extends Activity {
                 new String[]{"1 · finest", "2", "5 · default", "10"});
         switchRow(c, "Ringer like stock Android",
                 "When nothing's playing: ring \u2192 vibrate \u2192 silent on the volume buttons", Prefs.RINGER_CYCLE);
+        numberRow(c, "Hold before repeating", Prefs.VOL_HOLD_MS, "ms");
+        numberRow(c, "Repeat speed while held", Prefs.VOL_REPEAT_MS, "ms");
+        numberRow(c, "Pause before vibrate / silent", Prefs.RINGER_PAUSE, "ms");
         actionRow(c, "Allow silent mode", "Do Not Disturb access, needed to switch to silent",
                 new Runnable() { public void run() {
                     try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)); }

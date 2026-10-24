@@ -235,11 +235,16 @@ public class ShadeService extends AccessibilityService {
         stopVolumeRepeat();
         heldKey = key;
         heldSince = SystemClock.uptimeMillis();
-        ui.postDelayed(volumeRepeatR, VOLUME_HOLD_MS);
+        ui.postDelayed(volumeRepeatR, ms(Prefs.VOL_HOLD_MS, 100, 2000));
         return true;
     }
 
-    private static final long VOLUME_HOLD_MS = 400, VOLUME_REPEAT_MS = 90, VOLUME_HOLD_MAX_MS = 8000;
+    private static final long VOLUME_HOLD_MAX_MS = 8000;
+
+    /** A timing setting in ms, kept within sane bounds whatever was typed. */
+    private long ms(String key, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, Prefs.n(this, key)));
+    }
     private int heldKey;
     private long heldSince;
     private boolean heldRinger;   // this press is driving the ringer rather than media
@@ -249,7 +254,7 @@ public class ShadeService extends AccessibilityService {
         if (heldKey == 0 || !volumeKeys.contains(heldKey)
                 || SystemClock.uptimeMillis() - heldSince > VOLUME_HOLD_MAX_MS) { heldKey = 0; return; }
         if (!stepVolume(heldKey, true)) { heldKey = 0; return; }
-        ui.postDelayed(this, VOLUME_REPEAT_MS);
+        ui.postDelayed(this, ms(Prefs.VOL_REPEAT_MS, 30, 1000));
     }};
 
     private void stopVolumeRepeat() {
@@ -300,7 +305,7 @@ public class ShadeService extends AccessibilityService {
                 // a held button pauses at each boundary before crossing it
                 long now = SystemClock.uptimeMillis();
                 if (boundarySince == 0) boundarySince = now;
-                if (now - boundarySince < RINGER_PAUSE_MS) return true;
+                if (now - boundarySince < ms(Prefs.RINGER_PAUSE, 0, 3000)) return true;
             }
             boundarySince = 0;
             if (next == AudioManager.RINGER_MODE_SILENT || mode == AudioManager.RINGER_MODE_SILENT) {
@@ -333,7 +338,6 @@ public class ShadeService extends AccessibilityService {
         }
     }
 
-    private static final long RINGER_PAUSE_MS = 600;
     private long boundarySince;   // when a held button reached a ring/vibrate/silent boundary
 
     /** Bring up the system's volume panel on the ringer so the new mode shows. */
