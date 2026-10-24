@@ -952,6 +952,7 @@ final class UnifiedShade {
         if (swipingCard || replying) { refreshPending = true; return; }
         refreshPending = false;
         notifBox.removeAllViews();
+        clearable.clear();
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
 
@@ -1001,12 +1002,33 @@ final class UnifiedShade {
             LinearLayout foot = new LinearLayout(svc);
             foot.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             foot.setPadding(svc.px(4), svc.px(10), svc.px(4), 0);
-            foot.addView(pill("Clear all", new View.OnClickListener() { public void onClick(View v) {
-                TickerListener.cancelAll();
-                close();
-            }}));
+            foot.addView(pill("Clear all", new View.OnClickListener() { public void onClick(View v) { clearAll(); }}));
             notifBox.addView(foot);
         }
+    }
+
+    private final List<View> clearable = new ArrayList<View>();   // swipeable entries, in list order
+
+    /**
+     * Stock Clear all: the entries sweep off to the side one after another from the bottom,
+     * then the shade rolls up.
+     */
+    private void clearAll() {
+        swipingCard = true;   // hold list rebuilds while they animate out
+        List<View> views = new ArrayList<View>(clearable);
+        long delay = 0;
+        for (int i = views.size() - 1; i >= 0; i--) {
+            View v = views.get(i);
+            if (v.getParent() == null) continue;
+            v.animate().translationX(v.getWidth() * 1.1f).alpha(0f).setStartDelay(delay).setDuration(220)
+                    .setInterpolator(new android.view.animation.AccelerateInterpolator(1.2f)).start();
+            delay += 45;
+        }
+        root.postDelayed(new Runnable() { public void run() {
+            TickerListener.cancelAll();
+            swipingCard = false;
+            close();
+        }}, delay + 260);
     }
 
     /** "Silent" gets its own clear button, like stock. */
@@ -1323,9 +1345,10 @@ final class UnifiedShade {
         View menu = menuRow(lead, all);
         box.addView(menu);
         box.setOnLongClickListener(toggleMenu(menu));
-        boolean clearable = false;
-        for (StatusBarNotification k : en.kids) if (k.isClearable()) clearable = true;
-        if (clearable) swipeToDismiss(box, new Runnable() { public void run() {
+        boolean clearableGroup = false;
+        for (StatusBarNotification k : en.kids) if (k.isClearable()) clearableGroup = true;
+        if (clearableGroup) clearable.add(box);
+        if (clearableGroup) swipeToDismiss(box, new Runnable() { public void run() {
             for (StatusBarNotification k : all) if (k.isClearable()) TickerListener.cancel(k.getKey());
         }});
         return box;
@@ -1680,6 +1703,7 @@ final class UnifiedShade {
             close();
         }});
         card.setOnLongClickListener(toggleMenu(menu));
+        if (s.isClearable() && !child) clearable.add(card);
         if (s.isClearable()) swipeToDismiss(card, new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } });
         return card;
     }
