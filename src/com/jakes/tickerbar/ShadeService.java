@@ -1191,6 +1191,16 @@ public class ShadeService extends AccessibilityService {
     int screenH() { return screenHeight(); }
     int navBar() { return navZoneHeight(); }
 
+    /** The screen's top corner radius, so the shade can sit flush in it. */
+    int screenCorner() {
+        Display d = display();
+        if (d != null && Build.VERSION.SDK_INT >= 31) {
+            RoundedCorner tl = d.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT);
+            if (tl != null) return tl.getRadius();
+        }
+        return dp(28);
+    }
+
     /** Status bar band, including a cut-out that reaches lower than it. */
     int statusBar() {
         int sb = 0;

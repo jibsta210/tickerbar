@@ -209,6 +209,8 @@ final class UnifiedShade {
         closing = false;
         refreshers.clear();
         fixed.clear();
+        openGroups.clear();
+        swipingCard = false;
         svc.shadeClosed();
     }
 
@@ -219,7 +221,7 @@ final class UnifiedShade {
         fixed.clear();
         root = new FrameLayout(svc) {
             private float y0, x0;
-            private boolean dragging;
+            private boolean dragging, pulledOpen;
             private VelocityTracker vt;
 
             @Override public boolean dispatchKeyEvent(KeyEvent e) {
@@ -236,7 +238,7 @@ final class UnifiedShade {
             @Override public boolean onInterceptTouchEvent(MotionEvent e) {
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        y0 = e.getRawY(); x0 = e.getRawX(); dragging = false;
+                        y0 = e.getRawY(); x0 = e.getRawX(); dragging = false; pulledOpen = false;
                         if (vt != null) vt.recycle();
                         vt = VelocityTracker.obtain();
                         vt.addMovement(e);
@@ -247,6 +249,13 @@ final class UnifiedShade {
                         int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
                         if (up > slop * 2 && up > Math.abs(e.getRawX() - x0) && !scroll.canScrollVertically(1)) {
                             dragging = true;
+                            return true;
+                        }
+                        // pulling down with the list at its top opens the full quick settings
+                        if (!expanded && -up > svc.px(56) && -up > Math.abs(e.getRawX() - x0) * 1.5f
+                                && !scroll.canScrollVertically(-1)) {
+                            pulledOpen = true;
+                            setExpanded(true);
                             return true;
                         }
                         return false;
@@ -269,7 +278,9 @@ final class UnifiedShade {
                     case MotionEvent.ACTION_CANCEL: {
                         float v = 0;
                         if (vt != null) { vt.computeCurrentVelocity(1000); v = vt.getYVelocity(); vt.recycle(); vt = null; }
-                        if (dragging) {
+                        if (pulledOpen) {
+                            pulledOpen = false;   // that pull expanded the panel; nothing more to do
+                        } else if (dragging) {
                             dragging = false;
                             settle(!(v < -600 || -sheet.getTranslationY() > sheet.getHeight() * 0.2f), v);
                         } else if (e.getActionMasked() == MotionEvent.ACTION_UP) {
@@ -299,7 +310,10 @@ final class UnifiedShade {
 
         content = new LinearLayout(svc);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(svc.px(14), svc.statusBar() + svc.px(10), svc.px(14), svc.navBar() + svc.px(28));
+        // Starts at the very top: the panel's top corners follow the screen's own curve
+        int corner = svc.screenCorner();
+        int side = svc.px(8);
+        content.setPadding(side, side, side, svc.navBar() + svc.px(28));
         content.setLayoutTransition(new LayoutTransition());
         // empty space (below the list, between cards) puts the shade away, like stock
         content.setMinimumHeight(svc.screenH());
@@ -310,8 +324,13 @@ final class UnifiedShade {
         // ---- quick settings panel
         LinearLayout qs = new LinearLayout(svc);
         qs.setOrientation(LinearLayout.VERTICAL);
-        qs.setPadding(svc.px(16), svc.px(14), svc.px(16), svc.px(12));
-        qs.setBackground(round(Palette.alpha(pal.surface, 0xF2), svc.px(32)));
+        int topR = Math.max(svc.px(32), corner - side);
+        // keep the header clear of the corner curve, and of a camera cut-out in the middle
+        qs.setPadding(svc.px(16) + topR / 4, Math.max(svc.px(14), topR / 3), svc.px(16) + topR / 4, svc.px(12));
+        GradientDrawable qsBg = new GradientDrawable();
+        qsBg.setColor(Palette.alpha(pal.surface, 0xF2));
+        qsBg.setCornerRadii(new float[]{topR, topR, topR, topR, svc.px(32), svc.px(32), svc.px(32), svc.px(32)});
+        qs.setBackground(qsBg);
         qs.setLayoutTransition(new LayoutTransition());
         qs.setClickable(true);   // taps inside the panel never fall through to "close"
         content.addView(qs);
@@ -837,14 +856,27 @@ final class UnifiedShade {
 
     // ------------------------------------------------------------ notifications
 
+    /** A notification, or a group of them from one app / conversation, as one list entry. */
+    private static final class Entry {
+        final String group;
+        final List<StatusBarNotification> kids = new ArrayList<StatusBarNotification>();
+        StatusBarNotification summary;
+        Entry(String g) { group = g; }
+    }
+
+    private final HashSet<String> openGroups = new HashSet<String>();   // expanded while the shade is up
+    private boolean swipingCard, refreshPending;
+
     /** Called when notifications change while the shade is open. */
     void refreshNotifications() {
         if (!attached || notifBox == null) return;
+        if (swipingCard) { refreshPending = true; return; }   // don't pull the card from under the finger
+        refreshPending = false;
         notifBox.removeAllViews();
         StatusBarNotification[] all = TickerListener.active();
-        List<StatusBarNotification> list = order(all);
+        List<Entry> list = entries(all);
         boolean anyClearable = false;
-        for (StatusBarNotification s : list) if (s.isClearable()) { anyClearable = true; break; }
+        for (Entry en : list) for (StatusBarNotification k : en.kids) if (k.isClearable()) anyClearable = true;
 
         if (list.isEmpty()) {
             TextView none = tv(all == null ? "Notification access is off" : "No notifications", 14, pal.onSurfaceVariant);
@@ -852,8 +884,8 @@ final class UnifiedShade {
             none.setPadding(0, svc.px(28), 0, svc.px(28));
             notifBox.addView(none);
         } else {
-            for (StatusBarNotification s : list) {
-                View c = card(s);
+            for (Entry en : list) {
+                View c = en.kids.size() >= 2 ? groupCard(en) : card(en.kids.get(0), false);
                 if (c == null) continue;
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -865,10 +897,7 @@ final class UnifiedShade {
         LinearLayout foot = new LinearLayout(svc);
         foot.setGravity(Gravity.CENTER_VERTICAL);
         foot.setPadding(svc.px(4), svc.px(10), svc.px(4), 0);
-        TextView manage = pill("Manage", new View.OnClickListener() { public void onClick(View v) {
-            launch(new Intent(Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS)); }});
-        foot.addView(manage);
-        foot.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
+        foot.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         if (anyClearable) {
             foot.addView(pill("Clear all", new View.OnClickListener() { public void onClick(View v) {
                 TickerListener.cancelAll();
@@ -878,45 +907,134 @@ final class UnifiedShade {
         notifBox.addView(foot);
     }
 
-    /** Ranking order, group summaries dropped when their children are present. */
-    private List<StatusBarNotification> order(StatusBarNotification[] all) {
-        List<StatusBarNotification> out = new ArrayList<StatusBarNotification>();
+    /**
+     * Ranking order, gathered into groups the way stock Android does: everything sharing a
+     * group key (an app's explicit group, or the system's auto-group) is one entry, led by
+     * its highest-ranked member; a summary only stands alone when it has no children.
+     */
+    private List<Entry> entries(StatusBarNotification[] all) {
+        List<Entry> out = new ArrayList<Entry>();
         if (all == null) return out;
         HashMap<String, StatusBarNotification> byKey = new HashMap<String, StatusBarNotification>();
-        HashSet<String> groupsWithChildren = new HashSet<String>();
-        for (StatusBarNotification s : all) {
-            byKey.put(s.getKey(), s);
-            boolean summary = (s.getNotification().flags & Notification.FLAG_GROUP_SUMMARY) != 0;
-            if (!summary && s.getGroupKey() != null) groupsWithChildren.add(s.getGroupKey());
-        }
+        for (StatusBarNotification s : all) byKey.put(s.getKey(), s);
         List<String> keys = new ArrayList<String>();
         NotificationListenerService.RankingMap rm = TickerListener.ranking();
         if (rm != null) for (String k : rm.getOrderedKeys()) if (byKey.containsKey(k)) keys.add(k);
         for (StatusBarNotification s : all) if (!keys.contains(s.getKey())) keys.add(s.getKey());
+
+        HashMap<String, Entry> groups = new HashMap<String, Entry>();
         for (String k : keys) {
             StatusBarNotification s = byKey.get(k);
-            boolean summary = (s.getNotification().flags & Notification.FLAG_GROUP_SUMMARY) != 0;
-            if (summary && groupsWithChildren.contains(s.getGroupKey())) continue;
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
-            out.add(s);
+            String g = s.getGroupKey() != null ? s.getGroupKey() : s.getKey();
+            Entry en = groups.get(g);
+            if (en == null) { en = new Entry(g); groups.put(g, en); out.add(en); }
+            if ((s.getNotification().flags & Notification.FLAG_GROUP_SUMMARY) != 0) en.summary = s;
+            else en.kids.add(s);
         }
-        return out;
+        List<Entry> shown = new ArrayList<Entry>();
+        for (Entry en : out) {
+            if (en.kids.isEmpty() && en.summary != null) en.kids.add(en.summary);
+            if (!en.kids.isEmpty()) shown.add(en);
+        }
+        return shown;
     }
 
-    private View card(final StatusBarNotification s) {
-        final Notification n = s.getNotification();
-        Bundle ex = n.extras;
-        CharSequence title = ex == null ? null : ex.getCharSequence(Notification.EXTRA_TITLE);
-        CharSequence body = text(n);
-        if (TextUtils.isEmpty(title) && TextUtils.isEmpty(body)) return null;
+    /** A stock-style group: collapsed it previews the latest messages; expanded, each is its own. */
+    private View groupCard(final Entry en) {
+        final StatusBarNotification lead = en.kids.get(0);
+        final boolean open = openGroups.contains(en.group);
+        final LinearLayout box = new LinearLayout(svc);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(svc.px(16), svc.px(14), svc.px(8), svc.px(10));
+        box.setBackground(ripple(round(Palette.alpha(pal.surface, 0xF2), svc.px(24))));
 
-        final LinearLayout card = new LinearLayout(svc);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(svc.px(16), svc.px(14), svc.px(16), svc.px(12));
-        card.setBackground(ripple(round(Palette.alpha(pal.surface, 0xF2), svc.px(24))));
+        LinearLayout top = appLine(lead, en.kids.size());
+        final ImageView chev = new ImageView(svc);
+        chev.setImageResource(R.drawable.qs_chevron);
+        chev.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
+        chev.setRotation(open ? 180f : 0f);
+        chev.setPadding(svc.px(6), svc.px(6), svc.px(6), svc.px(6));
+        chev.setBackground(ripple(round(pal.surfaceHigh, svc.px(16))));
+        chev.setContentDescription(open ? "Collapse" : "Expand");
+        chev.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            if (open) openGroups.remove(en.group); else openGroups.add(en.group);
+            refreshNotifications();
+        }});
+        top.addView(chev, new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        box.addView(top);
 
-        // app line
+        if (!open) {
+            int n = Math.min(2, en.kids.size());
+            for (int i = 0; i < n; i++) {
+                Notification x = en.kids.get(i).getNotification();
+                CharSequence t = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TITLE);
+                CharSequence b = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TEXT);
+                android.text.SpannableStringBuilder line = new android.text.SpannableStringBuilder();
+                if (!TextUtils.isEmpty(t)) {
+                    line.append(t);
+                    line.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, line.length(), 0);
+                    line.append("  ");
+                }
+                if (!TextUtils.isEmpty(b)) line.append(b);
+                TextView row = tv("", 14, pal.onSurface);
+                row.setText(line);
+                row.setSingleLine(true);
+                row.setEllipsize(TextUtils.TruncateAt.END);
+                row.setPadding(0, svc.px(i == 0 ? 8 : 2), svc.px(8), 0);
+                box.addView(row);
+            }
+            if (en.kids.size() > 2) {
+                TextView more = tv("+" + (en.kids.size() - 2) + " more", 13, pal.onSurfaceVariant);
+                more.setPadding(0, svc.px(4), 0, 0);
+                box.addView(more);
+            }
+            // tapping the closed group opens the app, as stock does
+            box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                StatusBarNotification s = en.summary != null && en.summary.getNotification().contentIntent != null
+                        ? en.summary : lead;
+                if (s.getNotification().contentIntent != null) svc.sendPending(s.getNotification().contentIntent);
+                else svc.startFromShade(launchIntent(s.getPackageName()));
+                for (StatusBarNotification k : en.kids)
+                    if ((k.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(k.getKey());
+                if (en.summary != null && (en.summary.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0)
+                    TickerListener.cancel(en.summary.getKey());
+                close();
+            }});
+        } else {
+            box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                openGroups.remove(en.group);
+                refreshNotifications();
+            }});
+            for (StatusBarNotification k : en.kids) {
+                View c = card(k, true);
+                if (c == null) continue;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.topMargin = svc.px(6);
+                lp.setMarginEnd(svc.px(8));
+                box.addView(c, lp);
+            }
+        }
+        box.setOnLongClickListener(hideApp(lead.getPackageName()));
+        boolean clearable = false;
+        for (StatusBarNotification k : en.kids) if (k.isClearable()) clearable = true;
+        if (clearable) swipeToDismiss(box, new Runnable() { public void run() {
+            for (StatusBarNotification k : en.kids) if (k.isClearable()) TickerListener.cancel(k.getKey());
+            if (en.summary != null && en.summary.isClearable()) TickerListener.cancel(en.summary.getKey());
+        }});
+        return box;
+    }
+
+    private Intent launchIntent(String pkg) {
+        Intent i = svc.getPackageManager().getLaunchIntentForPackage(pkg);
+        return i != null ? i : new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg));
+    }
+
+    /** Icon, app name, optional count, time: the line at the top of every card. */
+    private LinearLayout appLine(StatusBarNotification s, int count) {
+        Notification n = s.getNotification();
         LinearLayout top = new LinearLayout(svc);
         top.setGravity(Gravity.CENTER_VERTICAL);
         ImageView small = new ImageView(svc);
@@ -929,13 +1047,43 @@ final class UnifiedShade {
         small.setPadding(svc.px(4), svc.px(4), svc.px(4), svc.px(4));
         small.setBackground(round(accent, svc.px(12)));
         top.addView(small, new LinearLayout.LayoutParams(svc.px(24), svc.px(24)));
-        TextView app = tv(appLabel(s.getPackageName()) + "  ·  "
+        TextView app = tv(appLabel(s.getPackageName()) + (count > 1 ? "  \u00b7  " + count : "") + "  \u00b7  "
                 + DateUtils.getRelativeTimeSpanString(s.getPostTime(), System.currentTimeMillis(),
                 DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE), 12, pal.onSurfaceVariant);
         app.setPadding(svc.px(8), 0, 0, 0);
         app.setSingleLine(true);
         top.addView(app, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        card.addView(top);
+        return top;
+    }
+
+    private View.OnLongClickListener hideApp(final String pkg) {
+        return new View.OnLongClickListener() { public boolean onLongClick(View v) {
+            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            Prefs.setHidden(svc, pkg, true);
+            svc.toast("Hidden: " + appLabel(pkg) + " \u2014 undo in TickerBar \u2192 Hidden apps");
+            refreshNotifications();
+            return true;
+        }};
+    }
+
+    /** One notification. Inside an open group it drops the app line and sits on the group's surface. */
+    private View card(final StatusBarNotification s, boolean child) {
+        final Notification n = s.getNotification();
+        Bundle ex = n.extras;
+        CharSequence title = ex == null ? null : ex.getCharSequence(Notification.EXTRA_TITLE);
+        CharSequence body = text(n);
+        if (TextUtils.isEmpty(title) && TextUtils.isEmpty(body)) return null;
+
+        final LinearLayout card = new LinearLayout(svc);
+        card.setOrientation(LinearLayout.VERTICAL);
+        if (child) {
+            card.setPadding(svc.px(14), svc.px(10), svc.px(14), svc.px(10));
+            card.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
+        } else {
+            card.setPadding(svc.px(16), svc.px(14), svc.px(16), svc.px(12));
+            card.setBackground(ripple(round(Palette.alpha(pal.surface, 0xF2), svc.px(24))));
+            card.addView(appLine(s, 1));
+        }
 
         // title + text, with the sender's picture on the right when there is one
         LinearLayout mid = new LinearLayout(svc);
@@ -951,7 +1099,7 @@ final class UnifiedShade {
         }
         if (!TextUtils.isEmpty(body)) {
             TextView b = tv(body.toString(), 14, pal.onSurfaceVariant);
-            b.setMaxLines(4);
+            b.setMaxLines(child ? 3 : 4);
             b.setEllipsize(TextUtils.TruncateAt.END);
             words.addView(b);
         }
@@ -974,7 +1122,7 @@ final class UnifiedShade {
         }
         LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        mp.topMargin = svc.px(6);
+        if (!child) mp.topMargin = svc.px(6);
         card.addView(mid, mp);
 
         // actions (replies need the system shade's text box, so those open the notification)
@@ -1004,19 +1152,17 @@ final class UnifiedShade {
             if ((n.flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(s.getKey());
             close();
         }});
-        // long-press: never show this app here (or on the ticker) again
-        card.setOnLongClickListener(new View.OnLongClickListener() { public boolean onLongClick(View v) {
-            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
-            Prefs.setHidden(svc, s.getPackageName(), true);
-            svc.toast("Hidden: " + appLabel(s.getPackageName()) + " \u2014 undo in TickerBar \u2192 Hidden apps");
-            refreshNotifications();
-            return true;
-        }});
-        if (s.isClearable()) swipeToDismiss(card, s.getKey());
+        card.setOnLongClickListener(hideApp(s.getPackageName()));   // never show this app here again
+        if (s.isClearable()) swipeToDismiss(card, new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } });
         return card;
     }
 
-    private void swipeToDismiss(final View card, final String key) {
+    /**
+     * Stock-style swipe: the card stays under the finger (back and forth, as long as you
+     * hold it), fading as it travels; let go past ~40% or flick and it flies off at your
+     * speed while the list closes the gap, otherwise it springs back.
+     */
+    private void swipeToDismiss(final View card, final Runnable dismiss) {
         card.setOnTouchListener(new View.OnTouchListener() {
             float x0, y0; boolean swiping; VelocityTracker vt;
             public boolean onTouch(View v, MotionEvent e) {
@@ -1024,19 +1170,25 @@ final class UnifiedShade {
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         x0 = e.getRawX(); y0 = e.getRawY(); swiping = false;
+                        v.animate().cancel();
+                        if (vt != null) vt.recycle();
                         vt = VelocityTracker.obtain(); vt.addMovement(e);
                         return false;   // let the click / scroll machinery see it too
                     case MotionEvent.ACTION_MOVE: {
                         if (vt != null) vt.addMovement(e);
                         float dx = e.getRawX() - x0;
-                        if (!swiping && Math.abs(dx) > slop * 2 && Math.abs(dx) > Math.abs(e.getRawY() - y0) * 1.5f) {
+                        if (!swiping && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(e.getRawY() - y0)) {
                             swiping = true;
+                            swipingCard = true;
                             v.getParent().requestDisallowInterceptTouchEvent(true);
+                            v.cancelLongPress();   // holding it while you swipe must not hide the app
                             v.setPressed(false);
                         }
                         if (swiping) {
+                            float w = Math.max(1, v.getWidth());
                             v.setTranslationX(dx);
-                            v.setAlpha(1f - Math.min(0.8f, Math.abs(dx) / v.getWidth()));
+                            float f = Math.min(1f, Math.abs(dx) / (w * 0.85f));
+                            v.setAlpha(1f - f * f * 0.9f - f * 0.1f);
                             return true;
                         }
                         return false;
@@ -1046,16 +1198,29 @@ final class UnifiedShade {
                         if (!swiping) { if (vt != null) { vt.recycle(); vt = null; } return false; }
                         swiping = false;
                         float vx = 0;
-                        if (vt != null) { vt.computeCurrentVelocity(1000); vx = vt.getXVelocity(); vt.recycle(); vt = null; }
-                        float dx = v.getTranslationX();
-                        if (Math.abs(dx) > v.getWidth() * 0.35f || Math.abs(vx) > 1400 && Math.signum(vx) == Math.signum(dx)) {
-                            v.animate().translationX(Math.signum(dx) * v.getWidth()).alpha(0f).setDuration(160)
+                        if (vt != null) { vt.addMovement(e); vt.computeCurrentVelocity(1000); vx = vt.getXVelocity(); vt.recycle(); vt = null; }
+                        float dx = v.getTranslationX(), w = Math.max(1, v.getWidth());
+                        boolean fling = Math.abs(vx) > 1000 && Math.signum(vx) == Math.signum(dx);
+                        if (e.getActionMasked() == MotionEvent.ACTION_UP && (Math.abs(dx) > w * 0.4f || fling)) {
+                            float to = Math.signum(dx == 0 ? vx : dx) * w * 1.1f;
+                            long ms = (long) Math.max(110, Math.min(260,
+                                    Math.abs(to - dx) / Math.max(1600, Math.abs(vx)) * 1000));
+                            v.animate().translationX(to).alpha(0f).setDuration(ms)
+                                    .setInterpolator(new DecelerateInterpolator())
                                     .withEndAction(new Runnable() { public void run() {
-                                        TickerListener.cancel(key);
-                                        notifBox.removeView(card);
+                                        swipingCard = false;
+                                        ViewGroup parent = (ViewGroup) card.getParent();
+                                        if (parent != null) parent.removeView(card);   // the list slides up to close the gap
+                                        dismiss.run();
+                                        if (refreshPending) refreshNotifications();
                                     }}).start();
                         } else {
-                            v.animate().translationX(0).alpha(1f).setDuration(180).start();
+                            v.animate().translationX(0).alpha(1f).setDuration(280)
+                                    .setInterpolator(new android.view.animation.OvershootInterpolator(1.4f))
+                                    .withEndAction(new Runnable() { public void run() {
+                                        swipingCard = false;
+                                        if (refreshPending) refreshNotifications();
+                                    }}).start();
                         }
                         return true;
                     }
