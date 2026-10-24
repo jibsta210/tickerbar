@@ -793,7 +793,18 @@ final class UnifiedShade {
                     catch (Exception e) { return false; }
                 }
                 public String state() { return active() ? "On" : "Off"; }
-                public void tap() { launch(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
+                public void tap() {
+                    // with WRITE_SECURE_SETTINGS (granted once over adb) location really toggles
+                    if (svc.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS)
+                            == PackageManager.PERMISSION_GRANTED) {
+                        try {
+                            Settings.Secure.putInt(svc.getContentResolver(), Settings.Secure.LOCATION_MODE,
+                                    active() ? Settings.Secure.LOCATION_MODE_OFF : Settings.Secure.LOCATION_MODE_HIGH_ACCURACY);
+                            return;
+                        } catch (Exception ignored) {}
+                    }
+                    launch(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                }
             };
             case "airplane": return new Tile() {
                 public int icon() { return R.drawable.qs_airplane; }
