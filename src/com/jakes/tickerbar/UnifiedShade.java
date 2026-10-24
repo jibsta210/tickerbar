@@ -69,10 +69,11 @@ final class UnifiedShade {
 
     // ------------------------------------------------------------ tiles
 
-    static final String[] TILE_IDS = {"wifi", "data", "bluetooth", "flashlight", "dnd", "sound",
-            "rotate", "location", "airplane", "battery"};
-    static final String[] TILE_NAMES = {"Internet", "Mobile data", "Bluetooth", "Flashlight",
-            "Do Not Disturb", "Sound", "Auto-rotate", "Location", "Airplane mode", "Battery Saver"};
+    static final String[] TILE_IDS = {"hotspot", "wifi", "data", "bluetooth", "recorder", "flashlight",
+            "dnd", "sound", "rotate", "location", "nfc", "reading", "airplane", "battery", "ultra", "reverse"};
+    static final String[] TILE_NAMES = {"Hotspot", "Internet", "Mobile data", "Bluetooth", "Screen recorder",
+            "Flashlight", "Do Not Disturb", "Sound", "Auto-rotate", "Location", "NFC", "Reading mode",
+            "Airplane mode", "Battery Saver", "Ultra battery saver", "Reverse charging"};
     /** Where a tile shows: 0 first row and expanded, 1 expanded only, 2 hidden. */
     static final int PLACE_BOTH = 0, PLACE_GRID = 1, PLACE_HIDDEN = 2;
     static final int ROW_MAX = 6;
@@ -100,7 +101,8 @@ final class UnifiedShade {
     private SeekBar brightness;
     private boolean attached, expanded, closing;
     private float sheetH;
-    private final List<Runnable> refreshers = new ArrayList<Runnable>();
+    private final List<Runnable> refreshers = new ArrayList<Runnable>();   // tiles, rebuilt with them
+    private final List<Runnable> fixed = new ArrayList<Runnable>();        // header and brightness row
     private final HashMap<String, CharSequence> labels = new HashMap<String, CharSequence>();
 
     private CameraManager cams;
@@ -206,6 +208,7 @@ final class UnifiedShade {
         attached = false;
         closing = false;
         refreshers.clear();
+        fixed.clear();
         svc.shadeClosed();
     }
 
@@ -213,6 +216,7 @@ final class UnifiedShade {
 
     private void build() {
         refreshers.clear();
+        fixed.clear();
         root = new FrameLayout(svc) {
             private float y0, x0;
             private boolean dragging;
@@ -391,6 +395,20 @@ final class UnifiedShade {
         date.setPadding(svc.px(12), svc.px(8), 0, 0);
         h.addView(date, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
+        ImageView power = new ImageView(svc);
+        power.setImageResource(R.drawable.qs_power);
+        power.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
+        power.setPadding(svc.px(10), svc.px(10), svc.px(10), svc.px(10));
+        power.setBackground(ripple(round(pal.surfaceHigh, svc.px(22))));
+        power.setContentDescription("Power menu");
+        power.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            closeNow();
+            svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG);
+        }});
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(svc.px(44), svc.px(44));
+        plp.setMarginEnd(svc.px(8));
+        h.addView(power, plp);
+
         ImageView gear = new ImageView(svc);
         gear.setImageResource(R.drawable.qs_settings);
         gear.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
@@ -410,10 +428,27 @@ final class UnifiedShade {
         r.setPadding(svc.px(16), 0, svc.px(8), 0);
         r.setBackground(round(pal.surfaceHigh, svc.px(26)));
 
-        ImageView sun = new ImageView(svc);
-        sun.setImageResource(R.drawable.qs_brightness);
-        sun.setImageTintList(ColorStateList.valueOf(pal.primary));
-        r.addView(sun, new LinearLayout.LayoutParams(svc.px(22), svc.px(22)));
+        // the sun is the auto-brightness switch: it turns into an "A" and lights up when auto
+        final ImageView sun = new ImageView(svc);
+        sun.setPadding(svc.px(7), svc.px(7), svc.px(7), svc.px(7));
+        sun.setContentDescription("Auto brightness");
+        sun.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            if (!Settings.System.canWrite(svc)) { askWriteSettings(); return; }
+            try {
+                Settings.System.putInt(svc.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
+                        autoBrightness() ? Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+                                : Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC);
+            } catch (Exception ignored) {}
+            press(v);
+            refreshTiles();
+        }});
+        r.addView(sun, new LinearLayout.LayoutParams(svc.px(38), svc.px(38)));
+        fixed.add(new Runnable() { public void run() {
+            boolean auto = autoBrightness();
+            sun.setImageResource(auto ? R.drawable.qs_brightness_auto : R.drawable.qs_brightness);
+            sun.setImageTintList(ColorStateList.valueOf(auto ? pal.onPrimary : pal.primary));
+            sun.setBackground(auto ? round(pal.primary, svc.px(19)) : null);
+        }});
 
         brightness = new SeekBar(svc);
         brightness.setMax(1000);
@@ -441,13 +476,18 @@ final class UnifiedShade {
                 svc.px(52));
         lp.topMargin = svc.px(14);
         r.setLayoutParams(lp);
-        refreshers.add(new Runnable() { public void run() {
+        fixed.add(new Runnable() { public void run() {
             try {
                 brightness.setProgress(toSlider(Settings.System.getInt(svc.getContentResolver(),
                         Settings.System.SCREEN_BRIGHTNESS)));
             } catch (Exception ignored) {}
         }});
         return r;
+    }
+
+    private boolean autoBrightness() {
+        return Settings.System.getInt(svc.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL) == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC;
     }
 
     // perceptual curve: the slider's halfway point is far dimmer than half the backlight
@@ -670,6 +710,80 @@ final class UnifiedShade {
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() { launch(new Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)); }
             };
+            case "hotspot": return new Tile() {
+                public int icon() { return R.drawable.qs_hotspot; }
+                public String label() { return "Hotspot"; }
+                public boolean active() {
+                    try {   // no public getter; this hidden one is readable on most builds
+                        Object wm = svc.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                        return (Boolean) wm.getClass().getMethod("isWifiApEnabled").invoke(wm);
+                    } catch (Throwable t) { return false; }
+                }
+                public String state() { return active() ? "On" : "Off"; }
+                public void tap() {
+                    if (!launchFirst(new Intent("android.settings.TETHER_SETTINGS"),
+                            new Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings")))
+                        launch(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
+                }
+            };
+            case "recorder": return new Tile() {
+                public int icon() { return R.drawable.qs_recorder; }
+                public String label() { return "Screen recorder"; }
+                public boolean active() { return false; }
+                public String state() { return "Tap to start"; }
+                public void tap() {
+                    Intent i = recorderIntent();
+                    if (i != null) launch(i);
+                    else svc.toast("No screen recorder app found");
+                }
+            };
+            case "nfc": return new Tile() {
+                public int icon() { return R.drawable.qs_nfc; }
+                public String label() { return "NFC"; }
+                public boolean active() {
+                    try {
+                        android.nfc.NfcAdapter a = android.nfc.NfcAdapter.getDefaultAdapter(svc);
+                        return a != null && a.isEnabled();
+                    } catch (Exception e) { return false; }
+                }
+                public String state() { return active() ? "On" : "Off"; }
+                public void tap() {
+                    if (Build.VERSION.SDK_INT >= 29) launch(new Intent(Settings.Panel.ACTION_NFC));
+                    else launch(new Intent(Settings.ACTION_NFC_SETTINGS));
+                }
+            };
+            case "reading": return new Tile() {
+                // HyperOS's reading mode; stock Android's nearest is Night Light
+                public int icon() { return R.drawable.qs_reading; }
+                public String label() { return "Reading mode"; }
+                public boolean active() {
+                    return Settings.System.getInt(svc.getContentResolver(), "screen_paper_mode_enabled", 0) == 1
+                            || Settings.Secure.getInt(svc.getContentResolver(), "night_display_activated", 0) == 1;
+                }
+                public String state() { return active() ? "On" : "Off"; }
+                public void tap() {
+                    boolean on = !active();
+                    try { Settings.System.putInt(svc.getContentResolver(), "screen_paper_mode_enabled", on ? 1 : 0); return; }
+                    catch (Throwable ignored) {}
+                    try { Settings.Secure.putInt(svc.getContentResolver(), "night_display_activated", on ? 1 : 0); return; }
+                    catch (Throwable ignored) {}
+                    launch(new Intent(Settings.ACTION_DISPLAY_SETTINGS));
+                }
+            };
+            case "ultra": return new Tile() {
+                public int icon() { return R.drawable.qs_ultra; }
+                public String label() { return "Ultra battery saver"; }
+                public boolean active() { return false; }
+                public String state() { return "Battery settings"; }
+                public void tap() { openBattery(); }
+            };
+            case "reverse": return new Tile() {
+                public int icon() { return R.drawable.qs_reverse; }
+                public String label() { return "Reverse charging"; }
+                public boolean active() { return false; }
+                public String state() { return "Battery settings"; }
+                public void tap() { openBattery(); }
+            };
             case "battery": return new Tile() {
                 public int icon() { return R.drawable.qs_battery; }
                 public String label() { return "Battery Saver"; }
@@ -707,21 +821,16 @@ final class UnifiedShade {
 
     private void refreshTiles() {
         if (!attached) return;
-        for (Runnable r : new ArrayList<Runnable>(refreshers)) {
+        List<Runnable> all = new ArrayList<Runnable>(fixed);
+        all.addAll(refreshers);
+        for (Runnable r : all) {
             try { r.run(); } catch (Exception ignored) {}
         }
     }
 
     private void refreshAll() {
         refreshers.clear();
-        // rebuild the brightness refresher too: build() registered it before the clear
         buildTiles();
-        refreshers.add(new Runnable() { public void run() {
-            try {
-                brightness.setProgress(toSlider(Settings.System.getInt(svc.getContentResolver(),
-                        Settings.System.SCREEN_BRIGHTNESS)));
-            } catch (Exception ignored) {}
-        }});
         refreshTiles();
         refreshNotifications();
     }
@@ -994,6 +1103,33 @@ final class UnifiedShade {
     private void launch(Intent i) {
         closeNow();
         svc.startFromShade(i);
+    }
+
+    /** Opens the first of these that exists. */
+    private boolean launchFirst(Intent... all) {
+        PackageManager pm = svc.getPackageManager();
+        for (Intent i : all) {
+            if (i.resolveActivity(pm) != null) { launch(i); return true; }
+        }
+        return false;
+    }
+
+    /** HyperOS keeps ultra saver and reverse charging in its own battery screen. */
+    private void openBattery() {
+        if (!launchFirst(new Intent().setClassName("com.miui.securitycenter", "com.miui.powercenter.PowerMainActivity"),
+                new Intent().setClassName("com.miui.securitycenter", "com.miui.powercenter.PowerCenter"),
+                new Intent(Intent.ACTION_POWER_USAGE_SUMMARY)))
+            launch(new Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS));
+    }
+
+    private Intent recorderIntent() {
+        PackageManager pm = svc.getPackageManager();
+        for (String pkg : new String[]{"com.miui.screenrecorder", "com.samsung.android.app.screenrecorder",
+                "com.google.android.apps.screenrecorder"}) {
+            Intent i = pm.getLaunchIntentForPackage(pkg);
+            if (i != null) return i;
+        }
+        return null;
     }
 
     private void askWriteSettings() {

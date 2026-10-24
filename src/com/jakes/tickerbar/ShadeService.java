@@ -207,6 +207,9 @@ public class ShadeService extends AccessibilityService {
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
         if (shade != null) shade.closeNow();   // laid out for the old size
+        // and look at the catcher again once the rotation has fully settled
+        ui.postDelayed(new Runnable() { public void run() { updateCatcher(); } }, 500);
+        ui.postDelayed(new Runnable() { public void run() { updateCatcher(); } }, 1500);
         ui.post(new Runnable() { public void run() { applySettings(); } });   // rotation moves the cutout
         // and the nav bar, whose insets can settle a beat after the rotation itself
         ui.postDelayed(new Runnable() { public void run() { if (wm != null) updateCorner(); } }, 400);
@@ -1180,6 +1183,8 @@ public class ShadeService extends AccessibilityService {
 
     void shadeClosed() { updateCatcher(); }
 
+    void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+
     WindowManager windows() { return wm; }
     WindowManager.LayoutParams overlay(int w, int h, int flags) { return overlayParams(w, h, flags); }
     int px(float dp) { return dp(dp); }
@@ -1205,8 +1210,10 @@ public class ShadeService extends AccessibilityService {
     private void updateCatcher() {
         if (wm == null) return;
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        // orientation from the configuration: the display size lags behind a rotation
+        boolean portrait = getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE;
         boolean want = oneShade() && (pm == null || pm.isInteractive()) && !isLocked()
-                && screenWidth() < screenHeight() && (shade == null || !shade.isOpen());
+                && portrait && (shade == null || !shade.isOpen());
         if (!want) {
             if (catcher != null && catcherAttached) {
                 try { wm.removeViewImmediate(catcher); } catch (Exception ignored) {}
