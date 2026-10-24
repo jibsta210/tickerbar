@@ -1059,6 +1059,7 @@ final class UnifiedShade {
             StatusBarNotification s = byKey.get(k);
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
+            if (Prefs.typeHidden(svc, s.getPackageName(), s.getNotification().getChannelId())) continue;
             if (player != null && s.getPackageName().equals(player.getPackageName()) && isMedia(s)) continue;
             String g = s.getGroupKey() != null ? s.getGroupKey() : s.getKey();
             Entry en = groups.get(g);
@@ -1373,10 +1374,17 @@ final class UnifiedShade {
 
     /** Long-press menu, stock style: snooze, the app's notification settings, or hide the app. */
     private View menuRow(final StatusBarNotification s, final List<StatusBarNotification> all) {
+        final LinearLayout wrap = new LinearLayout(svc);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setVisibility(View.GONE);
         final LinearLayout m = new LinearLayout(svc);
         m.setGravity(Gravity.CENTER_VERTICAL);
         m.setPadding(0, svc.px(10), 0, 0);
-        m.setVisibility(View.GONE);
+        wrap.addView(m);
+        final LinearLayout row2 = new LinearLayout(svc);
+        row2.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        row2.setPadding(0, svc.px(8), 0, 0);
+        wrap.addView(row2);
         final String[] labels = {"15m", "1h", "2h"};
         final long[] times = {15 * 60000L, 60 * 60000L, 120 * 60000L};
         TextView z = tv("Snooze", 13, pal.onSurfaceVariant);
@@ -1407,27 +1415,49 @@ final class UnifiedShade {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         sl.setMarginEnd(svc.px(6));
         m.addView(set, sl);
-        final TextView hide = pill("Hide app", null);
-        hide.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-            if (hide.getTag() == null) {   // first tap only arms it
-                hide.setTag(Boolean.TRUE);
-                hide.setText("Tap again to hide");
-                hide.setTextColor(0xFFFFFFFF);
-                hide.setBackground(ripple(round(pal.dark ? 0xFFB3261E : 0xFFD32F2F, svc.px(18))));
-                hide.postDelayed(new Runnable() { public void run() {   // disarm if not confirmed
-                    hide.setTag(null);
-                    hide.setText("Hide app");
-                    hide.setTextColor(pal.onSurface);
-                    hide.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
+        // hiding takes a second tap: the first only arms the button
+        final String ch = s.getNotification().getChannelId();
+        if (ch != null) {
+            NotificationListenerService.Ranking rk = rank(s.getKey());
+            final String chName = rk != null && rk.getChannel() != null && rk.getChannel().getName() != null
+                    ? rk.getChannel().getName().toString() : ch;
+            LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            tl.setMarginEnd(svc.px(6));
+            row2.addView(confirmPill("Hide this type", "Hide \u201c" + chName + "\u201d?", new Runnable() { public void run() {
+                Prefs.setTypeHidden(svc, s.getPackageName(), ch, chName, true);
+                svc.toast("Hidden: " + appLabel(s.getPackageName()) + " \u2014 " + chName);
+                refreshNotifications();
+            }}), tl);
+        }
+        row2.addView(confirmPill("Hide app", "Tap again to hide", new Runnable() { public void run() {
+            Prefs.setHidden(svc, s.getPackageName(), true);
+            svc.toast("Hidden: " + appLabel(s.getPackageName()) + " \u2014 undo in TickerBar \u2192 Hidden apps");
+            refreshNotifications();
+        }}));
+        return wrap;
+    }
+
+    /** A destructive pill: the first tap arms it (red, for 3 s), the second does it. */
+    private TextView confirmPill(final String label, final String armed, final Runnable action) {
+        final TextView p = pill(label, null);
+        p.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            if (p.getTag() == null) {
+                p.setTag(Boolean.TRUE);
+                p.setText(armed);
+                p.setTextColor(0xFFFFFFFF);
+                p.setBackground(ripple(round(pal.dark ? 0xFFB3261E : 0xFFD32F2F, svc.px(18))));
+                p.postDelayed(new Runnable() { public void run() {
+                    p.setTag(null);
+                    p.setText(label);
+                    p.setTextColor(pal.onSurface);
+                    p.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
                 }}, 3000);
                 return;
             }
-            Prefs.setHidden(svc, s.getPackageName(), true);
-            svc.toast("Hidden: " + appLabel(s.getPackageName()) + " — undo in TickerBar → Hidden apps");
-            refreshNotifications();
+            action.run();
         }});
-        m.addView(hide);
-        return m;
+        return p;
     }
 
     private View.OnLongClickListener toggleMenu(final View menu) {

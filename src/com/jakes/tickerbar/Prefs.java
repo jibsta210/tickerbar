@@ -71,6 +71,7 @@ public final class Prefs {
     public static final String VOLUME_STEP = "volume_button_step";
     public static final String HIDDEN_APPS  = "hidden_apps";    // packages kept out of the shade and the ticker
     public static final String SEEN_APPS    = "seen_apps";      // packages that have notified, for the hide list
+    public static final String HIDDEN_TYPES = "hidden_types";   // single channels hidden: "pkg\tchannel\tname" per line
     public static final String ONE_SHADE    = "one_shade";
     public static final String SHADE_THEME  = "shade_theme";    // 0 match system, 1 dark, 2 light
     public static final String SHADE_ACCENT = "shade_accent";   // UnifiedShade.ACCENTS index, 0 system
@@ -157,6 +158,33 @@ public final class Prefs {
     }
 
     public static boolean hidden(Context c, String pkg) { return set(c, HIDDEN_APPS).contains(pkg); }
+
+    /** Hidden notification types (one app's channel), each {package, channel id, channel name}. */
+    public static java.util.List<String[]> hiddenTypes(Context c) {
+        java.util.List<String[]> out = new java.util.ArrayList<String[]>();
+        for (String line : str(c, HIDDEN_TYPES).split("\n")) {
+            String[] f = line.split("\t", -1);
+            if (f.length >= 2 && !f[0].isEmpty()) out.add(new String[]{f[0], f[1], f.length > 2 ? f[2] : f[1]});
+        }
+        return out;
+    }
+
+    public static boolean typeHidden(Context c, String pkg, String channel) {
+        if (pkg == null || channel == null) return false;
+        for (String[] t : hiddenTypes(c)) if (t[0].equals(pkg) && t[1].equals(channel)) return true;
+        return false;
+    }
+
+    public static void setTypeHidden(Context c, String pkg, String channel, String name, boolean hide) {
+        StringBuilder b = new StringBuilder();
+        for (String[] t : hiddenTypes(c)) {
+            if (t[0].equals(pkg) && t[1].equals(channel)) continue;
+            b.append(t[0]).append('\t').append(t[1]).append('\t').append(t[2]).append('\n');
+        }
+        if (hide) b.append(pkg).append('\t').append(channel).append('\t')
+                .append(name == null ? channel : name.replace('\t', ' ').replace('\n', ' ')).append('\n');
+        put(c, HIDDEN_TYPES, b.toString());
+    }
 
     public static void setHidden(Context c, String pkg, boolean hide) {
         java.util.Set<String> s = set(c, HIDDEN_APPS);

@@ -191,8 +191,10 @@ public class MainActivity extends Activity {
 
         c = card("Hidden apps");
         note(c, "Apps switched on here never appear in the one shade or on the ticker. Tip: long-press a "
-                + "notification in the shade to hide its app. HyperOS's own shade and lock screen still show them.");
+                + "notification in the shade to hide just that type (like Messages' pairing notice) or the whole "
+                + "app. HyperOS's own shade and lock screen still show them.");
         hiddenAppRows(c);
+        hiddenTypeRows(c);
 
         c = card("Shade shortcuts");
         switchRow(c, "Only from the home screen", null, Prefs.SHADE_HOME);
@@ -506,6 +508,30 @@ public class MainActivity extends Activity {
         if (end != null) r.addView(end);
         card.addView(r);
         return r;
+    }
+
+    /** Single notification types hidden from the shade's long-press menu; switch off to show again. */
+    private void hiddenTypeRows(LinearLayout card) {
+        java.util.List<String[]> types = Prefs.hiddenTypes(this);
+        if (types.isEmpty()) return;
+        note(card, "Hidden notification types");
+        final android.content.pm.PackageManager pm = getPackageManager();
+        int[][] states = {new int[]{android.R.attr.state_checked}, new int[]{}};
+        for (final String[] t : types) {
+            String app = t[0];
+            try { app = pm.getApplicationLabel(pm.getApplicationInfo(t[0], 0)).toString(); } catch (Exception ignored) {}
+            final Switch sw = new Switch(this);
+            sw.setChecked(true);
+            sw.setThumbTintList(new ColorStateList(states, new int[]{pal.onPrimary, pal.outline}));
+            sw.setTrackTintList(new ColorStateList(states, new int[]{pal.primary, pal.surfaceHigh}));
+            sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                    Prefs.setTypeHidden(MainActivity.this, t[0], t[1], t[2], on);
+                    changed();
+                }});
+            LinearLayout r = row(card, t[2], app, sw);
+            r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+        }
     }
 
     /** One switch per app that has notified (plus any already hidden), by name. */

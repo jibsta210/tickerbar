@@ -64,7 +64,7 @@ public class TickerListener extends NotificationListenerService {
         if (!getPackageName().equals(pkg)) remember(pkg);
         if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
         if (getPackageName().equals(pkg)) return;
-        if (Prefs.hidden(this, pkg)) return;
+        if (Prefs.hidden(this, pkg) || Prefs.typeHidden(this, pkg, n.getChannelId())) return;
         if (Prefs.on(this, Prefs.SKIP_ONGOING)
                 && (sbn.isOngoing() || (n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0)) return;
         if (isIgnored(pkg)) return;
