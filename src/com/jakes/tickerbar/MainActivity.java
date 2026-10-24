@@ -52,6 +52,14 @@ public class MainActivity extends Activity {
     private TextView updateLine;
     private TextView chipAcc, chipNotif;
     private View cardPreview;
+    private ScrollView sv;
+    private android.widget.FrameLayout page;
+    // each settings section is a heading + card; the menu shows one at a time
+    private final java.util.List<View[]> sections = new java.util.ArrayList<View[]>();
+    private final java.util.List<String> sectionNames = new java.util.ArrayList<String>();
+    private View drawer;
+    private Object backCb;
+    private static final String SECTION = "settings_section";
     private final Typeface MEDIUM = Typeface.create("sans-serif-medium", Typeface.NORMAL);
 
     // ================================================================= screen
@@ -61,15 +69,17 @@ public class MainActivity extends Activity {
         Prefs.migrate(this);
         pal = Palette.of(this);
 
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(pal.bg);
+        sv = new ScrollView(this);
         sv.setClipToPadding(true);   // nothing scrolls under the status bar icons
         col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(18), dp(12), dp(18), dp(40));
         sv.addView(col);
-        setContentView(sv);
-        edgeToEdge(sv);
+        page = new android.widget.FrameLayout(this);
+        page.setBackgroundColor(pal.bg);
+        page.addView(sv);
+        setContentView(page);
+        edgeToEdge(page);
 
         header();
 
@@ -216,6 +226,7 @@ public class MainActivity extends Activity {
                 new Runnable() { public void run() {
                     startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                             Uri.parse("package:" + getPackageName()))); }});
+        showSection(Math.max(0, Math.min(sections.size() - 1, Prefs.get(this).getInt(SECTION, 0))));
     }
 
     @Override protected void onResume() {
@@ -252,6 +263,89 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
+    // ================================================================= sections
+
+    private void showSection(int idx) {
+        for (int i = 0; i < sections.size(); i++)
+            for (View v : sections.get(i)) v.setVisibility(i == idx ? View.VISIBLE : View.GONE);
+        Prefs.get(this).edit().putInt(SECTION, idx).apply();
+        sv.scrollTo(0, 0);
+    }
+
+    /** Slide-out list of sections, styled like the rest of the app. */
+    private void openDrawer() {
+        if (drawer != null) return;
+        final android.widget.FrameLayout scrim = new android.widget.FrameLayout(this);
+        scrim.setBackgroundColor(0x66000000);
+        scrim.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { closeDrawer(); } });
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(12), dp(28), dp(12), dp(24));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(pal.surface);
+        bg.setCornerRadii(new float[]{0, 0, dp(28), dp(28), dp(28), dp(28), 0, 0});
+        panel.setBackground(bg);
+        panel.setClickable(true);
+        TextView t = tv("Settings", 22, pal.onSurface);
+        t.setTypeface(MEDIUM);
+        t.setPadding(dp(16), 0, 0, dp(16));
+        panel.addView(t);
+        int cur = Prefs.get(this).getInt(SECTION, 0);
+        for (int i = 0; i < sectionNames.size(); i++) {
+            final int idx = i;
+            TextView item = tv(sectionNames.get(i), 16, i == cur ? pal.onPrimaryContainer : pal.onSurface);
+            item.setTypeface(i == cur ? MEDIUM : Typeface.DEFAULT);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(20), 0, dp(16), 0);
+            item.setBackground(ripple(i == cur ? round(pal.primaryContainer, dp(28)) : null, pal.onSurface));
+            item.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                showSection(idx);
+                closeDrawer();
+            }});
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+            lp.bottomMargin = dp(2);
+            panel.addView(item, lp);
+        }
+        ScrollView ps = new ScrollView(this);
+        ps.addView(panel);
+        int w = Math.min(dp(320), Math.round(getResources().getDisplayMetrics().widthPixels * 0.8f));
+        scrim.addView(ps, new android.widget.FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.MATCH_PARENT));
+        page.addView(scrim, new android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        scrim.setAlpha(0f);
+        ps.setTranslationX(-w);
+        scrim.animate().alpha(1f).setDuration(180).start();
+        ps.animate().translationX(0).setDuration(240)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+        drawer = scrim;
+        if (Build.VERSION.SDK_INT >= 33) {
+            android.window.OnBackInvokedCallback cb = new android.window.OnBackInvokedCallback() {
+                public void onBackInvoked() { closeDrawer(); }
+            };
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            backCb = cb;
+        }
+    }
+
+    private void closeDrawer() {
+        final View d = drawer;
+        if (d == null) return;
+        drawer = null;
+        if (Build.VERSION.SDK_INT >= 33 && backCb != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCb);
+            backCb = null;
+        }
+        d.animate().alpha(0f).setDuration(160).withEndAction(new Runnable() { public void run() {
+            page.removeView(d);
+        }}).start();
+    }
+
+    @Override public void onBackPressed() {
+        if (drawer != null) { closeDrawer(); return; }
+        super.onBackPressed();
+    }
+
     // ================================================================= header
 
     private void header() {
@@ -274,6 +368,14 @@ public class MainActivity extends Activity {
                 ? "Updated to v" + versionName() : "v" + versionName(), 13, pal.onSurfaceVariant);
         text.addView(updateLine);
         top.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        ImageView menu = new ImageView(this);
+        menu.setImageResource(R.drawable.qs_menu);
+        menu.setImageTintList(ColorStateList.valueOf(pal.onSurface));
+        menu.setPadding(dp(12), dp(12), dp(12), dp(12));
+        menu.setBackground(ripple(round(pal.surface, dp(24)), pal.onSurface));
+        menu.setContentDescription("Settings sections");
+        menu.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { openDrawer(); } });
+        top.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
         col.addView(top);
 
         LinearLayout chips = new LinearLayout(this);
@@ -343,9 +445,9 @@ public class MainActivity extends Activity {
     // ================================================================= cards and rows
 
     private LinearLayout card(String label) {
-        TextView h = tv(label, 14, pal.primary);
+        TextView h = tv(label, 20, pal.onSurface);
         h.setTypeface(MEDIUM);
-        h.setPadding(dp(8), dp(28), 0, dp(10));
+        h.setPadding(dp(8), dp(24), 0, dp(12));
         col.addView(h);
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
@@ -353,6 +455,8 @@ public class MainActivity extends Activity {
         c.setClipToOutline(true);
         c.setPadding(0, dp(4), 0, dp(4));
         col.addView(c);
+        sections.add(new View[]{h, c});
+        sectionNames.add(label);
         return c;
     }
 
