@@ -69,6 +69,7 @@ public final class Prefs {
     // fine media volume buttons
     public static final String VOLUME_ON = "volume_buttons_on";
     public static final String VOLUME_STEP = "volume_button_step";
+    public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
 
     // updates
     public static final String AUTO_UPDATE   = "auto_update";
@@ -84,7 +85,7 @@ public final class Prefs {
     private static final String SCHEMA = "schema";
     private static final HashMap<String, Integer> DEF = new HashMap<String, Integer>();
     static {
-        DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5);
+        DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5); DEF.put(RINGER_CYCLE, 0);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);
         DEF.put(PAD, 120);       DEF.put(TEXT, 13);       DEF.put(OPACITY, 100);

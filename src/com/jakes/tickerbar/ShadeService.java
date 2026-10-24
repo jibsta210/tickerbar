@@ -221,12 +221,15 @@ public class ShadeService extends AccessibilityService {
         // so we run our own repeat and just swallow any that do arrive.
         if (event.getRepeatCount() > 0) return volumeKeys.contains(key);
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
-        if (!Prefs.on(this, Prefs.VOLUME_ON) || audio.getMode() != AudioManager.MODE_NORMAL) return false;
-        // Only take the buttons when they'd change this phone's media volume anyway: something
-        // playing here, nothing casting. Otherwise (casting, ringer, nothing playing) the
-        // system knows what the press is for, so it gets it untouched.
-        if (!audio.isMusicActive() || castSession() != null) return false;
-        if (!stepVolume(key)) return false;
+        if (audio.getMode() != AudioManager.MODE_NORMAL) return false;   // calls keep the system's handling
+        // Casting: the system routes the buttons to the cast device, so it gets them untouched.
+        if (castSession() != null) return false;
+        // Something playing here: fine media steps. Nothing playing: the ringer, cycled the
+        // stock Android way. Either only if switched on; otherwise the system has the press.
+        boolean media = audio.isMusicActive();
+        if (!Prefs.on(this, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
+        heldRinger = !media;
+        if (!stepVolume(key, false)) return false;
         volumeKeys.add(key);
         stopVolumeRepeat();
         heldKey = key;
@@ -238,12 +241,13 @@ public class ShadeService extends AccessibilityService {
     private static final long VOLUME_HOLD_MS = 400, VOLUME_REPEAT_MS = 90, VOLUME_HOLD_MAX_MS = 8000;
     private int heldKey;
     private long heldSince;
+    private boolean heldRinger;   // this press is driving the ringer rather than media
 
     /** Keeps stepping while a volume button is held; gives up if the release never arrives. */
     private final Runnable volumeRepeatR = new Runnable() { public void run() {
         if (heldKey == 0 || !volumeKeys.contains(heldKey)
                 || SystemClock.uptimeMillis() - heldSince > VOLUME_HOLD_MAX_MS) { heldKey = 0; return; }
-        if (!stepVolume(heldKey)) { heldKey = 0; return; }
+        if (!stepVolume(heldKey, true)) { heldKey = 0; return; }
         ui.postDelayed(this, VOLUME_REPEAT_MS);
     }};
 
@@ -252,8 +256,65 @@ public class ShadeService extends AccessibilityService {
         ui.removeCallbacks(volumeRepeatR);
     }
 
+    private boolean stepVolume(int key, boolean repeat) {
+        return heldRinger ? stepRinger(key, repeat) : stepMedia(key);
+    }
+
+    /**
+     * Stock Android's order, which HyperOS splits across two controls: down goes ringer
+     * levels -> vibrate -> silent, up goes silent -> vibrate -> lowest ring -> louder.
+     * Holding only moves through ring levels; changing mode always takes a fresh press.
+     */
+    private boolean stepRinger(int key, boolean repeat) {
+        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        boolean up = key == KeyEvent.KEYCODE_VOLUME_UP;
+        int mode = audio.getRingerMode();
+        int vol = audio.getStreamVolume(AudioManager.STREAM_RING);
+        int min = Math.max(1, audio.getStreamMinVolume(AudioManager.STREAM_RING));
+        int max = audio.getStreamMaxVolume(AudioManager.STREAM_RING);
+        try {
+            if (mode == AudioManager.RINGER_MODE_NORMAL && vol > 0) {
+                if (up && vol < max || !up && vol > min) {
+                    audio.setStreamVolume(AudioManager.STREAM_RING, vol + (up ? 1 : -1), AudioManager.FLAG_SHOW_UI);
+                } else if (!up && !repeat) {
+                    audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
+                    showRinger(audio);
+                } else {
+                    return false;   // at the top, or a hold reaching the bottom: stop there
+                }
+            } else if (repeat) {
+                return false;
+            } else if (mode == AudioManager.RINGER_MODE_VIBRATE) {
+                if (up) {
+                    audio.setRingerMode(AudioManager.RINGER_MODE_NORMAL);
+                    audio.setStreamVolume(AudioManager.STREAM_RING, min, AudioManager.FLAG_SHOW_UI);
+                } else {
+                    audio.setRingerMode(AudioManager.RINGER_MODE_SILENT);
+                    showRinger(audio);
+                }
+            } else {   // silent (or a normal mode left at 0)
+                if (!up) { showRinger(audio); return true; }
+                audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
+                showRinger(audio);
+            }
+            Log.i("TickerBarVolume", "ringer " + mode + "/" + vol + " -> "
+                    + audio.getRingerMode() + "/" + audio.getStreamVolume(AudioManager.STREAM_RING));
+            return true;
+        } catch (SecurityException e) {
+            // silent needs Do Not Disturb access on some builds
+            Log.w("TickerBarVolume", "Ringer change denied", e);
+            return false;
+        }
+    }
+
+    /** Bring up the system's volume panel on the ringer so the new mode shows. */
+    private void showRinger(AudioManager audio) {
+        try { audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI); }
+        catch (Exception ignored) {}
+    }
+
     /** One step of media volume; false when Android refused or there's nowhere left to go. */
-    private boolean stepVolume(int key) {
+    private boolean stepMedia(int key) {
         AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         int old = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
         int step = Prefs.n(this, Prefs.VOLUME_STEP);
