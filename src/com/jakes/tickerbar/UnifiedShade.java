@@ -247,20 +247,24 @@ final class UnifiedShade {
         return order == null || order.trim().startsWith("3");
     }
 
+    /** HyperOS's look: a solid triangle, a ring, a rounded square, grouped at 30 / 50 / 70%. */
     private View navRow() {
         LinearLayout row = new LinearLayout(svc);
-        row.setGravity(Gravity.CENTER);
-        row.setBackgroundColor(pal.dark ? Color.BLACK : pal.bg);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int tint = pal.dark ? 0xF2FFFFFF : Palette.alpha(pal.onSurface, 0xE6);
         int[] icons = backFirst() ? new int[]{R.drawable.qs_nav_back, R.drawable.qs_nav_home, R.drawable.qs_nav_recents}
                 : new int[]{R.drawable.qs_nav_recents, R.drawable.qs_nav_home, R.drawable.qs_nav_back};
+        row.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
         for (final int ic : icons) {
+            FrameLayout cell = new FrameLayout(svc);
+            cell.setBackground(ripple(null));
             ImageView b = new ImageView(svc);
             b.setImageResource(ic);
-            b.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
-            b.setScaleType(ImageView.ScaleType.CENTER);
-            b.setBackground(ripple(null));
-            b.setContentDescription(ic == R.drawable.qs_nav_back ? "Back" : ic == R.drawable.qs_nav_home ? "Home" : "Recents");
-            b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            b.setImageTintList(ColorStateList.valueOf(tint));
+            b.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            cell.addView(b, new FrameLayout.LayoutParams(svc.px(27), svc.px(27), Gravity.CENTER));
+            cell.setContentDescription(ic == R.drawable.qs_nav_back ? "Back" : ic == R.drawable.qs_nav_home ? "Home" : "Recents");
+            cell.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
                 v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                 if (ic == R.drawable.qs_nav_back) { back(); return; }
                 closeNow();
@@ -268,8 +272,9 @@ final class UnifiedShade {
                         ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
                         : android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS);
             }});
-            row.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            row.addView(cell, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         }
+        row.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
         return row;
     }
 
