@@ -169,6 +169,7 @@ public class MainActivity extends Activity {
         c = card("One shade");
         switchRow(c, "One shade like stock Android",
                 "Pull down from the status bar for quick settings and notifications together", Prefs.ONE_SHADE);
+        toggleGuide(c);
         actionRow(c, "Allow brightness and auto-rotate", "Lets the shade's slider and rotate tile change them",
                 new Runnable() { public void run() {
                     try { startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
@@ -508,6 +509,34 @@ public class MainActivity extends Activity {
         if (end != null) r.addView(end);
         card.addView(r);
         return r;
+    }
+
+    /**
+     * What each tile can do and how to unlock the rest, with live status, so anyone setting
+     * TickerBar up knows why some tiles open a settings page instead of switching.
+     */
+    private void toggleGuide(LinearLayout card) {
+        boolean write = android.provider.Settings.System.canWrite(this);
+        boolean secure = checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        String status = "\u2022 Brightness & auto-rotate: " + (write ? "\u2713 working" : "needs \u201cAllow brightness and auto-rotate\u201d below")
+                + "\n\u2022 Location: " + (secure ? "\u2713 switches directly" : "opens settings until you run the adb command below");
+        note(card, "How the tiles work\n\n"
+                + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
+                + "Android lets only the system switch Wi-Fi, Bluetooth, mobile data, hotspot, NFC and airplane mode, "
+                + "so those tiles show their state and open Android's own panel. Ultra battery saver and reverse "
+                + "charging are HyperOS-only and open its battery screen.\n\n"
+                + status + "\n\n"
+                + "To make Location switch directly, connect the phone to a computer with adb (USB or wireless "
+                + "debugging) and run once:\n"
+                + "adb shell pm grant " + getPackageName() + " android.permission.WRITE_SECURE_SETTINGS\n"
+                + "It stays granted across reboots and updates.");
+        actionRow(card, "Copy the adb command", null, new Runnable() { public void run() {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("adb",
+                    "adb shell pm grant " + getPackageName() + " android.permission.WRITE_SECURE_SETTINGS"));
+            toast("Copied");
+        }});
     }
 
     /** Single notification types hidden from the shade's long-press menu; switch off to show again. */
