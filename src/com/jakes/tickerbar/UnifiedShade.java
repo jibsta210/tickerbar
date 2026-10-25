@@ -193,7 +193,7 @@ final class UnifiedShade {
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         // the shade ends at the nav bar, so Back / Home / Recents stay visible and usable
-        int height = Math.max(svc.px(300), svc.screenH() - svc.navBar());
+        int height = shadeHeight();
         WindowManager.LayoutParams lp = svc.overlay(WindowManager.LayoutParams.MATCH_PARENT, height, 0);
         lp.gravity = Gravity.TOP;
         lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;   // focus: back key closes us
@@ -207,6 +207,15 @@ final class UnifiedShade {
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;   // inline replies
         lp.setTitle("TickerBar shade");
         try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
+        if (Build.VERSION.SDK_INT >= 30) {
+            // HyperOS hides the nav bar under a focused shade; ask for it to stay
+            root.post(new Runnable() { public void run() {
+                try {
+                    android.view.WindowInsetsController c = root.getWindowInsetsController();
+                    if (c != null) c.show(android.view.WindowInsets.Type.navigationBars());
+                } catch (Exception ignored) {}
+            }});
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
             backCb = new android.window.OnBackInvokedCallback() { public void onBackInvoked() { back(); } };
@@ -224,6 +233,9 @@ final class UnifiedShade {
     }
 
     private Object backCb;
+
+    /** The shade stops at the nav bar. */
+    private int shadeHeight() { return Math.max(svc.px(300), svc.screenH() - svc.navBar()); }
 
     /** Back: leave a reply you're typing, then fold the controls, then close. */
     private void back() {
@@ -371,7 +383,7 @@ final class UnifiedShade {
         content.setPadding(side, side, side, svc.px(28));
         content.setLayoutTransition(new LayoutTransition());
         // empty space (below the list, between cards) puts the shade away, like stock
-        content.setMinimumHeight(svc.screenH());
+        content.setMinimumHeight(shadeHeight());   // exactly the window, so the panel can't scroll by the nav bar
         content.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { close(); } });
         scroll.addView(content, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
