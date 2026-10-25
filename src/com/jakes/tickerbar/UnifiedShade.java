@@ -205,6 +205,13 @@ final class UnifiedShade {
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;   // inline replies
         lp.setTitle("TickerBar shade");
         try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
+        if (Build.VERSION.SDK_INT >= 33) {
+            // targeting 36, back arrives as a back callback rather than a key
+            backCb = new android.window.OnBackInvokedCallback() { public void onBackInvoked() { back(); } };
+            android.window.OnBackInvokedDispatcher d = root.findOnBackInvokedDispatcher();
+            if (d != null) d.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    (android.window.OnBackInvokedCallback) backCb);
+        }
         attached = true;
         closing = false;
         root.setAlpha(0.35f);
@@ -214,8 +221,23 @@ final class UnifiedShade {
         return true;
     }
 
+    private Object backCb;
+
+    /** Back: leave a reply you're typing, then fold the controls, then close. */
+    private void back() {
+        if (replying && replyClose != null) { replyClose.run(); return; }
+        if (expanded) setExpanded(false); else close();
+    }
+
     private void detach() {
         stopTorchWatch();
+        if (Build.VERSION.SDK_INT >= 33 && backCb != null && root != null) {
+            android.window.OnBackInvokedDispatcher d = root.findOnBackInvokedDispatcher();
+            if (d != null) try { d.unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCb); }
+            catch (Exception ignored) {}
+            backCb = null;
+        }
+        replyClose = null;
         if (attached) {
             try { svc.windows().removeViewImmediate(root); } catch (Exception ignored) {}
         }
@@ -244,9 +266,7 @@ final class UnifiedShade {
 
             @Override public boolean dispatchKeyEvent(KeyEvent e) {
                 if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                    if (e.getAction() == KeyEvent.ACTION_UP) {
-                        if (expanded) setExpanded(false); else close();
-                    }
+                    if (e.getAction() == KeyEvent.ACTION_UP) back();
                     return true;
                 }
                 return super.dispatchKeyEvent(e);
@@ -997,6 +1017,9 @@ final class UnifiedShade {
     }
 
     private final HashSet<String> openGroups = new HashSet<String>();    // expanded groups
+    /** Half-typed replies, by notification, kept while TickerBar runs. */
+    private static final HashMap<String, String> drafts = new HashMap<String, String>();
+    private Runnable replyClose;   // closes the reply box being typed in
     private final HashSet<String> openCards = new HashSet<String>();     // expanded single notifications
     private boolean swipingCard, refreshPending, replying;
     private NotificationListenerService.RankingMap rankMap;
@@ -1716,6 +1739,7 @@ final class UnifiedShade {
         input.setBackground(round(pal.surfaceHigh, svc.px(22)));
         input.setPadding(svc.px(16), svc.px(10), svc.px(16), svc.px(10));
         input.setMaxLines(4);
+
         replyBox.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         ImageView send = new ImageView(svc);
         send.setImageResource(R.drawable.qs_send);
@@ -1726,6 +1750,31 @@ final class UnifiedShade {
         LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(svc.px(44), svc.px(44));
         sendLp.setMarginStart(svc.px(8));
         replyBox.addView(send, sendLp);
+        final Runnable closeReply = new Runnable() { public void run() {
+            android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
+                    svc.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+            replyBox.setVisibility(View.GONE);   // the draft stays for next time
+            replying = false;
+            replyClose = null;
+            if (refreshPending) refreshNotifications();
+        }};
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence q, int a, int b, int c) {}
+            public void onTextChanged(CharSequence q, int a, int b, int c) {}
+            public void afterTextChanged(android.text.Editable ed) {
+                if (ed.length() == 0) drafts.remove(s.getKey()); else drafts.put(s.getKey(), ed.toString());
+            }
+        });
+        input.setOnFocusChangeListener(new View.OnFocusChangeListener() { public void onFocusChange(View v, boolean f) {
+            if (f) { replying = true; replyClose = closeReply; }   // typing into a restored draft
+        }});
+        String draft = drafts.get(s.getKey());
+        if (draft != null && replyA != null) {   // a reply you started earlier: back where you left it
+            input.setText(draft);
+            input.setSelection(draft.length());
+            replyBox.setVisibility(View.VISIBLE);
+        }
 
         // actions: replies open the inline box; the rest fire straight away
         if (n.actions != null && n.actions.length > 0) {
@@ -1739,6 +1788,7 @@ final class UnifiedShade {
                     if (isReply) {
                         replyBox.setVisibility(View.VISIBLE);
                         replying = true;
+                        replyClose = closeReply;
                         input.requestFocus();
                         android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
                                 svc.getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -1763,12 +1813,8 @@ final class UnifiedShade {
             if (replyA == null || TextUtils.isEmpty(msg)) return;
             reply(replyA, msg.toString(), false);
             input.setText("");
-            replyBox.setVisibility(View.GONE);
-            android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
-                    svc.getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
-            replying = false;
-            if (refreshPending) refreshNotifications();
+            drafts.remove(s.getKey());
+            closeReply.run();
         }});
 
         List<StatusBarNotification> one = new ArrayList<StatusBarNotification>();
