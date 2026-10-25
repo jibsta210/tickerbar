@@ -2,3 +2,4 @@ build/
 *.keystore
 tickerbar.apk
 *.idsig
+libs-src/

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="37"
-    android:versionName="1.11.5">
+    android:versionCode="38"
+    android:versionName="1.12.0">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.NFC"/>
     <!-- granted once over adb (pm grant), never at install: lets the shade switch location -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
+    <!-- Shizuku: shell-level commands for the radio tiles, when the user runs Shizuku -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
@@ -145,5 +147,14 @@
         </service>
 
         <receiver android:name=".InstallReceiver" android:exported="false"/>
+        <!-- receives Shizuku's binder when it's running -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="com.jakes.tickerbar.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+        <meta-data android:name="moe.shizuku.client.V3_SUPPORT" android:value="true"/>
     </application>
 </manifest>

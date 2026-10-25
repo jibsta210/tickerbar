@@ -21,15 +21,15 @@ echo "[2/5] aapt2 link"
 echo "[3/5] javac"
 find "$P/src" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
 javac -nowarn -Xlint:none -source 17 -target 17 \
-  -classpath "$JAR" \
+  -classpath "$JAR:$(ls "$P"/libs/*.jar | tr '\n' ':')" \
   -d "$OUT/classes" @"$OUT/sources.txt"
 if [ -z "$(find "$OUT/classes" -name '*.class' -print -quit)" ]; then
   echo "COMPILE FAILED - no classes produced"; exit 1
 fi
 
 echo "[4/5] d8 -> dex"
-"$BT/d8" --lib "$JAR" --output "$OUT" \
-  $(find "$OUT/classes" -name '*.class')
+"$BT/d8" --lib "$JAR" --min-api 29 --output "$OUT" \
+  $(find "$OUT/classes" -name '*.class') "$P"/libs/*.jar
 
 echo "[5/5] package + sign"
 cd "$OUT"

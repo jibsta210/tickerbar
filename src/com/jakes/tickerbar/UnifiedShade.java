@@ -704,14 +704,23 @@ final class UnifiedShade {
                     catch (Exception e) { return false; }
                 }
                 public String state() { return active() ? "Wi-Fi on" : "Wi-Fi off"; }
-                public void tap() { launch(new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)); }
+                public void tap() {
+                    if (!shell(active() ? "cmd wifi set-wifi-enabled disabled || svc wifi disable"
+                            : "cmd wifi set-wifi-enabled enabled || svc wifi enable"))
+                        launch(new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY));
+                }
             };
             case "data": return new Tile() {
                 public int icon() { return R.drawable.qs_data; }
                 public String label() { return "Mobile data"; }
-                public boolean active() { return false; }
-                public String state() { return "Tap for options"; }
-                public void tap() { launch(new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)); }
+                public boolean active() {
+                    return Settings.Global.getInt(svc.getContentResolver(), "mobile_data", 1) == 1;
+                }
+                public String state() { return active() ? "On" : "Off"; }
+                public void tap() {
+                    if (!shell(active() ? "svc data disable" : "svc data enable"))
+                        launch(new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY));
+                }
             };
             case "bluetooth": return new Tile() {
                 public int icon() { return R.drawable.qs_bluetooth; }
@@ -724,7 +733,11 @@ final class UnifiedShade {
                     } catch (Exception e) { return false; }
                 }
                 public String state() { return active() ? "On" : "Off"; }
-                public void tap() { launch(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
+                public void tap() {
+                    if (!shell(active() ? "cmd bluetooth_manager disable || svc bluetooth disable"
+                            : "cmd bluetooth_manager enable || svc bluetooth enable"))
+                        launch(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+                }
             };
             case "flashlight":
                 if (torchId == null) return null;
@@ -813,7 +826,10 @@ final class UnifiedShade {
                     return Settings.Global.getInt(svc.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) == 1;
                 }
                 public String state() { return active() ? "On" : "Off"; }
-                public void tap() { launch(new Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)); }
+                public void tap() {
+                    if (!shell("cmd connectivity airplane-mode " + (active() ? "disable" : "enable")))
+                        launch(new Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS));
+                }
             };
             case "hotspot": return new Tile() {
                 public int icon() { return R.drawable.qs_hotspot; }
@@ -853,6 +869,7 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
+                    if (shell(active() ? "svc nfc disable" : "svc nfc enable")) return;
                     if (Build.VERSION.SDK_INT >= 29) launch(new Intent(Settings.Panel.ACTION_NFC));
                     else launch(new Intent(Settings.ACTION_NFC_SETTINGS));
                 }
@@ -1872,6 +1889,18 @@ final class UnifiedShade {
     private void launch(Intent i) {
         closeNow();
         svc.startFromShade(i);
+    }
+
+    /**
+     * Switch a radio through Shizuku, if it's running and allowed; false means the tile should
+     * fall back to Android's panel. The tiles refresh as the radio actually changes.
+     */
+    private boolean shell(String cmd) {
+        if (!Shell.granted()) return false;
+        Shell.run(cmd, new Runnable() { public void run() { refreshTiles(); } });
+        root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 1200);
+        root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 3000);
+        return true;
     }
 
     /** Opens the first of these that exists. */

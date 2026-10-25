@@ -169,6 +169,19 @@ public class MainActivity extends Activity {
         c = card("One shade");
         switchRow(c, "One shade like stock Android",
                 "Pull down from the status bar for quick settings and notifications together", Prefs.ONE_SHADE);
+        actionRow(c, "Shizuku", Shell.status(this), new Runnable() { public void run() {
+            if (!Shell.installed(MainActivity.this)) {
+                try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + Shell.SHIZUKU_PKG))); }
+                catch (Exception e) { toast("Install Shizuku from the Play Store"); }
+            } else if (!Shell.running()) {
+                Intent i = getPackageManager().getLaunchIntentForPackage(Shell.SHIZUKU_PKG);
+                if (i != null) startActivity(i);
+            } else if (!Shell.granted()) {
+                Shell.requestPermission();
+            } else {
+                toast("Shizuku is ready");
+            }
+        }});
         toggleGuide(c);
         actionRow(c, "Allow brightness and auto-rotate", "Lets the shade's slider and rotate tile change them",
                 new Runnable() { public void run() {
@@ -523,9 +536,10 @@ public class MainActivity extends Activity {
                 + "\n\u2022 Location: " + (secure ? "\u2713 switches directly" : "opens settings until you run the adb command below");
         note(card, "How the tiles work\n\n"
                 + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
-                + "Android lets only the system switch Wi-Fi, Bluetooth, mobile data, hotspot, NFC and airplane mode, "
-                + "so those tiles show their state and open Android's own panel. Ultra battery saver and reverse "
-                + "charging are HyperOS-only and open its battery screen.\n\n"
+                + "Wi-Fi, Bluetooth, mobile data, airplane mode and NFC are reserved for the system. With Shizuku "
+                + "running (free on the Play Store; start it from its app after each reboot) and TickerBar allowed in it, "
+                + "those tiles switch directly; otherwise they open Android's own panel. Hotspot always opens settings, "
+                + "and ultra battery saver and reverse charging open HyperOS's battery screen.\n\n"
                 + status + "\n\n"
                 + "To make Location switch directly, connect the phone to a computer with adb (USB or wireless "
                 + "debugging) and run once:\n"
