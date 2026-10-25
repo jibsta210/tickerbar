@@ -866,6 +866,13 @@ final class UnifiedShade {
                 public boolean active() { return false; }
                 public String state() { return "Tap to start"; }
                 public void tap() {
+                    // HyperOS's own tile opens this (the floating record button); it needs a
+                    // system permission, which Shizuku's shell has
+                    if (Shell.granted() && svc.getPackageManager().getLaunchIntentForPackage("com.miui.screenrecorder") != null) {
+                        closeNow();
+                        Shell.run("am start -a miui.intent.screenrecorder.RECORDER_ACTIVITY -p com.miui.screenrecorder", null);
+                        return;
+                    }
                     Intent i = recorderIntent();
                     if (i != null) launch(i);
                     else svc.toast("No screen recorder app found");
