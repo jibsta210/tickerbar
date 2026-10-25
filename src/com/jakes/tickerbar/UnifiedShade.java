@@ -329,7 +329,8 @@ final class UnifiedShade {
         openCards.clear();
         swipingCard = false;
         replying = false;
-        if (player != null) { player.release(); player = null; }
+        for (Player p : players.values()) p.release();
+        players.clear();
         if (root != null) root.removeCallbacks(mediaTick);
         svc.shadeClosed();
     }
@@ -1135,19 +1136,27 @@ final class UnifiedShade {
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
 
-        MediaController session = playerSession();
-        if (session == null && this.player != null) { this.player.release(); this.player = null; }
-        if (session != null) {
-            View m = mediaCard(session);
-            if (m != null) {
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.bottomMargin = svc.px(10);
-                notifBox.addView(m, lp);
-            }
+        // one player per media app, the one playing first; a swiped-away one stays gone until it plays again
+        List<MediaController> sessions = playerSessions();
+        HashSet<String> mediaPkgs = new HashSet<String>();
+        HashSet<Object> live = new HashSet<Object>();
+        for (MediaController mc : sessions) {
+            mediaPkgs.add(mc.getPackageName());
+            live.add(mc.getSessionToken());
+            View m = mediaCard(mc);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = svc.px(10);
+            notifBox.addView(m, lp);
         }
+        java.util.Iterator<java.util.Map.Entry<Object, Player>> pi = players.entrySet().iterator();
+        while (pi.hasNext()) {
+            java.util.Map.Entry<Object, Player> pe = pi.next();
+            if (!live.contains(pe.getKey())) { pe.getValue().release(); pi.remove(); }
+        }
+        final MediaController session = sessions.isEmpty() ? null : sessions.get(0);
 
-        List<Entry> list = entries(all, session);
+        List<Entry> list = entries(all, mediaPkgs);
         boolean anyClearable = false;
         for (Entry en : list) for (StatusBarNotification k : en.kids) if (k.isClearable()) anyClearable = true;
 
@@ -1264,7 +1273,7 @@ final class UnifiedShade {
      * its highest-ranked member; a summary only stands alone when it has no children. The
      * media notification the player already shows is left out.
      */
-    private List<Entry> entries(StatusBarNotification[] all, MediaController player) {
+    private List<Entry> entries(StatusBarNotification[] all, java.util.Set<String> mediaPkgs) {
         List<Entry> out = new ArrayList<Entry>();
         if (all == null) return out;
         HashMap<String, StatusBarNotification> byKey = new HashMap<String, StatusBarNotification>();
@@ -1279,7 +1288,7 @@ final class UnifiedShade {
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
             if (Prefs.typeHidden(svc, s.getPackageName(), s.getNotification().getChannelId())) continue;
-            if (player != null && s.getPackageName().equals(player.getPackageName()) && isMedia(s)) continue;
+            if (isMedia(s) && mediaPkgs.contains(s.getPackageName())) continue;   // shown as its player
             String g = s.getGroupKey() != null ? s.getGroupKey() : s.getKey();
             Entry en = groups.get(g);
             if (en == null) { en = new Entry(g); groups.put(g, en); out.add(en); }
@@ -1484,10 +1493,12 @@ final class UnifiedShade {
         if (!TextUtils.equals(t.getText(), s)) t.setText(s);
     }
 
-    private Player player;
+    private final java.util.LinkedHashMap<Object, Player> players = new java.util.LinkedHashMap<Object, Player>();
+    /** Sessions swiped away; they come back when they start playing again. */
+    private static final HashSet<Object> dismissedMedia = new HashSet<Object>();
     private final Runnable mediaTick = new Runnable() { public void run() {
-        if (!attached || player == null) return;
-        player.tick();
+        if (!attached || players.isEmpty()) return;
+        for (Player p : players.values()) p.tick();
         root.postDelayed(this, 1000);
     }};
 
@@ -1500,106 +1511,145 @@ final class UnifiedShade {
         return Math.max(0, pos);
     }
 
-    /** Playing first, then paused; only sessions that have something to show. */
-    private MediaController playerSession() {
-        MediaController paused = null;
+    /** Every session worth a player: playing ones first, then paused; one per app. */
+    private List<MediaController> playerSessions() {
+        List<MediaController> playing = new ArrayList<MediaController>(), paused = new ArrayList<MediaController>();
+        HashSet<String> apps = new HashSet<String>();
         for (MediaController mc : svc.mediaSessions()) {
-            if (Prefs.hidden(svc, mc.getPackageName())) continue;
+            if (Prefs.hidden(svc, mc.getPackageName()) || !apps.add(mc.getPackageName())) continue;
             android.media.session.PlaybackState st = mc.getPlaybackState();
             if (st == null || mc.getMetadata() == null) continue;
             int s = st.getState();
-            if (s == android.media.session.PlaybackState.STATE_PLAYING
-                    || s == android.media.session.PlaybackState.STATE_BUFFERING) return mc;
-            if (s == android.media.session.PlaybackState.STATE_PAUSED && paused == null) paused = mc;
+            boolean on = s == android.media.session.PlaybackState.STATE_PLAYING
+                    || s == android.media.session.PlaybackState.STATE_BUFFERING;
+            if (on) { dismissedMedia.remove(mc.getSessionToken()); playing.add(mc); }
+            else if (s == android.media.session.PlaybackState.STATE_PAUSED && !dismissedMedia.contains(mc.getSessionToken()))
+                paused.add(mc);
         }
-        return paused;
+        playing.addAll(paused);
+        return playing;
     }
 
-    /** The player for this session, kept across list refreshes. */
-    private View mediaCard(MediaController mc) {
-        if (player == null || !player.mc.getSessionToken().equals(mc.getSessionToken())) {
-            if (player != null) player.release();
-            player = new Player(mc);
+    /** The player for this session, kept across list refreshes; swipe it away to stop the app. */
+    private View mediaCard(final MediaController mc) {
+        Player p = players.get(mc.getSessionToken());
+        if (p == null) {
+            p = new Player(mc);
+            players.put(mc.getSessionToken(), p);
+            swipeToDismiss(p.card, new Runnable() { public void run() {
+                dismissedMedia.add(mc.getSessionToken());
+                try { mc.getTransportControls().pause(); mc.getTransportControls().stop(); } catch (Exception ignored) {}
+                Player gone = players.remove(mc.getSessionToken());
+                if (gone != null) gone.release();
+            }});
             root.removeCallbacks(mediaTick);
             root.post(mediaTick);
         }
-        ViewGroup parent = (ViewGroup) player.card.getParent();
-        if (parent != null) parent.removeView(player.card);
-        return player.card;
+        ViewGroup parent = (ViewGroup) p.card.getParent();
+        if (parent != null) parent.removeView(p.card);
+        p.card.setTranslationX(0f);
+        p.card.setAlpha(1f);
+        return p.card;
     }
 
     // ------------------------------------------------------------ groups and cards
 
     /** A stock-style group: collapsed it previews the latest messages; expanded, each is its own. */
+    /** Size changes inside these animate instead of jumping. */
+    private LayoutTransition grow() {
+        LayoutTransition lt = new LayoutTransition();
+        lt.enableTransitionType(LayoutTransition.CHANGING);
+        lt.setDuration(260);
+        lt.setInterpolator(LayoutTransition.CHANGING, new PathInterpolator(0.2f, 0f, 0f, 1f));
+        lt.setInterpolator(LayoutTransition.CHANGE_APPEARING, new PathInterpolator(0.2f, 0f, 0f, 1f));
+        lt.setInterpolator(LayoutTransition.CHANGE_DISAPPEARING, new PathInterpolator(0.2f, 0f, 0f, 1f));
+        return lt;
+    }
+
+    /**
+     * A stock-style group: collapsed it previews the latest messages; expanded, each is its own.
+     * Both are built up front and swapped in place, so opening animates rather than rebuilding.
+     */
     private View groupCard(final Entry en) {
         final StatusBarNotification lead = en.kids.get(0);
-        final boolean open = openGroups.contains(en.group);
+        final boolean[] open = {openGroups.contains(en.group)};
         final LinearLayout box = new LinearLayout(svc);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(svc.px(16), svc.px(14), svc.px(8), svc.px(10));
         box.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(24))));
+        box.setLayoutTransition(grow());
 
         LinearLayout top = appLine(lead, en.kids.size());
-        Runnable toggle = new Runnable() { public void run() {
-            if (open) openGroups.remove(en.group); else openGroups.add(en.group);
-            refreshNotifications();
+        final LinearLayout preview = new LinearLayout(svc);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        final LinearLayout kids = new LinearLayout(svc);
+        kids.setOrientation(LinearLayout.VERTICAL);
+        final ImageView[] chev = new ImageView[1];
+        final Runnable toggle = new Runnable() { public void run() {
+            open[0] = !open[0];
+            if (open[0]) openGroups.add(en.group); else openGroups.remove(en.group);
+            preview.setVisibility(open[0] ? View.GONE : View.VISIBLE);
+            kids.setVisibility(open[0] ? View.VISIBLE : View.GONE);
+            if (open[0]) { kids.setAlpha(0f); kids.animate().alpha(1f).setDuration(220).start(); }
+            chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(240).start();
+            chev[0].setContentDescription(open[0] ? "Collapse" : "Expand");
         }};
-        top.addView(chevron(open, toggle), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
-        if (!open) expanders.put(box, toggle);
+        chev[0] = chevron(open[0], toggle);
+        top.addView(chev[0], new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        expanders.put(box, new Runnable() { public void run() { if (!open[0]) toggle.run(); }});
         box.addView(top);
 
-        if (!open) {
-            int n = Math.min(2, en.kids.size());
-            for (int i = 0; i < n; i++) {
-                Notification x = en.kids.get(i).getNotification();
-                CharSequence t = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TITLE);
-                CharSequence b = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TEXT);
-                android.text.SpannableStringBuilder line = new android.text.SpannableStringBuilder();
-                if (!TextUtils.isEmpty(t)) {
-                    line.append(t);
-                    line.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, line.length(), 0);
-                    line.append("  ");
-                }
-                if (!TextUtils.isEmpty(b)) line.append(b);
-                TextView row = tv("", 14, pal.onSurface);
-                row.setText(line);
-                row.setSingleLine(true);
-                row.setEllipsize(TextUtils.TruncateAt.END);
-                row.setPadding(0, svc.px(i == 0 ? 8 : 2), svc.px(8), 0);
-                box.addView(row);
+        int n = Math.min(2, en.kids.size());
+        for (int i = 0; i < n; i++) {
+            Notification x = en.kids.get(i).getNotification();
+            CharSequence t = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TITLE);
+            CharSequence b = x.extras == null ? null : x.extras.getCharSequence(Notification.EXTRA_TEXT);
+            android.text.SpannableStringBuilder line = new android.text.SpannableStringBuilder();
+            if (!TextUtils.isEmpty(t)) {
+                line.append(t);
+                line.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, line.length(), 0);
+                line.append("  ");
             }
-            if (en.kids.size() > 2) {
-                TextView more = tv("+" + (en.kids.size() - 2) + " more", 13, pal.onSurfaceVariant);
-                more.setPadding(0, svc.px(4), 0, 0);
-                box.addView(more);
-            }
-            // tapping the closed group opens the app, as stock does
-            box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-                StatusBarNotification s = en.summary != null && en.summary.getNotification().contentIntent != null
-                        ? en.summary : lead;
-                if (s.getNotification().contentIntent != null) svc.sendPending(s.getNotification().contentIntent);
-                else svc.startFromShade(launchIntent(s.getPackageName()));
-                for (StatusBarNotification k : en.kids)
-                    if ((k.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(k.getKey());
-                if (en.summary != null && (en.summary.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0)
-                    TickerListener.cancel(en.summary.getKey());
-                close();
-            }});
-        } else {
-            box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-                openGroups.remove(en.group);
-                refreshNotifications();
-            }});
-            for (StatusBarNotification k : en.kids) {
-                View c = card(k, true);
-                if (c == null) continue;
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.topMargin = svc.px(6);
-                lp.setMarginEnd(svc.px(8));
-                box.addView(c, lp);
-            }
+            if (!TextUtils.isEmpty(b)) line.append(b);
+            TextView row = tv("", 14, pal.onSurface);
+            row.setText(line);
+            row.setSingleLine(true);
+            row.setEllipsize(TextUtils.TruncateAt.END);
+            row.setPadding(0, svc.px(i == 0 ? 8 : 2), svc.px(8), 0);
+            preview.addView(row);
         }
+        if (en.kids.size() > 2) {
+            TextView more = tv("+" + (en.kids.size() - 2) + " more", 13, pal.onSurfaceVariant);
+            more.setPadding(0, svc.px(4), 0, 0);
+            preview.addView(more);
+        }
+        for (StatusBarNotification k : en.kids) {
+            View c = card(k, true);
+            if (c == null) continue;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = svc.px(6);
+            lp.setMarginEnd(svc.px(8));
+            kids.addView(c, lp);
+        }
+        preview.setVisibility(open[0] ? View.GONE : View.VISIBLE);
+        kids.setVisibility(open[0] ? View.VISIBLE : View.GONE);
+        box.addView(preview);
+        box.addView(kids);
+
+        box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            if (open[0]) { toggle.run(); return; }   // an open group folds back up
+            // tapping the closed group opens the app, as stock does
+            StatusBarNotification s = en.summary != null && en.summary.getNotification().contentIntent != null
+                    ? en.summary : lead;
+            if (s.getNotification().contentIntent != null) svc.sendPending(s.getNotification().contentIntent);
+            else svc.startFromShade(launchIntent(s.getPackageName()));
+            for (StatusBarNotification k : en.kids)
+                if ((k.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0) TickerListener.cancel(k.getKey());
+            if (en.summary != null && (en.summary.getNotification().flags & Notification.FLAG_AUTO_CANCEL) != 0)
+                TickerListener.cancel(en.summary.getKey());
+            close();
+        }});
         final List<StatusBarNotification> all = new ArrayList<StatusBarNotification>(en.kids);
         if (en.summary != null && !all.contains(en.summary)) all.add(en.summary);
         View menu = menuRow(lead, all);
@@ -1781,10 +1831,11 @@ final class UnifiedShade {
         CharSequence title = ex == null ? null : ex.getCharSequence(Notification.EXTRA_TITLE);
         CharSequence body = text(n);
         if (TextUtils.isEmpty(title) && TextUtils.isEmpty(body)) return null;
-        final boolean open = openCards.contains(s.getKey());
+        final boolean[] open = {openCards.contains(s.getKey())};
 
         final LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
+        card.setLayoutTransition(grow());
         LinearLayout top = null;
         if (child) {
             card.setPadding(svc.px(14), svc.px(10), svc.px(14), svc.px(10));
@@ -1808,15 +1859,16 @@ final class UnifiedShade {
             t.setEllipsize(TextUtils.TruncateAt.END);
             words.addView(t);
         }
-        if (!TextUtils.isEmpty(body)) {
-            TextView b = tv(body.toString(), 14, pal.onSurfaceVariant);
-            b.setMaxLines(open ? 30 : child ? 3 : 4);
-            b.setEllipsize(TextUtils.TruncateAt.END);
-            words.addView(b);
+        final int shortLines = child ? 3 : 4;
+        final TextView bodyView = TextUtils.isEmpty(body) ? null : tv(body.toString(), 14, pal.onSurfaceVariant);
+        if (bodyView != null) {
+            bodyView.setMaxLines(open[0] ? 30 : shortLines);
+            bodyView.setEllipsize(TextUtils.TruncateAt.END);
+            words.addView(bodyView);
         }
         mid.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Icon large = n.getLargeIcon();
-        if (large != null && !open) {
+        if (large != null) {
             try {
                 Drawable d = large.loadDrawable(svc);
                 if (d != null) {
@@ -1839,16 +1891,28 @@ final class UnifiedShade {
         // expand: the whole text, and the picture for picture notifications
         Drawable picture = picture(n);
         boolean expandable = picture != null || (body != null && (body.length() > 110 || body.toString().contains("\n")));
+        final ImageView[] pics = new ImageView[1];
         if (expandable && top != null) {
-            Runnable toggle = new Runnable() { public void run() {
-                if (open) openCards.remove(s.getKey()); else openCards.add(s.getKey());
-                refreshNotifications();
+            final ImageView[] chev = new ImageView[1];
+            final Runnable toggle = new Runnable() { public void run() {
+                open[0] = !open[0];
+                if (open[0]) openCards.add(s.getKey()); else openCards.remove(s.getKey());
+                if (bodyView != null) bodyView.setMaxLines(open[0] ? 30 : shortLines);   // the card grows, animated
+                if (pics[0] != null) {
+                    pics[0].setVisibility(open[0] ? View.VISIBLE : View.GONE);
+                    if (open[0]) { pics[0].setAlpha(0f); pics[0].animate().alpha(1f).setDuration(240).start(); }
+                }
+                chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(240).start();
+                chev[0].setContentDescription(open[0] ? "Collapse" : "Expand");
             }};
-            top.addView(chevron(open, toggle), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
-            if (!open) expanders.put(card, toggle);
+            chev[0] = chevron(open[0], toggle);
+            top.addView(chev[0], new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+            expanders.put(card, new Runnable() { public void run() { if (!open[0]) toggle.run(); }});
         }
-        if (open && picture != null) {
+        if (picture != null) {
             ImageView pic = new ImageView(svc);
+            pics[0] = pic;
+            pic.setVisibility(open[0] ? View.VISIBLE : View.GONE);
             pic.setImageDrawable(picture);
             pic.setAdjustViewBounds(true);
             pic.setScaleType(ImageView.ScaleType.CENTER_CROP);
