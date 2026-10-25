@@ -45,7 +45,7 @@ final class Shell {
         if (!installed(c)) return "Shizuku isn't installed";
         if (!running()) return "Shizuku isn't running — start it in the Shizuku app";
         if (!granted()) return "Tap to allow TickerBar in Shizuku";
-        return "✓ Ready: Wi-Fi, Bluetooth, mobile data, airplane mode and NFC switch directly";
+        return "✓ Ready: Wi-Fi, Bluetooth, mobile data, airplane mode, NFC and battery saver switch directly";
     }
 
     /** Run cmd with shell rights off the main thread, then call done (on the main thread). */
