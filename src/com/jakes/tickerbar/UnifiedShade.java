@@ -317,6 +317,7 @@ final class UnifiedShade {
             backCb = null;
         }
         replyClose = null;
+        imeHeight = 0;
         if (attached) {
             try { svc.windows().removeViewImmediate(root); } catch (Exception ignored) {}
         }
