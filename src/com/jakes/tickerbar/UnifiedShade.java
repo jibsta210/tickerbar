@@ -329,7 +329,7 @@ final class UnifiedShade {
         openCards.clear();
         swipingCard = false;
         replying = false;
-        if (mediaCtl != null) { try { mediaCtl.unregisterCallback(mediaCb); } catch (Exception ignored) {} mediaCtl = null; }
+        if (player != null) { player.release(); player = null; }
         if (root != null) root.removeCallbacks(mediaTick);
         svc.shadeClosed();
     }
@@ -1135,9 +1135,10 @@ final class UnifiedShade {
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
 
-        MediaController player = playerSession();
-        if (player != null) {
-            View m = mediaCard(player);
+        MediaController session = playerSession();
+        if (session == null && this.player != null) { this.player.release(); this.player = null; }
+        if (session != null) {
+            View m = mediaCard(session);
             if (m != null) {
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1146,12 +1147,12 @@ final class UnifiedShade {
             }
         }
 
-        List<Entry> list = entries(all, player);
+        List<Entry> list = entries(all, session);
         boolean anyClearable = false;
         for (Entry en : list) for (StatusBarNotification k : en.kids) if (k.isClearable()) anyClearable = true;
 
         if (list.isEmpty()) {
-            if (player == null) {
+            if (session == null) {
                 TextView none = tv(all == null ? "Notification access is off" : "No notifications", 14, pal.onSurfaceVariant);
                 none.setGravity(Gravity.CENTER);
                 none.setPadding(0, svc.px(28), 0, svc.px(28));
@@ -1305,21 +1306,188 @@ final class UnifiedShade {
 
     // ------------------------------------------------------------ media player
 
-    private SeekBar mediaSeek;
-    private TextView mediaPos, mediaDur;
-    private MediaController mediaCtl;
-    private final MediaController.Callback mediaCb = new MediaController.Callback() {
-        @Override public void onPlaybackStateChanged(android.media.session.PlaybackState s) { refreshNotifications(); }
-        @Override public void onMetadataChanged(android.media.MediaMetadata m) { refreshNotifications(); }
-    };
-    private final Runnable mediaTick = new Runnable() { public void run() {
-        if (!attached || mediaCtl == null || mediaSeek == null) return;
-        android.media.session.PlaybackState st = mediaCtl.getPlaybackState();
-        if (st != null && !mediaSeek.isPressed()) {
-            long pos = position(st);
-            mediaSeek.setProgress((int) Math.min(Integer.MAX_VALUE, pos));
-            mediaPos.setText(DateUtils.formatElapsedTime(pos / 1000));
+    /**
+     * The player is built once per session and updated in place: rebuilding it on every
+     * playback change is what made it flicker (and start out plain, before the art loaded).
+     * Artwork fills the whole card under a dark gradient, as in stock Android.
+     */
+    private final class Player {
+        final MediaController mc;
+        final FrameLayout card;
+        final ImageView art, play;
+        final View shade;
+        final TextView title, artist, app, pos, dur;
+        final SeekBar seek;
+        android.graphics.Bitmap shownArt;
+        boolean playing;
+
+        Player(final MediaController mc) {
+            this.mc = mc;
+            card = new FrameLayout(svc);
+            card.setClipToOutline(true);
+            card.setBackground(round(pal.primaryContainer, svc.px(28)));
+            card.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                PendingIntent pi = mc.getSessionActivity();
+                if (pi != null) svc.sendPending(pi); else svc.startFromShade(launchIntent(mc.getPackageName()));
+                close();
+            }});
+
+            art = new ImageView(svc);
+            art.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            card.addView(art, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            shade = new View(svc);   // keeps white text readable on any cover
+            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                    new int[]{0xD9000000, 0x8C000000, 0x59000000});
+            shade.setBackground(g);
+            card.addView(shade, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+
+            LinearLayout col = new LinearLayout(svc);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setPadding(svc.px(20), svc.px(16), svc.px(20), svc.px(14));
+            card.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            app = tv(appLabel(mc.getPackageName()).toString(), 12, 0xB3FFFFFF);
+            app.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            col.addView(app);
+            title = tv("", 20, 0xFFFFFFFF);
+            title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            title.setSingleLine(true);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            title.setPadding(0, svc.px(22), 0, 0);
+            col.addView(title);
+            artist = tv("", 14, 0xCCFFFFFF);
+            artist.setSingleLine(true);
+            artist.setEllipsize(TextUtils.TruncateAt.END);
+            col.addView(artist);
+
+            LinearLayout prog = new LinearLayout(svc);
+            prog.setGravity(Gravity.CENTER_VERTICAL);
+            prog.setPadding(0, svc.px(10), 0, 0);
+            pos = tv("0:00", 11, 0xB3FFFFFF);
+            dur = tv("", 11, 0xB3FFFFFF);
+            seek = new SeekBar(svc);
+            seek.setProgressTintList(ColorStateList.valueOf(0xFFFFFFFF));
+            seek.setThumbTintList(ColorStateList.valueOf(0xFFFFFFFF));
+            seek.setProgressBackgroundTintList(ColorStateList.valueOf(0x55FFFFFF));
+            seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                public void onProgressChanged(SeekBar s, int p, boolean user) {
+                    if (user) pos.setText(DateUtils.formatElapsedTime(p / 1000));
+                }
+                public void onStartTrackingTouch(SeekBar s) { s.getParent().requestDisallowInterceptTouchEvent(true); }
+                public void onStopTrackingTouch(SeekBar s) { mc.getTransportControls().seekTo(s.getProgress()); }
+            });
+            prog.addView(pos);
+            prog.addView(seek, new LinearLayout.LayoutParams(0, svc.px(34), 1));
+            prog.addView(dur);
+            col.addView(prog);
+
+            LinearLayout ctl = new LinearLayout(svc);
+            ctl.setGravity(Gravity.CENTER);
+            ctl.addView(button(R.drawable.qs_prev, "Previous", false, new Runnable() { public void run() {
+                mc.getTransportControls().skipToPrevious(); }}));
+            play = button(R.drawable.qs_play, "Play", true, new Runnable() { public void run() {
+                if (playing) mc.getTransportControls().pause(); else mc.getTransportControls().play();
+                playing = !playing;   // answer the tap at once; the session confirms a moment later
+                showPlaying();
+            }});
+            ctl.addView(play);
+            ctl.addView(button(R.drawable.qs_next, "Next", false, new Runnable() { public void run() {
+                mc.getTransportControls().skipToNext(); }}));
+            col.addView(ctl);
+
+            mc.registerCallback(cb, root.getHandler());
+            update();
         }
+
+        private ImageView button(int icon, String desc, boolean main, final Runnable r) {
+            ImageView b = new ImageView(svc);
+            b.setImageResource(icon);
+            b.setContentDescription(desc);
+            int size = svc.px(main ? 58 : 48);
+            int pad = svc.px(main ? 16 : 12);
+            b.setPadding(pad, pad, pad, pad);
+            b.setImageTintList(ColorStateList.valueOf(main ? 0xFF111111 : 0xFFFFFFFF));
+            b.setBackground(ripple(main ? round(0xFFFFFFFF, size / 2) : null));
+            b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { press(v); r.run(); } });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+            lp.setMarginStart(svc.px(14));
+            lp.setMarginEnd(svc.px(14));
+            b.setLayoutParams(lp);
+            return b;
+        }
+
+        final MediaController.Callback cb = new MediaController.Callback() {
+            @Override public void onPlaybackStateChanged(android.media.session.PlaybackState s) { update(); }
+            @Override public void onMetadataChanged(android.media.MediaMetadata m) { update(); }
+            @Override public void onSessionDestroyed() { refreshNotifications(); }
+        };
+
+        void showPlaying() {
+            play.setImageResource(playing ? R.drawable.qs_pause : R.drawable.qs_play);
+            play.setContentDescription(playing ? "Pause" : "Play");
+        }
+
+        /** Refresh in place: only what changed is touched, so nothing flashes. */
+        void update() {
+            android.media.MediaMetadata md = mc.getMetadata();
+            android.media.session.PlaybackState st = mc.getPlaybackState();
+            if (md != null) {
+                CharSequence t = md.getText(android.media.MediaMetadata.METADATA_KEY_TITLE);
+                if (TextUtils.isEmpty(t)) t = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+                CharSequence a = md.getText(android.media.MediaMetadata.METADATA_KEY_ARTIST);
+                if (TextUtils.isEmpty(a)) a = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
+                setIfChanged(title, TextUtils.isEmpty(t) ? appLabel(mc.getPackageName()) : t);
+                setIfChanged(artist, a == null ? "" : a);
+                android.graphics.Bitmap bm = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART);
+                if (bm == null) bm = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART);
+                if (bm == null) bm = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+                if (bm != shownArt) {
+                    shownArt = bm;
+                    if (bm != null) {
+                        art.setImageBitmap(bm);
+                        art.setAlpha(0f);
+                        art.animate().alpha(1f).setDuration(220).start();   // the cover fades in, no pop
+                    } else {
+                        art.setImageDrawable(new android.graphics.drawable.GradientDrawable(
+                                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                                new int[]{pal.primary, pal.primaryContainer}));
+                    }
+                }
+                long d = md.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
+                seek.setVisibility(d > 0 ? View.VISIBLE : View.INVISIBLE);
+                if (d > 0) { seek.setMax((int) Math.min(Integer.MAX_VALUE, d)); dur.setText(DateUtils.formatElapsedTime(d / 1000)); }
+                else dur.setText("");
+            }
+            playing = st != null && (st.getState() == android.media.session.PlaybackState.STATE_PLAYING
+                    || st.getState() == android.media.session.PlaybackState.STATE_BUFFERING);
+            showPlaying();
+            tick();
+        }
+
+        void tick() {
+            android.media.session.PlaybackState st = mc.getPlaybackState();
+            if (st != null && !seek.isPressed() && seek.getVisibility() == View.VISIBLE) {
+                long p = position(st);
+                seek.setProgress((int) Math.min(Integer.MAX_VALUE, p));
+                pos.setText(DateUtils.formatElapsedTime(p / 1000));
+            }
+        }
+
+        void release() { try { mc.unregisterCallback(cb); } catch (Exception ignored) {} }
+    }
+
+    private static void setIfChanged(TextView t, CharSequence s) {
+        if (!TextUtils.equals(t.getText(), s)) t.setText(s);
+    }
+
+    private Player player;
+    private final Runnable mediaTick = new Runnable() { public void run() {
+        if (!attached || player == null) return;
+        player.tick();
         root.postDelayed(this, 1000);
     }};
 
@@ -1347,123 +1515,17 @@ final class UnifiedShade {
         return paused;
     }
 
-    private View mediaCard(final MediaController mc) {
-        android.media.MediaMetadata md = mc.getMetadata();
-        if (md == null) return null;
-        if (mediaCtl != mc) {
-            if (mediaCtl != null) try { mediaCtl.unregisterCallback(mediaCb); } catch (Exception ignored) {}
-            mediaCtl = mc;
-            mc.registerCallback(mediaCb, root.getHandler());
-        }
-        CharSequence title = md.getText(android.media.MediaMetadata.METADATA_KEY_TITLE);
-        if (TextUtils.isEmpty(title)) title = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
-        CharSequence artist = md.getText(android.media.MediaMetadata.METADATA_KEY_ARTIST);
-        if (TextUtils.isEmpty(artist)) artist = md.getText(android.media.MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE);
-        android.graphics.Bitmap art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART);
-        if (art == null) art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART);
-        if (art == null) art = md.getBitmap(android.media.MediaMetadata.METADATA_KEY_DISPLAY_ICON);
-        long dur = md.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
-        android.media.session.PlaybackState st = mc.getPlaybackState();
-        final boolean playing = st != null && st.getState() == android.media.session.PlaybackState.STATE_PLAYING;
-
-        LinearLayout box = new LinearLayout(svc);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(svc.px(16), svc.px(16), svc.px(16), svc.px(12));
-        box.setBackground(ripple(round(Palette.alpha(pal.primaryContainer, panelA), svc.px(28))));
-        box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-            PendingIntent pi = mc.getSessionActivity();
-            if (pi != null) svc.sendPending(pi); else svc.startFromShade(launchIntent(mc.getPackageName()));
-            close();
-        }});
-
-        LinearLayout top = new LinearLayout(svc);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        if (art != null) {
-            ImageView a = new ImageView(svc);
-            a.setImageBitmap(art);
-            a.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            a.setClipToOutline(true);
-            a.setBackground(round(pal.surfaceHigh, svc.px(14)));
-            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(svc.px(64), svc.px(64));
-            alp.setMarginEnd(svc.px(14));
-            top.addView(a, alp);
-        }
-        LinearLayout words = new LinearLayout(svc);
-        words.setOrientation(LinearLayout.VERTICAL);
-        TextView t = tv(TextUtils.isEmpty(title) ? appLabel(mc.getPackageName()).toString() : title.toString(),
-                16, pal.onPrimaryContainer);
-        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        t.setSingleLine(true);
-        t.setEllipsize(TextUtils.TruncateAt.END);
-        words.addView(t);
-        TextView ar = tv((TextUtils.isEmpty(artist) ? "" : artist + "  ·  ") + appLabel(mc.getPackageName()),
-                13, Palette.alpha(pal.onPrimaryContainer, 0xBB));
-        ar.setSingleLine(true);
-        ar.setEllipsize(TextUtils.TruncateAt.END);
-        words.addView(ar);
-        top.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        box.addView(top);
-
-        if (dur > 0) {
-            LinearLayout prog = new LinearLayout(svc);
-            prog.setGravity(Gravity.CENTER_VERTICAL);
-            mediaPos = tv("", 11, Palette.alpha(pal.onPrimaryContainer, 0xBB));
-            mediaDur = tv(DateUtils.formatElapsedTime(dur / 1000), 11, Palette.alpha(pal.onPrimaryContainer, 0xBB));
-            mediaSeek = new SeekBar(svc);
-            mediaSeek.setMax((int) Math.min(Integer.MAX_VALUE, dur));
-            mediaSeek.setProgressTintList(ColorStateList.valueOf(pal.primary));
-            mediaSeek.setThumbTintList(ColorStateList.valueOf(pal.primary));
-            mediaSeek.setProgressBackgroundTintList(ColorStateList.valueOf(Palette.alpha(pal.onPrimaryContainer, 0x55)));
-            mediaSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                public void onProgressChanged(SeekBar s, int p, boolean user) {
-                    if (user) mediaPos.setText(DateUtils.formatElapsedTime(p / 1000));
-                }
-                public void onStartTrackingTouch(SeekBar s) { s.getParent().requestDisallowInterceptTouchEvent(true); }
-                public void onStopTrackingTouch(SeekBar s) { mc.getTransportControls().seekTo(s.getProgress()); }
-            });
-            prog.addView(mediaPos);
-            prog.addView(mediaSeek, new LinearLayout.LayoutParams(0, svc.px(36), 1));
-            prog.addView(mediaDur);
-            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            pl.topMargin = svc.px(8);
-            box.addView(prog, pl);
+    /** The player for this session, kept across list refreshes. */
+    private View mediaCard(MediaController mc) {
+        if (player == null || !player.mc.getSessionToken().equals(mc.getSessionToken())) {
+            if (player != null) player.release();
+            player = new Player(mc);
             root.removeCallbacks(mediaTick);
             root.post(mediaTick);
-        } else {
-            mediaSeek = null;
         }
-
-        LinearLayout ctl = new LinearLayout(svc);
-        ctl.setGravity(Gravity.CENTER);
-        ctl.addView(mediaButton(R.drawable.qs_prev, "Previous", false, new Runnable() { public void run() {
-            mc.getTransportControls().skipToPrevious(); }}));
-        ctl.addView(mediaButton(playing ? R.drawable.qs_pause : R.drawable.qs_play, playing ? "Pause" : "Play", true,
-                new Runnable() { public void run() {
-                    if (playing) mc.getTransportControls().pause(); else mc.getTransportControls().play(); }}));
-        ctl.addView(mediaButton(R.drawable.qs_next, "Next", false, new Runnable() { public void run() {
-            mc.getTransportControls().skipToNext(); }}));
-        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        cl.topMargin = svc.px(4);
-        box.addView(ctl, cl);
-        return box;
-    }
-
-    private View mediaButton(int icon, String desc, boolean main, final Runnable r) {
-        ImageView b = new ImageView(svc);
-        b.setImageResource(icon);
-        b.setContentDescription(desc);
-        int size = svc.px(main ? 56 : 48);
-        b.setPadding(svc.px(main ? 15 : 12), svc.px(main ? 15 : 12), svc.px(main ? 15 : 12), svc.px(main ? 15 : 12));
-        b.setImageTintList(ColorStateList.valueOf(main ? pal.onPrimary : pal.onPrimaryContainer));
-        b.setBackground(ripple(main ? round(pal.primary, size / 2) : null));
-        b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { press(v); r.run(); } });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
-        lp.setMarginStart(svc.px(10));
-        lp.setMarginEnd(svc.px(10));
-        b.setLayoutParams(lp);
-        return b;
+        ViewGroup parent = (ViewGroup) player.card.getParent();
+        if (parent != null) parent.removeView(player.card);
+        return player.card;
     }
 
     // ------------------------------------------------------------ groups and cards
@@ -1894,7 +1956,15 @@ final class UnifiedShade {
                         return;
                     }
                     svc.sendPending(a.actionIntent);
-                    close();
+                    // an action that opens something closes the shade; one that works in the
+                    // background (Like, Mark as read) stays put and the card sweeps away
+                    if (Build.VERSION.SDK_INT >= 31 && !a.actionIntent.isActivity()) {
+                        fly(card, svc.px(1), 2000, new Runnable() { public void run() {
+                            if (s.isClearable()) TickerListener.cancel(s.getKey());
+                        }});
+                    } else {
+                        close();
+                    }
                 }});
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
