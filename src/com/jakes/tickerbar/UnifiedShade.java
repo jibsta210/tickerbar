@@ -204,7 +204,8 @@ final class UnifiedShade {
             else lp.flags &= ~WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
             lp.dimAmount = 0f;
         }
-        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;   // inline replies
+        // the keyboard is handled by hand (see onImeChanged): the nav row rides on top of it
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING;
         lp.setTitle("TickerBar shade");
         try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
 
@@ -226,6 +227,29 @@ final class UnifiedShade {
 
     private Object backCb;
     private View navView;
+    private int imeHeight;
+
+    /**
+     * The keyboard comes up over the bottom of the screen, where our nav row is (HyperOS
+     * hides the real one while the shade has focus). Lift the row onto the keyboard and
+     * keep the field being typed in visible above both.
+     */
+    private void onImeChanged(int ime) {
+        if (ime == imeHeight) return;
+        imeHeight = ime;
+        if (navView != null) navView.animate().translationY(-ime).setDuration(160).start();
+        content.setPadding(content.getPaddingLeft(), content.getPaddingTop(), content.getPaddingRight(),
+                svc.navBar() + svc.px(28) + ime);
+        if (ime > 0) scroll.postDelayed(new Runnable() { public void run() {
+            View f = root.findFocus();
+            if (f == null) return;
+            android.graphics.Rect r = new android.graphics.Rect();
+            f.getDrawingRect(r);
+            scroll.offsetDescendantRectToMyCoords(f, r);
+            int visibleBottom = scroll.getScrollY() + scroll.getHeight() - imeHeight - svc.navBar() - svc.px(12);
+            if (r.bottom > visibleBottom) scroll.smoothScrollBy(0, r.bottom - visibleBottom);
+        }}, 120);
+    }
 
     /**
      * HyperOS doesn't draw the nav buttons while another window has focus, and the shade
@@ -417,6 +441,15 @@ final class UnifiedShade {
         root.addView(sheet, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         if (navView != null) navView.bringToFront();   // the nav buttons stay put over the sliding panel
+        if (Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                public android.view.WindowInsets onApplyWindowInsets(View v, android.view.WindowInsets in) {
+                    onImeChanged(in.isVisible(android.view.WindowInsets.Type.ime())
+                            ? in.getInsets(android.view.WindowInsets.Type.ime()).bottom : 0);
+                    return in;
+                }
+            });
+        }
 
         scroll = new ScrollView(svc);
         scroll.setVerticalScrollBarEnabled(false);
