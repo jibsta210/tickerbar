@@ -536,7 +536,7 @@ public class MainActivity extends Activity {
                 + "\n\u2022 Location: " + (secure ? "\u2713 switches directly" : "opens settings until you run the adb command below");
         note(card, "How the tiles work\n\n"
                 + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
-                + "Wi-Fi, Bluetooth, mobile data, airplane mode and NFC are reserved for the system. With Shizuku "
+                + "Wi-Fi, Bluetooth, mobile data, airplane mode, NFC and battery saver are reserved for the system. With Shizuku "
                 + "running (free on the Play Store; start it from its app after each reboot) and TickerBar allowed in it, "
                 + "those tiles switch directly; otherwise they open Android's own panel. Hotspot always opens settings, "
                 + "and ultra battery saver and reverse charging open HyperOS's battery screen.\n\n"

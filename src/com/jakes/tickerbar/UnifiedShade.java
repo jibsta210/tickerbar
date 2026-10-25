@@ -914,7 +914,10 @@ final class UnifiedShade {
                     return pm != null && pm.isPowerSaveMode();
                 }
                 public String state() { return active() ? "On" : "Off"; }
-                public void tap() { launch(new Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)); }
+                public void tap() {
+                    if (!shell("cmd power set-mode " + (active() ? "0" : "1")))
+                        launch(new Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS));
+                }
             };
             default: return null;
         }
