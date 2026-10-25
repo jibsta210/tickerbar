@@ -274,12 +274,22 @@ final class UnifiedShade {
                             dragging = true;
                             return true;
                         }
-                        // pulling down with the list at its top opens the full quick settings
-                        if (!expanded && -up > svc.px(32) && -up > Math.abs(e.getRawX() - x0) * 1.2f
-                                && !scroll.canScrollVertically(-1)) {
-                            pulledOpen = true;
-                            setExpanded(true);
-                            return true;
+                        // pulling down: on a notification expands that one; elsewhere (empty space,
+                        // with the list at its top) opens the full quick settings
+                        if (-up > svc.px(32) && -up > Math.abs(e.getRawX() - x0) * 1.2f) {
+                            View under = entryAt(x0, y0);
+                            if (under != null) {
+                                Runnable ex = expanders.get(under);
+                                if (ex == null) return false;   // nothing more to show; leave it be
+                                pulledOpen = true;
+                                ex.run();
+                                return true;
+                            }
+                            if (!expanded && !scroll.canScrollVertically(-1)) {
+                                pulledOpen = true;
+                                setExpanded(true);
+                                return true;
+                            }
                         }
                         return false;
                     }
@@ -349,7 +359,7 @@ final class UnifiedShade {
         qs.setOrientation(LinearLayout.VERTICAL);
         int topR = Math.max(svc.px(32), corner - side);
         // keep the header clear of the corner curve, and of a camera cut-out in the middle
-        qs.setPadding(svc.px(16) + topR / 4, Math.max(svc.px(14), topR / 3), svc.px(16) + topR / 4, svc.px(12));
+        qs.setPadding(svc.px(12), Math.max(svc.px(14), topR / 3), svc.px(12), svc.px(12));
         GradientDrawable qsBg = new GradientDrawable();
         qsBg.setColor(Palette.alpha(pal.surface, panelA));
         qsBg.setCornerRadii(new float[]{topR, topR, topR, topR, svc.px(32), svc.px(32), svc.px(32), svc.px(32)});
@@ -358,7 +368,9 @@ final class UnifiedShade {
         qs.setClickable(true);   // taps inside the panel never fall through to "close"
         content.addView(qs);
 
-        qs.addView(header());
+        View head = header();
+        head.setPadding(svc.px(4) + topR / 4, 0, svc.px(4) + topR / 4, 0);   // clear of the screen's corner curve
+        qs.addView(head);
 
         rowBox = new LinearLayout(svc);
         rowBox.setOrientation(LinearLayout.HORIZONTAL);
@@ -599,16 +611,17 @@ final class UnifiedShade {
     private View roundTile(final Tile t) {
         final ImageView v = new ImageView(svc);
         v.setImageResource(t.icon());
-        v.setPadding(svc.px(15), svc.px(15), svc.px(15), svc.px(15));
+        v.setPadding(svc.px(14), svc.px(14), svc.px(14), svc.px(14));
         v.setContentDescription(t.label());
         LinearLayout wrap = new LinearLayout(svc);
         wrap.setGravity(Gravity.CENTER);
-        wrap.addView(v, new LinearLayout.LayoutParams(svc.px(54), svc.px(54)));
+        wrap.addView(v, new LinearLayout.LayoutParams(svc.px(50), svc.px(50)));
+        wrap.setPadding(svc.px(3), 0, svc.px(3), 0);   // a gap either side, so neighbours never touch
         v.setOnClickListener(new View.OnClickListener() { public void onClick(View x) { press(x); t.tap(); refreshTiles(); } });
         v.setOnLongClickListener(openSettings(t));
         refreshers.add(new Runnable() { public void run() {
             boolean on = t.active();
-            v.setBackground(ripple(round(on ? pal.primary : pal.surfaceHigh, svc.px(27))));
+            v.setBackground(ripple(round(on ? pal.primary : pal.surfaceHigh, svc.px(25))));
             v.setImageTintList(ColorStateList.valueOf(on ? pal.onPrimary : pal.onSurface));
         }});
         return wrap;
@@ -984,6 +997,8 @@ final class UnifiedShade {
         refreshPending = false;
         notifBox.removeAllViews();
         clearable.clear();
+        expanders.clear();
+        entryViews.clear();
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
 
@@ -1021,6 +1036,7 @@ final class UnifiedShade {
                     if (en.section != sec) continue;
                     View c = en.kids.size() >= 2 ? groupCard(en) : card(en.kids.get(0), false);
                     if (c == null) continue;
+                    entryViews.add(c);
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT);
                     lp.bottomMargin = svc.px(3);
@@ -1039,6 +1055,20 @@ final class UnifiedShade {
     }
 
     private final List<View> clearable = new ArrayList<View>();   // swipeable entries, in list order
+    private final HashMap<View, Runnable> expanders = new HashMap<View, Runnable>();   // entry -> expand it
+    private final List<View> entryViews = new ArrayList<View>();                       // every card / group
+
+    /** The notification entry (card or group) under a screen point, if any. */
+    private View entryAt(float x, float y) {
+        if (notifBox == null) return null;
+        android.graphics.Rect r = new android.graphics.Rect();
+        for (int i = 0; i < notifBox.getChildCount(); i++) {
+            View c = notifBox.getChildAt(i);
+            if (!entryViews.contains(c)) continue;
+            if (c.getGlobalVisibleRect(r) && r.contains((int) x, (int) y)) return c;
+        }
+        return null;
+    }
 
     /**
      * Stock Clear all: the entries sweep off to the side one after another from the bottom,
@@ -1315,10 +1345,12 @@ final class UnifiedShade {
         box.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(24))));
 
         LinearLayout top = appLine(lead, en.kids.size());
-        top.addView(chevron(open, new Runnable() { public void run() {
+        Runnable toggle = new Runnable() { public void run() {
             if (open) openGroups.remove(en.group); else openGroups.add(en.group);
             refreshNotifications();
-        }}), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        }};
+        top.addView(chevron(open, toggle), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+        if (!open) expanders.put(box, toggle);
         box.addView(top);
 
         if (!open) {
@@ -1613,10 +1645,12 @@ final class UnifiedShade {
         Drawable picture = picture(n);
         boolean expandable = picture != null || (body != null && (body.length() > 110 || body.toString().contains("\n")));
         if (expandable && top != null) {
-            top.addView(chevron(open, new Runnable() { public void run() {
+            Runnable toggle = new Runnable() { public void run() {
                 if (open) openCards.remove(s.getKey()); else openCards.add(s.getKey());
                 refreshNotifications();
-            }}), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+            }};
+            top.addView(chevron(open, toggle), new LinearLayout.LayoutParams(svc.px(32), svc.px(32)));
+            if (!open) expanders.put(card, toggle);
         }
         if (open && picture != null) {
             ImageView pic = new ImageView(svc);
