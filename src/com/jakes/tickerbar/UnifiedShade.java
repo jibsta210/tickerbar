@@ -192,8 +192,10 @@ final class UnifiedShade {
         build();
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-        WindowManager.LayoutParams lp = svc.overlay(WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT, 0);
+        // the shade ends at the nav bar, so Back / Home / Recents stay visible and usable
+        int height = Math.max(svc.px(300), svc.screenH() - svc.navBar());
+        WindowManager.LayoutParams lp = svc.overlay(WindowManager.LayoutParams.MATCH_PARENT, height, 0);
+        lp.gravity = Gravity.TOP;
         lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;   // focus: back key closes us
         if (Build.VERSION.SDK_INT >= 31) {
             lp.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
@@ -215,7 +217,7 @@ final class UnifiedShade {
         attached = true;
         closing = false;
         root.setAlpha(0.35f);
-        sheetH = svc.screenH();
+        sheetH = height;
         startTorchWatch();
         refreshAll();
         return true;
@@ -366,7 +368,7 @@ final class UnifiedShade {
         // Starts at the very top: the panel's top corners follow the screen's own curve
         int corner = svc.screenCorner();
         int side = svc.px(8);
-        content.setPadding(side, side, side, svc.navBar() + svc.px(28));
+        content.setPadding(side, side, side, svc.px(28));
         content.setLayoutTransition(new LayoutTransition());
         // empty space (below the list, between cards) puts the shade away, like stock
         content.setMinimumHeight(svc.screenH());
@@ -1858,13 +1860,13 @@ final class UnifiedShade {
             float x0, y0; boolean swiping, moved; VelocityTracker vt;
             public boolean onTouch(View v, MotionEvent e) {
                 int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
-                if (vt != null && e.getActionMasked() != MotionEvent.ACTION_DOWN) vt.addMovement(e);
+                if (vt != null && e.getActionMasked() != MotionEvent.ACTION_DOWN) track(vt, e);
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         x0 = e.getRawX(); y0 = e.getRawY(); swiping = false; moved = false;
                         v.animate().cancel();
                         if (vt != null) vt.recycle();
-                        vt = VelocityTracker.obtain(); vt.addMovement(e);
+                        vt = VelocityTracker.obtain(); track(vt, e);
                         return false;   // let the click / scroll machinery see it too
                     case MotionEvent.ACTION_MOVE: {
                         float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
@@ -1919,6 +1921,17 @@ final class UnifiedShade {
                 }
             }
         });
+    }
+
+    /**
+     * Velocity in screen coordinates. The card follows the finger, so in its own coordinates
+     * the finger barely moves and every flick read as ~0 px/s.
+     */
+    private static void track(VelocityTracker vt, MotionEvent e) {
+        MotionEvent c = MotionEvent.obtain(e);
+        c.setLocation(e.getRawX(), e.getRawY());
+        vt.addMovement(c);
+        c.recycle();
     }
 
     /** Off the side at the finger's speed; the list then closes the gap. */
