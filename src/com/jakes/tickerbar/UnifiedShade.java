@@ -1777,7 +1777,7 @@ final class UnifiedShade {
                     case MotionEvent.ACTION_MOVE: {
                         float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
                         if (Math.abs(dx) > slop / 2f) moved = true;   // sideways at all: not a tap
-                        if (!swiping && Math.abs(dx) > slop * 0.7f && Math.abs(dx) > Math.abs(dy)) {
+                        if (!swiping && Math.abs(dx) > slop * 0.5f && Math.abs(dx) > Math.abs(dy) * 0.8f) {
                             swiping = true;
                             swipingCard = true;
                             v.getParent().requestDisallowInterceptTouchEvent(true);
@@ -1801,8 +1801,8 @@ final class UnifiedShade {
                         float dx = swiping ? v.getTranslationX() : e.getRawX() - x0;
                         float w = Math.max(1, v.getWidth());
                         boolean up = e.getActionMasked() == MotionEvent.ACTION_UP;
-                        boolean fling = Math.abs(vx) > 650 && Math.signum(vx) == Math.signum(dx)
-                                && Math.abs(dx) > svc.px(12);
+                        boolean fling = Math.abs(vx) > 455 && Math.signum(vx) == Math.signum(dx)
+                                && Math.abs(dx) > svc.px(8);
                         if (!swiping) {
                             // a flick so quick it never registered as a drag: still a dismiss, never a tap
                             if (up && fling) { fly(v, dx, vx, dismiss); return true; }
@@ -1810,7 +1810,7 @@ final class UnifiedShade {
                             return false;
                         }
                         swiping = false;
-                        if (up && (Math.abs(dx) > w * 0.35f || fling)) {
+                        if (up && (Math.abs(dx) > w * 0.25f || fling)) {
                             fly(v, dx, vx, dismiss);
                         } else {
                             v.animate().translationX(0).alpha(1f).setDuration(280)
