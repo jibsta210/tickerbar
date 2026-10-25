@@ -193,6 +193,8 @@ public class MainActivity extends Activity {
         choiceRow(c, "Shade colours", Prefs.SHADE_THEME, new int[]{0, 1, 2},
                 new String[]{"Match system theme", "Always dark", "Always light"});
         choiceRow(c, "Accent", Prefs.SHADE_ACCENT, accentIds, UnifiedShade.ACCENT_NAMES);
+        choiceRow(c, "Nav buttons in the shade", Prefs.SHADE_NAV_ORDER, new int[]{0, 1, 2},
+                new String[]{"Match HyperOS", "Back \u00b7 Home \u00b7 Recents", "Recents \u00b7 Home \u00b7 Back"});
         numberRow(c, "Panel opacity", Prefs.SHADE_ALPHA, "%");
         numberRow(c, "Blur behind  \u00b7 0 = off", Prefs.SHADE_BLUR, "dp");
         for (int i = 0; i < UnifiedShade.TILE_IDS.length; i++)

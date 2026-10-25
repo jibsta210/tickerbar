@@ -207,15 +207,7 @@ final class UnifiedShade {
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;   // inline replies
         lp.setTitle("TickerBar shade");
         try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
-        if (Build.VERSION.SDK_INT >= 30) {
-            // HyperOS hides the nav bar under a focused shade; ask for it to stay
-            root.post(new Runnable() { public void run() {
-                try {
-                    android.view.WindowInsetsController c = root.getWindowInsetsController();
-                    if (c != null) c.show(android.view.WindowInsets.Type.navigationBars());
-                } catch (Exception ignored) {}
-            }});
-        }
+
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
             backCb = new android.window.OnBackInvokedCallback() { public void onBackInvoked() { back(); } };
@@ -233,9 +225,53 @@ final class UnifiedShade {
     }
 
     private Object backCb;
+    private View navView;
 
-    /** The shade stops at the nav bar. */
-    private int shadeHeight() { return Math.max(svc.px(300), svc.screenH() - svc.navBar()); }
+    /**
+     * HyperOS doesn't draw the nav buttons while another window has focus, and the shade
+     * needs focus (back, the reply keyboard). So it covers the whole screen and, with
+     * 3-button navigation, draws its own Back / Home / Recents where the real ones are.
+     */
+    private int shadeHeight() { return svc.screenH(); }
+
+    private boolean threeButton() {
+        return Settings.Secure.getInt(svc.getContentResolver(), "navigation_mode", 0) == 0;
+    }
+
+    /** Left-to-right order: true = Back, Home, Recents; false = Recents, Home, Back. */
+    private boolean backFirst() {
+        int set = Prefs.n(svc, Prefs.SHADE_NAV_ORDER);
+        if (set == 1) return true;
+        if (set == 2) return false;
+        String order = Settings.System.getString(svc.getContentResolver(), "screen_key_order");   // HyperOS
+        return order == null || order.trim().startsWith("3");
+    }
+
+    private View navRow() {
+        LinearLayout row = new LinearLayout(svc);
+        row.setGravity(Gravity.CENTER);
+        row.setBackgroundColor(pal.dark ? Color.BLACK : pal.bg);
+        int[] icons = backFirst() ? new int[]{R.drawable.qs_nav_back, R.drawable.qs_nav_home, R.drawable.qs_nav_recents}
+                : new int[]{R.drawable.qs_nav_recents, R.drawable.qs_nav_home, R.drawable.qs_nav_back};
+        for (final int ic : icons) {
+            ImageView b = new ImageView(svc);
+            b.setImageResource(ic);
+            b.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
+            b.setScaleType(ImageView.ScaleType.CENTER);
+            b.setBackground(ripple(null));
+            b.setContentDescription(ic == R.drawable.qs_nav_back ? "Back" : ic == R.drawable.qs_nav_home ? "Home" : "Recents");
+            b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                if (ic == R.drawable.qs_nav_back) { back(); return; }
+                closeNow();
+                svc.performGlobalAction(ic == R.drawable.qs_nav_home
+                        ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
+                        : android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS);
+            }});
+            row.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        }
+        return row;
+    }
 
     /** Back: leave a reply you're typing, then fold the controls, then close. */
     private void back() {
@@ -362,11 +398,20 @@ final class UnifiedShade {
         };
         root.setBackgroundColor(Palette.alpha(pal.dark ? Color.BLACK : pal.bg, pal.dark ? 0x88 : 0x99));
         root.setFocusableInTouchMode(true);
+        navView = null;
+        if (threeButton()) {
+            View nav = navRow();
+            FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    Math.max(svc.px(40), svc.navBar()), Gravity.BOTTOM);
+            root.addView(nav, np);
+            navView = nav;
+        }
 
         sheet = new LinearLayout(svc);
         sheet.setOrientation(LinearLayout.VERTICAL);
         root.addView(sheet, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        if (navView != null) navView.bringToFront();   // the nav buttons stay put over the sliding panel
 
         scroll = new ScrollView(svc);
         scroll.setVerticalScrollBarEnabled(false);
@@ -380,7 +425,7 @@ final class UnifiedShade {
         // Starts at the very top: the panel's top corners follow the screen's own curve
         int corner = svc.screenCorner();
         int side = svc.px(8);
-        content.setPadding(side, side, side, svc.px(28));
+        content.setPadding(side, side, side, svc.navBar() + svc.px(28));
         content.setLayoutTransition(new LayoutTransition());
         // empty space (below the list, between cards) puts the shade away, like stock
         content.setMinimumHeight(shadeHeight());   // exactly the window, so the panel can't scroll by the nav bar
