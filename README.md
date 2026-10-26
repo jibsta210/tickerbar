@@ -29,6 +29,10 @@ and HyperOS between them wouldn't do these things.
 - **Checks for updates** from this repo's GitHub releases when you open it, downloads
   automatically, then shows the system install confirmation. Waits until the app is
   visible and unlocked; avoids the silent-install path rejected by HyperOS.
+- **Manual POCO F9 Ultra root bootstrap** uses Shizuku for a single explicit handoff
+  to the bundled, device/build-specific native module. It never attempts root at boot
+  and permits at most one user-started attempt per boot. This is experimental and a
+  failed attempt can reboot the phone.
 
 ## Permissions
 
@@ -50,3 +54,7 @@ No Gradle. Needs a JDK and the Android SDK build-tools:
 ```
 
 Outputs a signed `tickerbar.apk`.
+
+The native module currently targets only `songyuan` running
+`OS3.0.309.0.WGNMIXM`. Its Apache-2.0-licensed source is vendored under
+`native/ghostlock` and requires Android NDK r29.

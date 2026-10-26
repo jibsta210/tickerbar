@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="53"
-    android:versionName="1.13.2">
+    android:versionCode="54"
+    android:versionName="1.14.0">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -23,11 +23,13 @@
     <!-- lets its own updates install without a confirm dialog (Android 12+) -->
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"/>
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="TickerBar"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Material">
 
         <activity android:name=".MainActivity" android:exported="true"
@@ -147,6 +149,12 @@
         </service>
 
         <receiver android:name=".InstallReceiver" android:exported="false"/>
+        <receiver android:name=".RootBootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
         <!-- receives Shizuku's binder when it's running -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

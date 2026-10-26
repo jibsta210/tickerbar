@@ -46,10 +46,16 @@ public class MainActivity extends Activity {
             public void msg(String m) { updateLine.setText(m); }
         })) updateLine.setText("Checking for updates…");
     }};
+    private final Runnable rootStatusUpdate = new Runnable() { public void run() {
+        if (!resumed) return;
+        refreshRootStatus();
+        updateHandler.postDelayed(this, 1_000);
+    }};
 
     private Palette pal;
     private LinearLayout col;
     private TextView updateLine;
+    private TextView rootLine;
     private TextView chipAcc, chipNotif;
     private View cardPreview;
     private ScrollView sv;
@@ -67,6 +73,7 @@ public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle s) {
         super.onCreate(s);
         Prefs.migrate(this);
+        RootBootstrap.start(this);
         pal = Palette.of(this);
 
         sv = new ScrollView(this);
@@ -165,23 +172,22 @@ public class MainActivity extends Activity {
         note(c, "Also available as a Quick Settings tile (“Google search”) and as a "
                 + "TickerBar shortcut for Nova gestures.");
 
+        // ---------------------------------------------------------- root
+        c = card("Root access");
+        rootLine = tv(RootBootstrap.status(this), 15, pal.onSurfaceVariant);
+        rootLine.setPadding(dp(20), dp(18), dp(20), dp(14));
+        rootLine.setLineSpacing(0, 1.15f);
+        c.addView(rootLine);
+        actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
+                new Runnable() { public void run() { startRootAttempt(); }});
+        note(c, "TickerBar makes at most one explicit attempt per boot. When the root daemon is ready, "
+                + "TickerBar uses it for privileged controls and turns Shizuku off. Reboot before retrying "
+                + "a failed attempt.");
+
         // ---------------------------------------------------------- shade
         c = card("One shade");
         switchRow(c, "One shade like stock Android",
                 "Pull down from the status bar for quick settings and notifications together", Prefs.ONE_SHADE);
-        actionRow(c, "Shizuku", Shell.status(this), new Runnable() { public void run() {
-            if (!Shell.installed(MainActivity.this)) {
-                try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + Shell.SHIZUKU_PKG))); }
-                catch (Exception e) { toast("Install Shizuku from the Play Store"); }
-            } else if (!Shell.running()) {
-                Intent i = getPackageManager().getLaunchIntentForPackage(Shell.SHIZUKU_PKG);
-                if (i != null) startActivity(i);
-            } else if (!Shell.granted()) {
-                Shell.requestPermission();
-            } else {
-                toast("Shizuku is ready");
-            }
-        }});
         toggleGuide(c);
         actionRow(c, "Allow brightness and auto-rotate", "Lets the shade's slider and rotate tile change them",
                 new Runnable() { public void run() {
@@ -266,6 +272,10 @@ public class MainActivity extends Activity {
                 ac && ShadeService.isReady() ? 1 : ac ? 0 : -1);
         chip(chipNotif, nl ? "Notifications on" : "Notifications off", nl ? 1 : -1);
         ShadeService.refresh();
+        RootBootstrap.start(this);
+        refreshRootStatus();
+        updateHandler.removeCallbacks(rootStatusUpdate);
+        updateHandler.post(rootStatusUpdate);
 
         scheduleAutoUpdate();
     }
@@ -285,7 +295,42 @@ public class MainActivity extends Activity {
         resumed = false;
         Updater.background(this);
         updateHandler.removeCallbacks(autoUpdate);
+        updateHandler.removeCallbacks(rootStatusUpdate);
         super.onPause();
+    }
+
+    private void refreshRootStatus() {
+        if (rootLine == null) return;
+        boolean ready = RootShell.available();
+        rootLine.setText((ready ? "●  " : RootBootstrap.isBusy() ? "◐  " : "○  ")
+                + RootBootstrap.status(this));
+        rootLine.setTextColor(ready ? pal.good
+                : RootBootstrap.isBusy() ? pal.warn : pal.onSurfaceVariant);
+    }
+
+    private void startRootAttempt() {
+        if (!RootBootstrap.attemptsEnabled()) {
+            RootBootstrap.request(this);
+            refreshRootStatus();
+            toast("Root attempts are paused after the kernel panic");
+            return;
+        }
+        RootBootstrap.request(this);
+        refreshRootStatus();
+        if (RootShell.available()) {
+            toast("Root daemon is ready; Shizuku is off");
+        } else if (!Shell.installed(this)) {
+            try { startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=" + Shell.SHIZUKU_PKG))); }
+            catch (Exception e) { toast("Install Shizuku from the Play Store"); }
+        } else if (!Shell.running()) {
+            Intent i = getPackageManager().getLaunchIntentForPackage(Shell.SHIZUKU_PKG);
+            if (i != null) startActivity(i);
+        } else if (!Shell.granted()) {
+            Shell.requestPermission();
+        } else {
+            toast("Root attempt started; keep the phone awake");
+        }
     }
 
     // ================================================================= sections

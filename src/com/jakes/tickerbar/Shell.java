@@ -6,6 +6,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+
 import rikka.shizuku.Shizuku;
 
 /**
@@ -19,6 +23,12 @@ final class Shell {
     static final int REQUEST = 7301;
 
     private Shell() {}
+
+    static final class Result {
+        final int code;
+        final String output;
+        Result(int code, String output) { this.code = code; this.output = output; }
+    }
 
     static boolean installed(Context c) {
         try { c.getPackageManager().getPackageInfo(SHIZUKU_PKG, 0); return true; }
@@ -42,6 +52,7 @@ final class Shell {
 
     /** One line for settings: where Shizuku stands. */
     static String status(Context c) {
+        if (RootShell.available()) return "✓ Root daemon ready · Shizuku is no longer used";
         if (!installed(c)) return "Shizuku isn't installed";
         if (!running()) return "Shizuku isn't running — start it in the Shizuku app";
         if (!granted()) return "Tap to allow TickerBar in Shizuku";
@@ -51,17 +62,55 @@ final class Shell {
     /** Run cmd with shell rights off the main thread, then call done (on the main thread). */
     static void run(final String cmd, final Runnable done) {
         new Thread(new Runnable() { public void run() {
-            try {
-                java.lang.reflect.Method m = Shizuku.class.getDeclaredMethod("newProcess",
-                        String[].class, String[].class, String.class);
-                m.setAccessible(true);   // public API wants a bound service; a one-line command doesn't need one
-                Process p = (Process) m.invoke(null, new String[]{"sh", "-c", cmd}, null, null);
-                int code = p.waitFor();
-                if (code != 0) Log.w("TickerBar", "shell `" + cmd + "` exited " + code);
-            } catch (Throwable t) {
-                Log.w("TickerBar", "shell `" + cmd + "` failed", t);
+            if (RootShell.available()) {
+                RootShell.Result r = RootShell.exec(cmd);
+                if (!r.connected) Log.w("TickerBar", "root shell failed: " + r.output);
+            } else {
+                Result r = runShizukuSync(cmd);
+                if (r.code != 0) Log.w("TickerBar", "shell `" + cmd + "` exited "
+                        + r.code + ": " + r.output);
             }
             if (done != null) new Handler(Looper.getMainLooper()).post(done);
         }}, "TickerBar-shell").start();
+    }
+
+    /** Explicit Shizuku path used only to launch the bundled bootstrap. */
+    static Result runShizukuSync(String cmd) {
+        try {
+            java.lang.reflect.Method m = Shizuku.class.getDeclaredMethod("newProcess",
+                    String[].class, String[].class, String.class);
+            m.setAccessible(true);
+            final Process p = (Process) m.invoke(null,
+                    new String[]{"sh"}, null, null);
+            final StringBuilder output = new StringBuilder();
+            Thread stdout = drain(p.getInputStream(), output);
+            Thread stderr = drain(p.getErrorStream(), output);
+            OutputStream stdin = p.getOutputStream();
+            stdin.write((cmd + "\nexit\n").getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            stdin.close();
+            int code = p.waitFor();
+            stdout.join(2_000);
+            stderr.join(2_000);
+            return new Result(code, output.toString());
+        } catch (Throwable t) {
+            return new Result(-1, t.toString());
+        }
+    }
+
+    private static Thread drain(final InputStream in, final StringBuilder output) {
+        Thread t = new Thread(new Runnable() { public void run() {
+            byte[] buf = new byte[4096];
+            try {
+                int n;
+                while ((n = in.read(buf)) > 0) synchronized (output) {
+                    output.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    if (output.length() > 64 * 1024)
+                        output.delete(0, output.length() - 64 * 1024);
+                }
+            } catch (Throwable ignored) {}
+        }}, "TickerBar-shell-output");
+        t.start();
+        return t;
     }
 }

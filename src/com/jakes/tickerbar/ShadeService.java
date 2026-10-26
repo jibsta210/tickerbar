@@ -155,6 +155,7 @@ public class ShadeService extends AccessibilityService {
         super.onServiceConnected();
         self = this;
         Prefs.migrate(this);
+        RootBootstrap.start(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
         launcherPkg = resolveLauncher();

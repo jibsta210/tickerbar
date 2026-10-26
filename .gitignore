@@ -3,3 +3,4 @@ build/
 tickerbar.apk
 *.idsig
 libs-src/
+native/ghostlock/build/

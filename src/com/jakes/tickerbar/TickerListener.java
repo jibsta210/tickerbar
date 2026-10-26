@@ -14,7 +14,10 @@ public class TickerListener extends NotificationListenerService {
 
     private static TickerListener self;
 
-    @Override public void onListenerConnected() { self = this; }
+    @Override public void onListenerConnected() {
+        self = this;
+        RootBootstrap.start(this);
+    }
     @Override public void onListenerDisconnected() { if (self == this) self = null; }
 
     /** Dismiss a notification the user opened from the ticker, as the shade would. */
