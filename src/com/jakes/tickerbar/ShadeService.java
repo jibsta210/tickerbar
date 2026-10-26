@@ -222,6 +222,7 @@ public class ShadeService extends AccessibilityService {
     @Override public void onInterrupt() { volumeKeys.clear(); stopVolumeRepeat(); }
 
     @Override protected boolean onKeyEvent(KeyEvent event) {
+        if (RootVolume.connected()) return false;
         final int key = event.getKeyCode();
         if (key != KeyEvent.KEYCODE_VOLUME_UP && key != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
         if (event.getAction() == KeyEvent.ACTION_UP) {
@@ -971,7 +972,7 @@ public class ShadeService extends AccessibilityService {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         boolean screenOn = pm == null || pm.isInteractive();
         boolean locked = isLocked();
-        boolean want = Prefs.on(this, Prefs.SWIPE_ON) && screenOn
+        boolean want = !RootOverlayClient.connected() && Prefs.on(this, Prefs.SWIPE_ON) && screenOn
                 && (locked ? Prefs.on(this, Prefs.CARD_LOCK)
                            : Prefs.on(this, Prefs.CARD_HOME) && onHome);
         if (!want) {
@@ -1175,7 +1176,10 @@ public class ShadeService extends AccessibilityService {
         }
     }
 
-    private boolean oneShade() { return Prefs.on(this, Prefs.ONE_SHADE); }
+    /** Root uses SystemUI's real combined shade; this custom panel is fallback only. */
+    private boolean oneShade() {
+        return Prefs.on(this, Prefs.ONE_SHADE) && !RootFeatures.applied();
+    }
 
     private UnifiedShade shade() {
         if (shade == null) shade = new UnifiedShade(this);
@@ -1571,7 +1575,7 @@ public class ShadeService extends AccessibilityService {
     /** A small invisible zone in a nav-bar corner. Long-press runs its action, on any screen. */
     private void updateCorner() {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
-        boolean want = Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive())
+        boolean want = !RootFeatures.applied() && Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive())
                 && !videoInFront();
         if (!want) {
             if (corner != null && cornerAttached) {

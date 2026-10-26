@@ -29,7 +29,8 @@ echo "[3/6] aapt2 link"
 
 mkdir -p "$OUT/native/lib/arm64-v8a"
 cp "$GHOST_BIN" "$OUT/native/lib/arm64-v8a/libtickerroot.so"
-(cd "$OUT/native" && zip -q "$OUT/base.apk" lib/arm64-v8a/libtickerroot.so)
+cp "$P/native/prebuilt/arm64-v8a/libresetprop.so" "$OUT/native/lib/arm64-v8a/libresetprop.so"
+(cd "$OUT/native" && zip -q "$OUT/base.apk" lib/arm64-v8a/libtickerroot.so lib/arm64-v8a/libresetprop.so)
 
 echo "[4/6] javac"
 javac -nowarn -Xlint:none -source 17 -target 17 \

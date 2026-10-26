@@ -2,12 +2,16 @@ package com.jakes.tickerbar;
 
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 
 import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Filters notifications and hands the survivors to the ticker. Owns no UI. */
 public class TickerListener extends NotificationListenerService {
@@ -17,14 +21,48 @@ public class TickerListener extends NotificationListenerService {
     @Override public void onListenerConnected() {
         self = this;
         RootBootstrap.start(this);
+        RootVolume.start(this);
+        RootOverlayClient.start(this);
     }
-    @Override public void onListenerDisconnected() { if (self == this) self = null; }
+    @Override public void onListenerDisconnected() {
+        RootVolume.stop();
+        RootOverlayClient.stop();
+        if (self == this) self = null;
+    }
+
+    @Override public void onDestroy() {
+        RootVolume.stop();
+        RootOverlayClient.stop();
+        if (self == this) self = null;
+        super.onDestroy();
+    }
 
     /** Dismiss a notification the user opened from the ticker, as the shade would. */
     static void cancel(String key) {
         TickerListener l = self;
         if (l == null || key == null) return;
         try { l.cancelNotification(key); } catch (Exception ignored) {}
+    }
+
+    /** Run the notification's real PendingIntent when the root ticker is tapped. */
+    static void open(Context context, String key, String pkg, boolean autoCancel) {
+        TickerListener listener = self;
+        boolean opened = false;
+        if (listener != null && key != null) {
+            PendingIntent pending = listener.intents.get(key);
+            if (pending != null) try {
+                pending.send();
+                opened = true;
+            } catch (PendingIntent.CanceledException ignored) {}
+        }
+        if (!opened && pkg != null && !pkg.isEmpty()) {
+            Intent launch = context.getPackageManager().getLaunchIntentForPackage(pkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { context.startActivity(launch); } catch (Exception ignored) {}
+            }
+        }
+        if (autoCancel) cancel(key);
     }
 
     /** Everything currently posted, for the shade; null without notification access. */
@@ -56,6 +94,8 @@ public class TickerListener extends NotificationListenerService {
 
     /** Last text shown per notification key, so repeat updates don't re-ticker. */
     private final HashMap<String, String> last = new HashMap<String, String>();
+    private final ConcurrentHashMap<String, PendingIntent> intents =
+            new ConcurrentHashMap<String, PendingIntent>();
 
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
         ShadeService.notificationsChanged();
@@ -87,15 +127,20 @@ public class TickerListener extends NotificationListenerService {
         if (sig.equals(last.get(key))) return;
         if (last.size() > 300) last.clear();
         last.put(key, sig);
+        if (n.contentIntent != null) intents.put(key, n.contentIntent);
+        else intents.remove(key);
 
         String app = label(pkg);
-        ShadeService.post(new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon(),
-                n.contentIntent, key, (n.flags & Notification.FLAG_AUTO_CANCEL) != 0));
+        Item item = new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon(),
+                n.contentIntent, key, (n.flags & Notification.FLAG_AUTO_CANCEL) != 0);
+        if (!RootOverlayClient.post(item)) ShadeService.post(item);
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
         last.remove(sbn.getKey());
+        intents.remove(sbn.getKey());
+        RootOverlayClient.recall(sbn.getKey());
         ShadeService.notificationsChanged();
         // read in the app, swiped away, or replaced: the ticker shouldn't keep showing it
         ShadeService.recall(sbn.getKey());

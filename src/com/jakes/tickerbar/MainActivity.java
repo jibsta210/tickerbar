@@ -160,8 +160,8 @@ public class MainActivity extends Activity {
         switchRow(c, "Show a dot where the zone is", null, Prefs.CORNER_HINT);
         switchRow(c, "Step aside for fullscreen video",
                 "Hidden while the app on screen plays video in landscape", Prefs.CORNER_HIDE_VIDEO);
-        note(c, "Anything that isn't your gesture passes straight through to the nav button underneath. "
-                + "In double-tap mode a single tap waits ~0.3 s to see if a second one follows.");
+        note(c, "With root, HyperOS's native Home-button long-press opens Google and this overlay is retired. "
+                + "Accessibility fallback keeps the configurable corner gesture when root is unavailable.");
 
         // ---------------------------------------------------------- google
         c = card("Google");
@@ -178,17 +178,40 @@ public class MainActivity extends Activity {
         rootLine.setPadding(dp(20), dp(18), dp(20), dp(14));
         rootLine.setLineSpacing(0, 1.15f);
         c.addView(rootLine);
-        actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
-                new Runnable() { public void run() { startRootAttempt(); }});
+        if (RootBootstrap.attemptsEnabled()) {
+            actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
+                    new Runnable() { public void run() { startRootAttempt(); }});
+            actionRow(c, "Apply root system integration",
+                    "Combined system shade, physical volume keys, ticker, wallet and direct permissions",
+                    new Runnable() { public void run() {
+                        RootFeatures.applyAsync(MainActivity.this);
+                        RootVolume.start(MainActivity.this);
+                        RootOverlayClient.start(MainActivity.this);
+                        toast("Applying root integration");
+                    }});
+        } else {
+            note(c, "Kernel root is safety-paused after a verified panic on this exact firmware. "
+                    + "TickerBar will not arm it; Shizuku and Accessibility remain the stable path.");
+        }
+        actionRow(c, "Open floating screen recorder",
+                "Starts HyperOS's on-screen recorder control, not its settings page",
+                new Runnable() { public void run() {
+                    RootFeatures.openRecorder(MainActivity.this, new RootFeatures.ResultCallback() {
+                        public void done(final boolean ok, final String detail) {
+                            runOnUiThread(new Runnable() { public void run() {
+                                if (!ok) toast(detail.isEmpty() ? "Screen recorder failed" : detail);
+                            }});
+                        }
+                    });
+                }});
         actionRow(c, "Disable HyperOS install countdown",
                 "Skips Security Center's ten-second Install via USB gate",
                 new Runnable() { public void run() { setInstallIntercept(false); }});
         actionRow(c, "Restore HyperOS install confirmation",
                 "Turns the stock Security Center install gate back on",
                 new Runnable() { public void run() { setInstallIntercept(true); }});
-        note(c, "TickerBar makes at most one attempt per boot, automatically after startup or from this "
-                + "button. When the root daemon is ready, TickerBar uses it for privileged controls and "
-                + "keeps Shizuku as the fallback. Reboot before retrying a failed attempt.");
+        note(c, "The floating recorder and replacement tile work through either root or Shizuku. "
+                + "The HyperOS install countdown provider has a signature-only permission and still requires root.");
 
         // ---------------------------------------------------------- shade
         c = card("One shade");
@@ -227,9 +250,9 @@ public class MainActivity extends Activity {
         c = card("Shade shortcuts");
         switchRow(c, "Only from the home screen", null, Prefs.SHADE_HOME);
         actionRow(c, "Open notifications", null, new Runnable() { public void run() {
-            if (!ShadeService.notifications()) toast("Turn on TickerBar in Accessibility first"); }});
+            if (!ShadeService.notifications()) toast("Root or Accessibility fallback is not ready"); }});
         actionRow(c, "Open Control Centre", null, new Runnable() { public void run() {
-            if (!ShadeService.quickSettings()) toast("Turn on TickerBar in Accessibility first"); }});
+            if (!ShadeService.quickSettings()) toast("Root or Accessibility fallback is not ready"); }});
         note(c, "Bind “TickerBar: Notifications” and “TickerBar: Control Centre” "
                 + "in Nova → Gestures → Shortcuts.");
 
@@ -247,8 +270,9 @@ public class MainActivity extends Activity {
                 new Runnable() { public void run() {
                     try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)); }
                     catch (Exception e) { toast("Open Settings \u2192 Notifications \u2192 Do Not Disturb access"); } }});
-        note(c, "Hold a button to repeat. Uses your phone’s existing volume levels (150 on POCO F9 Ultra). "
-                + "Call volume keeps its normal behavior. Turn this off to restore normal buttons.");
+        note(c, "Root owns the physical key devices with a crash-safe lease and changes the phone's real "
+                + "150-level media stream. Calls and casting pass through unchanged; closing the lease "
+                + "instantly restores stock keys.");
 
         // ---------------------------------------------------------- updates
         c = card("Updates");
@@ -274,8 +298,10 @@ public class MainActivity extends Activity {
         boolean nl = l != null && l.contains(getPackageName() + "/");
         String a = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         boolean ac = a != null && a.contains(getPackageName() + "/");
-        chip(chipAcc, ac && ShadeService.isReady() ? "Accessibility on" : ac ? "Accessibility: restart it" : "Accessibility off",
-                ac && ShadeService.isReady() ? 1 : ac ? 0 : -1);
+        boolean rootUi = RootFeatures.applied() && RootOverlayClient.connected() && RootVolume.connected();
+        chip(chipAcc, rootUi ? "Root UI on" : ac && ShadeService.isReady() ? "Accessibility fallback"
+                        : ac ? "Accessibility: restart it" : "UI service off",
+                rootUi || ac && ShadeService.isReady() ? 1 : ac ? 0 : -1);
         chip(chipNotif, nl ? "Notifications on" : "Notifications off", nl ? 1 : -1);
         ShadeService.refresh();
         RootBootstrap.start(this);
@@ -307,9 +333,13 @@ public class MainActivity extends Activity {
 
     private void refreshRootStatus() {
         if (rootLine == null) return;
-        boolean ready = RootShell.available();
+        boolean ready = RootBootstrap.attemptsEnabled() && RootShell.available();
+        String integration = ready ? "\n"
+                + (RootFeatures.applied() ? "✓ combined SystemUI" : "… SystemUI setup") + "  ·  "
+                + (RootOverlayClient.connected() ? "✓ root overlays" : "… overlays") + "  ·  "
+                + (RootVolume.connected() ? "✓ root volume" : "… volume") : "";
         rootLine.setText((ready ? "●  " : RootBootstrap.isBusy() ? "◐  " : "○  ")
-                + RootBootstrap.status(this));
+                + RootBootstrap.status(this) + integration);
         rootLine.setTextColor(ready ? pal.good
                 : RootBootstrap.isBusy() ? pal.warn : pal.onSurfaceVariant);
     }
@@ -342,7 +372,7 @@ public class MainActivity extends Activity {
     /** Toggle only Security Center's ADB/install intercept; antivirus remains untouched. */
     private void setInstallIntercept(final boolean enabled) {
         if (!RootShell.available()) {
-            toast("Root daemon is needed for this setting");
+            toast("Root is needed for HyperOS's protected Security Center setting");
             return;
         }
         String command = "content call --uri content://com.miui.securitycenter.remoteprovider"
@@ -484,7 +514,9 @@ public class MainActivity extends Activity {
         LinearLayout chips = new LinearLayout(this);
         chips.setOrientation(LinearLayout.HORIZONTAL);
         chipAcc = chipView(new Runnable() { public void run() {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }});
+            if (RootFeatures.applied() && RootOverlayClient.connected() && RootVolume.connected())
+                toast("Root UI is active; Accessibility is only the automatic fallback");
+            else startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }});
         chipNotif = chipView(new Runnable() { public void run() {
             startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")); }});
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
@@ -498,7 +530,11 @@ public class MainActivity extends Activity {
         preview.setGravity(Gravity.CENTER);
         preview.setBackground(ripple(round(pal.primary, dp(28)), pal.onPrimary));
         preview.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-            if (!ShadeService.preview()) toast("Turn on TickerBar in Accessibility first");
+            Item sample = new Item("TickerBar", "Preview",
+                    "A long sample line so you can watch it scroll, hop around the camera cut-out and clear the rounded corners",
+                    getPackageName(), null);
+            if (!RootOverlayClient.post(sample) && !ShadeService.preview())
+                toast("Root overlay is starting; try again in a moment");
         }});
         LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
         pp.topMargin = dp(16);
@@ -542,6 +578,7 @@ public class MainActivity extends Activity {
     /** A setting changed: apply it live. */
     private void changed() {
         ShadeService.refresh();
+        RootOverlayClient.refresh(this);
         if (cardPreview != null) cardPreview.invalidate();
     }
 

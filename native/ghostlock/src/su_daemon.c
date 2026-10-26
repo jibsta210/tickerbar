@@ -1,8 +1,11 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <linux/input.h>
+#include <linux/uinput.h>
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
@@ -11,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -20,6 +24,7 @@
 #include <unistd.h>
 
 #define SOCK_NAME "tickerbar-root"
+#define VOLUME_SOCK_NAME "tickerbar-volume-v2"
 
 static uid_t allowed_uid = (uid_t)-1;
 
@@ -30,6 +35,15 @@ static socklen_t daemon_address(struct sockaddr_un *sun) {
   sun->sun_path[0] = '\0';
   memcpy(sun->sun_path + 1, SOCK_NAME, name_len);
   return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
+}
+
+static socklen_t named_address(struct sockaddr_un *sun, const char *name) {
+  memset(sun, 0, sizeof(*sun));
+  sun->sun_family = AF_UNIX;
+  size_t len = strlen(name);
+  sun->sun_path[0] = '\0';
+  memcpy(sun->sun_path + 1, name, len);
+  return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + len);
 }
 
 static void set_root_env(void) {
@@ -420,6 +434,219 @@ static int daemon_main(void) {
   }
 }
 
+/* -------------------------------------------------------------------------
+ * Physical volume-key lease.
+ *
+ * Accessibility was previously used only because Android gives ordinary apps
+ * no global key filter. The root helper grabs the two physical key devices,
+ * asks TickerBar whether each event is consumed, and re-injects untouched
+ * events through a dedicated uinput device. Closing the socket releases both
+ * EVIOCGRAB leases immediately, so a dead/restarted app restores stock keys.
+ */
+
+struct volume_packet {
+  int32_t code;
+  int32_t value;
+};
+
+static int key_bit(const unsigned long *bits, unsigned int key) {
+  const unsigned int per = 8U * (unsigned int)sizeof(unsigned long);
+  return (bits[key / per] >> (key % per)) & 1UL;
+}
+
+static int open_volume_devices(int fds[4], unsigned long *all_keys,
+                               size_t key_words) {
+  int count = 0;
+  DIR *dir = opendir("/dev/input");
+  if (!dir)
+    return 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) && count < 4) {
+    if (strncmp(entry->d_name, "event", 5) != 0)
+      continue;
+    char path[128];
+    snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0)
+      continue;
+    char name[128] = {0};
+    (void)ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+    if (strstr(name, "TickerBar") || strstr(name, "uinput")) {
+      close(fd);
+      continue;
+    }
+    unsigned long bits[(KEY_MAX + 8U * sizeof(unsigned long)) /
+                       (8U * sizeof(unsigned long))];
+    memset(bits, 0, sizeof(bits));
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) < 0 ||
+        (!key_bit(bits, KEY_VOLUMEUP) && !key_bit(bits, KEY_VOLUMEDOWN))) {
+      close(fd);
+      continue;
+    }
+    int grab = 1;
+    if (ioctl(fd, EVIOCGRAB, grab) != 0) {
+      close(fd);
+      continue;
+    }
+    for (size_t i = 0; i < key_words && i < sizeof(bits) / sizeof(bits[0]); ++i)
+      all_keys[i] |= bits[i];
+    fds[count++] = fd;
+  }
+  closedir(dir);
+  return count;
+}
+
+static int open_volume_uinput(const unsigned long *keys, size_t key_words) {
+  int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0)
+    return -1;
+  if (ioctl(fd, UI_SET_EVBIT, EV_KEY) != 0 ||
+      ioctl(fd, UI_SET_EVBIT, EV_SYN) != 0) {
+    close(fd);
+    return -1;
+  }
+  for (unsigned int key = 0; key <= KEY_MAX; ++key) {
+    unsigned int word = key / (8U * (unsigned int)sizeof(unsigned long));
+    if (word < key_words && key_bit(keys, key) &&
+        ioctl(fd, UI_SET_KEYBIT, key) != 0) {
+      close(fd);
+      return -1;
+    }
+  }
+  struct uinput_setup setup;
+  memset(&setup, 0, sizeof(setup));
+  setup.id.bustype = BUS_VIRTUAL;
+  setup.id.vendor = 0x5442;
+  setup.id.product = 1;
+  snprintf(setup.name, sizeof(setup.name), "TickerBar volume passthrough");
+  if (ioctl(fd, UI_DEV_SETUP, &setup) != 0 || ioctl(fd, UI_DEV_CREATE) != 0) {
+    close(fd);
+    return -1;
+  }
+  usleep(100000);
+  return fd;
+}
+
+static void inject_volume_event(int fd, int code, int value) {
+  if (fd < 0)
+    return;
+  struct input_event events[2];
+  memset(events, 0, sizeof(events));
+  events[0].type = EV_KEY;
+  events[0].code = (uint16_t)code;
+  events[0].value = value;
+  events[1].type = EV_SYN;
+  events[1].code = SYN_REPORT;
+  (void)write(fd, events, sizeof(events));
+}
+
+static void serve_volume_client(int conn) {
+  int inputs[4] = {-1, -1, -1, -1};
+  unsigned long keys[(KEY_MAX + 8U * sizeof(unsigned long)) /
+                     (8U * sizeof(unsigned long))];
+  memset(keys, 0, sizeof(keys));
+  int count = open_volume_devices(inputs, keys, sizeof(keys) / sizeof(keys[0]));
+  int uinput = open_volume_uinput(keys, sizeof(keys) / sizeof(keys[0]));
+  int status = count > 0 && uinput >= 0 ? 0 : 1;
+  if (!write_full(conn, &status, sizeof(status)) || status != 0)
+    goto done;
+
+  for (;;) {
+    struct pollfd polls[5];
+    polls[0].fd = conn;
+    polls[0].events = POLLIN | POLLHUP | POLLERR;
+    for (int i = 0; i < count; ++i) {
+      polls[i + 1].fd = inputs[i];
+      polls[i + 1].events = POLLIN | POLLHUP | POLLERR;
+    }
+    int ready = poll(polls, (nfds_t)(count + 1), -1);
+    if (ready < 0 && errno == EINTR)
+      continue;
+    if (ready < 0 || (polls[0].revents & (POLLHUP | POLLERR | POLLNVAL)))
+      break;
+    if (polls[0].revents & POLLIN) {
+      char ignored[32];
+      if (read(conn, ignored, sizeof(ignored)) <= 0)
+        break;
+    }
+    for (int i = 0; i < count; ++i) {
+      if (!(polls[i + 1].revents & POLLIN))
+        continue;
+      struct input_event event;
+      while (read(inputs[i], &event, sizeof(event)) == sizeof(event)) {
+        if (event.type != EV_KEY)
+          continue;
+        if (event.code != KEY_VOLUMEUP && event.code != KEY_VOLUMEDOWN) {
+          /* EVIOCGRAB applies to the whole device. Preserve unrelated buttons
+           * (some boards put power/camera beside volume on the same node). */
+          inject_volume_event(uinput, event.code, event.value);
+          continue;
+        }
+        struct volume_packet packet = {(int32_t)event.code, event.value};
+        if (!write_full(conn, &packet, sizeof(packet)))
+          goto done;
+        struct pollfd response_poll = {conn, POLLIN | POLLHUP | POLLERR, 0};
+        char response = 'P';
+        int response_ready;
+        do { response_ready = poll(&response_poll, 1, 750); }
+        while (response_ready < 0 && errno == EINTR);
+        if (response_ready <= 0 || !(response_poll.revents & POLLIN)) {
+          inject_volume_event(uinput, event.code, event.value);
+          goto done;
+        }
+        if (read(conn, &response, 1) != 1)
+          goto done;
+        if (response != 'C')
+          inject_volume_event(uinput, event.code, event.value);
+      }
+    }
+  }
+
+done:
+  for (int i = 0; i < count; ++i) {
+    if (inputs[i] >= 0) {
+      int release = 0;
+      (void)ioctl(inputs[i], EVIOCGRAB, release);
+      close(inputs[i]);
+    }
+  }
+  if (uinput >= 0) {
+    (void)ioctl(uinput, UI_DEV_DESTROY);
+    close(uinput);
+  }
+}
+
+static int volume_helper_main(uid_t app_uid) {
+  if (geteuid() != 0 || app_uid < 10000)
+    return 126;
+  (void)prctl(PR_SET_NAME, "tickerbar-vol2", 0, 0, 0);
+  signal(SIGPIPE, SIG_IGN);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0)
+    return 1;
+  struct sockaddr_un sun;
+  socklen_t sun_len = named_address(&sun, VOLUME_SOCK_NAME);
+  if (bind(fd, (struct sockaddr *)&sun, sun_len) != 0 || listen(fd, 2) != 0) {
+    close(fd);
+    return 1;
+  }
+  for (;;) {
+    int conn = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
+    if (conn < 0 && errno == EINTR)
+      continue;
+    if (conn < 0)
+      break;
+    struct ucred peer;
+    socklen_t peer_len = sizeof(peer);
+    if (getsockopt(conn, SOL_SOCKET, SO_PEERCRED, &peer, &peer_len) == 0 &&
+        (peer.uid == app_uid || peer.uid == 0))
+      serve_volume_client(conn);
+    close(conn);
+  }
+  close(fd);
+  return 1;
+}
+
 static int umh_main(void) {
   if (geteuid() != 0) {
     return 126;
@@ -446,6 +673,13 @@ int tickerbar_su_main(int argc, char **argv) {
   }
   if (argc >= 2 && strcmp(argv[1], "--umh") == 0) {
     return umh_main();
+  }
+  if (argc >= 3 && strcmp(argv[1], "--volume-helper") == 0) {
+    char *end = NULL;
+    unsigned long uid = strtoul(argv[2], &end, 10);
+    if (!end || *end != '\0' || uid > UINT32_MAX)
+      return 2;
+    return volume_helper_main((uid_t)uid);
   }
   return client_main(argc, argv);
 }

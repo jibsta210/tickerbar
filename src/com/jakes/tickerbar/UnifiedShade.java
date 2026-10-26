@@ -1038,9 +1038,20 @@ final class UnifiedShade {
                 public boolean active() { return false; }
                 public String state() { return "Open recorder"; }
                 public void tap() {
+                    if (RootShell.available()) {
+                        closeNow();
+                        RootFeatures.openRecorder(svc, new RootFeatures.ResultCallback() {
+                            public void done(final boolean ok, final String detail) {
+                                if (!ok) root.post(new Runnable() { public void run() {
+                                    svc.toast(detail.isEmpty() ? "Screen recorder failed" : detail);
+                                }});
+                            }
+                        });
+                        return;
+                    }
                     Intent i = recorderIntent();
                     if (i != null) launch(i);
-                    else svc.toast("No screen recorder app found");
+                    else svc.toast("Root is needed to open the floating recorder");
                 }
             };
             case "nfc": return new Tile() {

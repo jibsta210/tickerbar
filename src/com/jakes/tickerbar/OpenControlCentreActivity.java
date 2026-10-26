@@ -10,7 +10,7 @@ public class OpenControlCentreActivity extends Activity {
         super.onCreate(s);
         boolean allowed = !Prefs.on(this, Prefs.SHADE_HOME) || ShadeService.isOnHome();
         if (allowed && !ShadeService.quickSettings()) {
-            Toast.makeText(this, "Enable TickerBar in Accessibility first", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "TickerBar root or Accessibility fallback is not ready", Toast.LENGTH_LONG).show();
         }
         finish();
         overridePendingTransition(0, 0);

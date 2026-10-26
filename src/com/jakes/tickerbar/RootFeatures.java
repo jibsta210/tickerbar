@@ -1,0 +1,181 @@
+package com.jakes.tickerbar;
+
+import android.content.ComponentName;
+import android.content.Context;
+import android.util.Log;
+
+import java.io.File;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** Root-backed system integration that replaces HyperOS permission screens and hacks. */
+final class RootFeatures {
+    private static final AtomicBoolean APPLYING = new AtomicBoolean();
+    private static final AtomicBoolean DETACHING = new AtomicBoolean();
+    private static volatile boolean applied;
+
+    private RootFeatures() {}
+
+    static boolean applied() { return applied && RootShell.available(); }
+
+    /** Idempotent: safe after boot, an app update, or reconnecting to the root daemon. */
+    static void applyAsync(Context context) {
+        if (!RootShell.available() || !APPLYING.compareAndSet(false, true)) return;
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() { @Override public void run() {
+            try { applied = apply(app); }
+            finally { APPLYING.set(false); }
+        }}, "TickerBar-root-features").start();
+    }
+
+    private static boolean apply(Context c) {
+        File resetprop = new File(c.getApplicationInfo().nativeLibraryDir, "libresetprop.so");
+        if (!resetprop.isFile()) {
+            Log.e("TickerBarRoot", "Bundled resetprop helper is missing");
+            return false;
+        }
+
+        // resetprop has a multi-call entry point selected by argv[0]. A short-lived symlink
+        // gives it the expected name without copying an executable out of the APK.
+        String property = "ln -sf " + quote(resetprop.getAbsolutePath())
+                + " /data/local/tmp/resetprop"
+                + " && /data/local/tmp/resetprop -n debug.sysui.use_control_center -1";
+        RootShell.Result prop = RootShell.exec(property);
+        if (!prop.connected || prop.code != 0) {
+            Log.e("TickerBarRoot", "Legacy shade override failed: " + prop.output);
+            return false;
+        }
+
+        String listener = new ComponentName(c, TickerListener.class).flattenToString();
+        String recorderTile = "custom(com.jakes.tickerbar/.RecorderTileService)";
+        String stockRecorderTile = "custom(com.miui.screenrecorder/.service.QuickService)";
+        String command =
+                // Trigger SystemUI's observed setting flow after installing the debug override.
+                "settings put system use_control_panel 0; "
+                // Native Home long-press replaces the accessibility corner search zone.
+                + "settings put system long_press_home_key_no_ui launch_google_search; "
+                // Grant TickerBar's own special access directly, without Security Center timers.
+                + "cmd notification allow_listener " + quote(listener) + " 0; "
+                + "cmd notification allow_dnd " + quote(c.getPackageName()) + " 0; "
+                + "appops set " + quote(c.getPackageName()) + " SYSTEM_ALERT_WINDOW allow; "
+                + "appops set " + quote(c.getPackageName()) + " WRITE_SETTINGS allow; "
+                + "appops set " + quote(c.getPackageName()) + " REQUEST_INSTALL_PACKAGES allow; "
+                // Repair HyperOS Recorder's incomplete first-run permissions.
+                + "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
+                + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
+                + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
+                // Keep the user's QS ordering, replacing only the broken vendor recorder tile.
+                + "tiles=\"$(settings get secure sysui_qs_tiles)\"; "
+                + "case \"$tiles\" in *" + quote(stockRecorderTile) + "*) "
+                + "tiles=\"${tiles/" + stockRecorderTile + "/" + recorderTile + "}\"; "
+                + "settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                // This is the separate Install-via-USB interceptor. Antivirus stays enabled.
+                + "content call --uri content://com.miui.securitycenter.remoteprovider"
+                + " --method callPreference --arg SET --extra type:i:1"
+                + " --extra key:s:permcenter_install_intercept_enabled"
+                + " --extra value:b:false >/dev/null";
+        RootShell.Result result = RootShell.exec(command);
+        if (!result.connected || result.code != 0) {
+            Log.e("TickerBarRoot", "Root feature setup failed (" + result.code + "): " + result.output);
+            return false;
+        }
+        applied = true;
+        Log.i("TickerBarRoot", "Root system integration ready");
+        ShadeService.refresh();
+        RootVolume.start(c);
+        RootOverlayClient.start(c);
+        new Thread(new Runnable() { public void run() {
+            for (int i = 0; i < 40; i++) {
+                if (RootVolume.connected() && RootOverlayClient.connected()) {
+                    detachAccessibilityIfReady(c);
+                    return;
+                }
+                try { Thread.sleep(250); } catch (InterruptedException ignored) { return; }
+            }
+        }}, "TickerBar-wait-native-ui").start();
+        return true;
+    }
+
+    /** Opens HyperOS's actual floating recorder control, not its settings activity. */
+    static void openRecorder(Context context, final ResultCallback callback) {
+        final boolean root = RootShell.available();
+        if (!root && (!Shell.running() || !Shell.granted())) {
+            if (callback != null) callback.done(false, "Root or Shizuku is not ready");
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() { @Override public void run() {
+            String command = "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
+                    + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
+                    + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
+                    + "am start-foreground-service --user 0"
+                    + " -a miui.intent.screenrecorder.RECORDER_SERVICE"
+                    + " -p com.miui.screenrecorder"
+                    + " --ez is_start_immediately false"
+                    + " --ez need_check_audio_permission false";
+            int code;
+            String output;
+            if (root) {
+                RootShell.Result result = RootShell.exec(command);
+                code = result.connected ? result.code : -1;
+                output = result.output;
+            } else {
+                Shell.Result result = Shell.runShizukuSync(command);
+                code = result.code;
+                output = result.output;
+            }
+            boolean ok = code == 0 && (output.contains("Starting service")
+                    || output.contains("already running"));
+            if (callback != null) callback.done(ok, output.trim());
+            if (ok) applyAsync(app);
+        }}, "TickerBar-recorder").start();
+    }
+
+    interface ResultCallback { void done(boolean ok, String detail); }
+
+    /** Retire only TickerBar's accessibility component after every replacement is live. */
+    static void detachAccessibilityIfReady(final Context context) {
+        if (!applied() || !RootVolume.connected() || !RootOverlayClient.connected()) return;
+        if (!DETACHING.compareAndSet(false, true)) return;
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() { public void run() {
+            try {
+                String component = new ComponentName(app, ShadeService.class).flattenToString();
+                String command = "services=\"$(settings get secure enabled_accessibility_services)\"; "
+                        + "wrapped=\":$services:\"; "
+                        + "wrapped=\"${wrapped/:" + component + ":/:}\"; "
+                        + "new=\"${wrapped#:}\"; new=\"${new%:}\"; "
+                        + "settings put secure enabled_accessibility_services \"$new\"; "
+                        + "if [ -z \"$new\" ]; then settings put secure accessibility_enabled 0; fi";
+                RootShell.Result result = RootShell.exec(command);
+                if (result.connected && result.code == 0)
+                    Log.i("TickerBarRoot", "Accessibility fallback retired; root UI owns all features");
+                else Log.w("TickerBarRoot", "Could not retire accessibility: " + result.output);
+            } finally { DETACHING.set(false); }
+        }}, "TickerBar-retire-accessibility").start();
+    }
+
+    /** If root cannot return after a boot, Shizuku restores the old safe UI fallback. */
+    static void restoreAccessibilityFallback(Context context) {
+        if (RootShell.available() || !Shell.running() || !Shell.granted()) return;
+        Context app = context.getApplicationContext();
+        String component = new ComponentName(app, ShadeService.class).flattenToString();
+        String command = "services=\"$(settings get secure enabled_accessibility_services)\"; "
+                + "case \":$services:\" in *:" + component + ":*) ;; *) "
+                + "services=\"${services:+$services:}" + component + "\"; "
+                + "settings put secure enabled_accessibility_services \"$services\";; esac; "
+                + "settings put secure accessibility_enabled 1; "
+                + "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
+                + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
+                + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
+                + "tiles=\"$(settings get secure sysui_qs_tiles)\"; "
+                + "stock=\"custom(com.miui.screenrecorder/.service.QuickService)\"; "
+                + "replacement=\"custom(com.jakes.tickerbar/.RecorderTileService)\"; "
+                + "case \"$tiles\" in *\"$stock\"*) tiles=\"${tiles/$stock/$replacement}\"; "
+                + "settings put secure sysui_qs_tiles \"$tiles\";; esac";
+        Shell.runShizukuSync(command);
+    }
+
+    private static String quote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+}

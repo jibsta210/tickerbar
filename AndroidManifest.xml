@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="76"
-    android:versionName="1.14.22">
+    android:versionCode="77"
+    android:versionName="1.14.23">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -84,6 +84,16 @@
             android:exported="true"
             android:label="Google search"
             android:icon="@drawable/ic_search"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+
+        <service android:name=".RecorderTileService"
+            android:exported="true"
+            android:label="Screen recorder"
+            android:icon="@drawable/qs_recorder"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE"/>

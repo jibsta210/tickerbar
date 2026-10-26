@@ -18,7 +18,10 @@ import rikka.shizuku.Shizuku;
 
 /** Owns the one-way Shizuku -> native bootstrap -> root-daemon transition. */
 final class RootBootstrap {
-    private static final boolean ROOT_ATTEMPTS_ENABLED = true;
+    // The songyuan task-tail redirect has now produced a verified kernel panic.
+    // Keep the already-working Shizuku/Accessibility path available, but never
+    // arm the kernel module from a release build until the primitive is replaced.
+    private static final boolean ROOT_ATTEMPTS_ENABLED = false;
     private static final String PREF = "tickerbar_root";
     private static final String KEY_STATE = "state";
     private static final String KEY_DETAIL = "detail";
@@ -39,6 +42,7 @@ final class RootBootstrap {
                 Shizuku.addBinderReceivedListenerSticky(
                         new Shizuku.OnBinderReceivedListener() {
                             @Override public void onBinderReceived() {
+                                RootFeatures.restoreAccessibilityFallback(app);
                                 if (userRequested) kick();
                             }
                         });
@@ -54,11 +58,14 @@ final class RootBootstrap {
         }
         if (RootShell.available()) {
             state(app, "ready", "Root daemon is ready");
+            RootFeatures.applyAsync(app);
         } else if (!ROOT_ATTEMPTS_ENABLED) {
             state(app, "disabled",
                     "Root attempts paused after kernel panic — normal TickerBar is safe");
+            RootFeatures.restoreAccessibilityFallback(app);
         } else if (!userRequested) {
             state(app, "idle", "Idle — tap Start root attempt");
+            RootFeatures.restoreAccessibilityFallback(app);
         }
     }
 
@@ -157,13 +164,18 @@ final class RootBootstrap {
 
             prefs(c).edit().putLong(KEY_READY_AT, System.currentTimeMillis()).apply();
             state(c, "ready", "Root daemon is ready; Shizuku remains available as fallback");
+            RootFeatures.applyAsync(c);
         } finally {
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            if (!RootShell.available()) RootFeatures.restoreAccessibilityFallback(c);
             busy.set(false);
         }
     }
 
     static String status(Context c) {
+        if (!ROOT_ATTEMPTS_ENABLED)
+            return prefs(c).getString(KEY_DETAIL,
+                    "Root attempts paused after kernel panic — normal TickerBar is safe");
         if (RootShell.available()) return "✓ Root daemon ready · Shizuku fallback kept";
         SharedPreferences p = prefs(c);
         String detail = p.getString(KEY_DETAIL, "Idle — tap Start root attempt");

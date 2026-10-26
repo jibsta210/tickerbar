@@ -5,7 +5,7 @@ and HyperOS between them wouldn't do these things.
 
 ## What it does
 
-- **Notification ticker** drawn *above* the status bar (as an accessibility overlay),
+- **Notification ticker** drawn above the status bar as an Accessibility overlay,
   in **1, 2 or 3 line** modes. Text **hops around the camera cut-out**, fades softly
   wherever it's cut, and side padding follows the screen's real rounded-corner radius.
 - **Works like a heads-up**: tap the ticker to open the notification (it's dismissed
@@ -18,35 +18,29 @@ and HyperOS between them wouldn't do these things.
   lock screens only. Swipe it up to open Google Wallet's default card. Pick a finish
   (white, black metal, platinum, gold, rose gold, midnight, emerald or system colours)
   and an optional label — Google Wallet doesn't share card art with other apps.
-- **Corner gesture**: long-press or double-tap the bottom corner of the nav bar, on any
-  screen, to open Google (home feed or search box) or an app. Everything else passes
-  through to the nav buttons underneath.
+- **Search gesture** uses a configurable bottom-corner long-press or double-tap and
+  passes ordinary navigation touches through to the button underneath.
 - **Shortcuts** to open the notification shade and Control Centre separately, which
   HyperOS exposes no intent for, plus a Google Quick Settings tile.
 - **Fine volume buttons** adjust media volume by 1, 2, 5 or 10 native levels per press
-  (default 5), using the existing accessibility service. Holds repeat; call volume
-  keeps its normal behavior. Disable under Volume buttons to restore normal keys.
+  (default 5), using the Accessibility key filter. Holds repeat; calls and remote
+  playback keep normal behavior.
 - **Checks for updates** from this repo's GitHub releases when you open it, downloads
   automatically, then shows the system install confirmation. Waits until the app is
   visible and unlocked; avoids the silent-install path rejected by HyperOS.
-- **POCO F9 Ultra root bootstrap** uses Shizuku for the initial handoff to the bundled,
-  device/build-specific native module, then runs a UID-authenticated local root daemon.
-  TickerBar prefers that daemon for privileged controls and falls back to Shizuku when
-  root is unavailable. Root mode directly controls Android's system commands, real Wi-Fi
-  tethering, HyperOS Ultra battery saver and the POCO reverse-charging switch. A lease held
-  by the accessibility service suppresses HyperOS's competing shade and automatically
-  restores it if the service exits. It makes at most one automatic or user-started attempt per boot.
-  This is experimental and a failed attempt can reboot the phone.
-- **Root-native shade controls** include the hotspot, flashlight, Do Not Disturb, radios,
-  power modes and charging switches. The screen-recorder tile opens HyperOS's visible
-  recorder app, and the Root menu can disable or restore Security Center's ten-second
-  Install via USB gate without disabling antivirus.
+- **POCO F9 Ultra root bootstrap is safety-paused.** The exact target produced a verified
+  kernel panic at the task-tail redirect, so release builds do not arm the bundled module.
+  Shizuku and Accessibility remain the stable control path.
+- **Working Shizuku integration** restores TickerBar's fallback access after reboot,
+  replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
+  opens its real floating control. The protected Security Center install interceptor still
+  requires root because its provider enforces a signature-only permission.
 
 ## Permissions
 
 | Permission | Why |
 |---|---|
-| Accessibility | draws the ticker, wallet card and corner zone above system UI, opens the shade, handles fine media-volume buttons |
+| Accessibility | draws the ticker and wallet card, handles the corner gesture and fine volume keys |
 | Modify audio settings | sets media volume to the selected level |
 | Notification access | reading notifications for the ticker |
 
