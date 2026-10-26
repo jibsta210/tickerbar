@@ -26,16 +26,41 @@ final class RootShell {
         }
     }
 
+    /** A live connection whose close restores the stock system-shade behavior. */
+    static final class StatusBarLease implements java.io.Closeable {
+        private LocalSocket socket;
+        StatusBarLease(LocalSocket socket) { this.socket = socket; }
+        @Override public synchronized void close() {
+            if (socket == null) return;
+            try { socket.close(); } catch (Throwable ignored) {}
+            socket = null;
+        }
+    }
+
     private RootShell() {}
 
     static Result exec(String command) {
-        Result result = transact(command, 'R', false);
+        // The exploit creates the daemon in the kernel SELinux domain. That domain has
+        // real uid 0 and can access files, but Android's service manager deliberately
+        // exposes no Binder services to it. Enter the ordinary shell domain for each
+        // command while retaining uid 0; this makes `cmd`, `content`, and `service`
+        // work without weakening the daemon's UID-authenticated socket boundary.
+        String runnable = shellDomain(command);
+        Result result = transact(runnable, 'R', false);
         // A daemon started by v1.14.17 or earlier only understands the original
         // output-only command mode. Keep root alive across an in-place app update;
         // the next boot starts the status-aware daemon bundled with this APK.
         if (!result.connected)
-            return transact(command, 'C', true);
+            return transact(runnable, 'C', true);
         return result;
+    }
+
+    private static String shellDomain(String command) {
+        return "exec /system/bin/runcon u:r:shell:s0 /system/bin/sh -c " + quote(command);
+    }
+
+    private static String quote(String value) {
+        return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
     private static Result transact(String command, int mode, boolean logFailure) {
@@ -81,5 +106,34 @@ final class RootShell {
         boolean ok = r.connected && r.code == 0 && r.output.contains("uid=0");
         if (!ok && r.connected) Log.w("TickerBarRoot", "Root probe: " + r.output.trim());
         return ok;
+    }
+
+    /** New daemons acknowledge this mode after disabling HyperOS's shade. */
+    static StatusBarLease acquireStatusBarLease() {
+        LocalSocket socket = new LocalSocket();
+        try {
+            socket.connect(new LocalSocketAddress(SOCKET,
+                    LocalSocketAddress.Namespace.ABSTRACT));
+            socket.setSoTimeout(8_000);
+            OutputStream out = socket.getOutputStream();
+            out.write('S');
+            out.flush();
+            byte[] raw = new byte[4];
+            InputStream in = socket.getInputStream();
+            int at = 0;
+            while (at < raw.length) {
+                int n = in.read(raw, at, raw.length - at);
+                if (n < 0) throw new java.io.EOFException("daemon does not support shade lease");
+                at += n;
+            }
+            int status = ByteBuffer.wrap(raw).order(ByteOrder.nativeOrder()).getInt();
+            if (status != 0) throw new java.io.IOException("statusbar command exited " + status);
+            socket.setSoTimeout(0);
+            return new StatusBarLease(socket);
+        } catch (Throwable t) {
+            try { socket.close(); } catch (Throwable ignored) {}
+            Log.i("TickerBarRoot", "Native shade suppression unavailable: " + t);
+            return null;
+        }
     }
 }

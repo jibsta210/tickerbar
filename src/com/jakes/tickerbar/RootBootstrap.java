@@ -156,8 +156,7 @@ final class RootBootstrap {
             }
 
             prefs(c).edit().putLong(KEY_READY_AT, System.currentTimeMillis()).apply();
-            state(c, "ready", "Root daemon is ready; Shizuku is no longer used");
-            RootShell.exec("killall shizuku_server >/dev/null 2>&1 || true");
+            state(c, "ready", "Root daemon is ready; Shizuku remains available as fallback");
         } finally {
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
             busy.set(false);
@@ -165,7 +164,7 @@ final class RootBootstrap {
     }
 
     static String status(Context c) {
-        if (RootShell.available()) return "✓ Root daemon ready · Shizuku off";
+        if (RootShell.available()) return "✓ Root daemon ready · Shizuku fallback kept";
         SharedPreferences p = prefs(c);
         String detail = p.getString(KEY_DETAIL, "Idle — tap Start root attempt");
         return detail == null ? "Idle — tap Start root attempt" : detail;

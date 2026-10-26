@@ -108,6 +108,9 @@ final class UnifiedShade {
     private ImageView chevron;
     private SeekBar brightness;
     private boolean attached, expanded, closing;
+    /** Cached because sysfs is not readable by the app before the root daemon is ready. */
+    private volatile int reverseCharging = -1;
+    private volatile int hotspot = -1;
     private float sheetH;
     private final List<Runnable> refreshers = new ArrayList<Runnable>();   // tiles, rebuilt with them
     private final List<Runnable> fixed = new ArrayList<Runnable>();        // header and brightness row
@@ -221,6 +224,8 @@ final class UnifiedShade {
         root.setAlpha(0.35f);
         sheetH = height;
         startTorchWatch();
+        refreshHotspot();
+        refreshReverseCharging();
         refreshAll();
         return true;
     }
@@ -971,6 +976,7 @@ final class UnifiedShade {
                 public int icon() { return R.drawable.qs_hotspot; }
                 public String label() { return "Hotspot"; }
                 public boolean active() {
+                    if (hotspot >= 0) return hotspot == 1;
                     try {   // no public getter; this hidden one is readable on most builds
                         Object wm = svc.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
                         return (Boolean) wm.getClass().getMethod("isWifiApEnabled").invoke(wm);
@@ -978,6 +984,24 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
+                    if (RootShell.available()) {
+                        final int wanted = active() ? 0 : 1;
+                        hotspot = wanted;
+                        refreshTiles();
+                        Shell.runResult(rootTool("hotspot " + (wanted == 1 ? "on" : "off")),
+                                new Shell.ResultCallback() { public void done(Shell.Result result) {
+                                    if (result.code != 0)
+                                        svc.toast("Hotspot failed (" + result.code + ")");
+                                    refreshHotspot();
+                                    root.postDelayed(new Runnable() { public void run() {
+                                        refreshHotspot();
+                                    }}, 1200);
+                                    root.postDelayed(new Runnable() { public void run() {
+                                        refreshHotspot();
+                                    }}, 3000);
+                                }});
+                        return;
+                    }
                     if (!launchFirst(new Intent("android.settings.TETHER_SETTINGS"),
                             new Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings")))
                         launch(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
@@ -1043,16 +1067,40 @@ final class UnifiedShade {
             case "ultra": return new Tile() {
                 public int icon() { return R.drawable.qs_ultra; }
                 public String label() { return "Ultra battery saver"; }
-                public boolean active() { return false; }
-                public String state() { return "Battery settings"; }
-                public void tap() { openBattery(); }
+                public boolean active() {
+                    return Settings.System.getInt(svc.getContentResolver(),
+                            "power_supersave_mode_open", 0) == 1;
+                }
+                public String state() { return active() ? "On" : "Off"; }
+                public void tap() {
+                    if (!RootShell.available()) { openBattery(); return; }
+                    boolean enable = !active();
+                    shell("content call --uri content://com.miui.powercenter.powersaver"
+                            + " --method changeSuperPowerMode"
+                            + " --extra POWER_SUPERSAVE_MODE_OPEN:b:" + enable
+                            + " --extra POWER_SUPERSAVE_MODE_FROMUSER:b:true");
+                }
             };
             case "reverse": return new Tile() {
                 public int icon() { return R.drawable.qs_reverse; }
                 public String label() { return "Reverse charging"; }
-                public boolean active() { return false; }
-                public String state() { return "Battery settings"; }
-                public void tap() { openBattery(); }
+                public boolean active() { return reverseCharging == 1; }
+                public String state() {
+                    return reverseCharging < 0 ? "Checking…" : active() ? "On" : "Off";
+                }
+                public void tap() {
+                    if (!RootShell.available()) { openBattery(); return; }
+                    final int wanted = active() ? 0 : 1;
+                    reverseCharging = wanted;
+                    refreshTiles();
+                    Shell.runResult("printf " + wanted
+                            + " > /sys/class/qcom-battery/reverse_chg_mode",
+                            new Shell.ResultCallback() { public void done(Shell.Result result) {
+                                if (result.code != 0)
+                                    svc.toast("Reverse charging failed (" + result.code + ")");
+                                refreshReverseCharging();
+                            }});
+                }
             };
             case "battery": return new Tile() {
                 public int icon() { return R.drawable.qs_battery; }
@@ -2249,6 +2297,34 @@ final class UnifiedShade {
         root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 1200);
         root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 3000);
         return true;
+    }
+
+    /** Read the POCO's actual reverse-charging switch through the privileged channel. */
+    private void refreshReverseCharging() {
+        if (!Shell.privileged()) { reverseCharging = -1; return; }
+        Shell.runResult("cat /sys/class/qcom-battery/reverse_chg_mode 2>/dev/null",
+                new Shell.ResultCallback() { public void done(Shell.Result result) {
+                    if (result.code == 0) {
+                        try { reverseCharging = Integer.parseInt(result.output.trim()) == 0 ? 0 : 1; }
+                        catch (Exception e) { reverseCharging = -1; }
+                    } else reverseCharging = -1;
+                    refreshTiles();
+                }});
+    }
+
+    private String rootTool(String args) {
+        return "CLASSPATH=" + svc.getApplicationInfo().sourceDir
+                + " /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool " + args;
+    }
+
+    private void refreshHotspot() {
+        if (!RootShell.available()) { hotspot = -1; return; }
+        Shell.runResult(rootTool("hotspot status"),
+                new Shell.ResultCallback() { public void done(Shell.Result result) {
+                    if (result.code == 0) hotspot = "on".equals(result.output.trim()) ? 1 : 0;
+                    else hotspot = -1;
+                    refreshTiles();
+                }});
     }
 
     /** Opens the first of these that exists. */

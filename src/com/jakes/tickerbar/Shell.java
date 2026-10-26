@@ -59,7 +59,7 @@ final class Shell {
 
     /** One line for settings: where Shizuku stands. */
     static String status(Context c) {
-        if (RootShell.available()) return "✓ Root daemon ready · Shizuku is no longer used";
+        if (RootShell.available()) return "✓ Root daemon ready · Shizuku available as fallback";
         if (!installed(c)) return "Shizuku isn't installed";
         if (!running()) return "Shizuku isn't running — start it in the Shizuku app";
         if (!granted()) return "Tap to allow TickerBar in Shizuku";

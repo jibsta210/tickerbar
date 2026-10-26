@@ -182,7 +182,7 @@ public class MainActivity extends Activity {
                 new Runnable() { public void run() { startRootAttempt(); }});
         note(c, "TickerBar makes at most one attempt per boot, automatically after startup or from this "
                 + "button. When the root daemon is ready, TickerBar uses it for privileged controls and "
-                + "turns Shizuku off. Reboot before retrying a failed attempt.");
+                + "keeps Shizuku as the fallback. Reboot before retrying a failed attempt.");
 
         // ---------------------------------------------------------- shade
         c = card("One shade");
@@ -318,7 +318,7 @@ public class MainActivity extends Activity {
         RootBootstrap.request(this);
         refreshRootStatus();
         if (RootShell.available()) {
-            toast("Root daemon is ready; Shizuku is off");
+            toast("Root daemon is ready; Shizuku is the fallback");
         } else if (!Shell.installed(this)) {
             try { startActivity(new Intent(Intent.ACTION_VIEW,
                     Uri.parse("market://details?id=" + Shell.SHIZUKU_PKG))); }
@@ -586,8 +586,8 @@ public class MainActivity extends Activity {
                 + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
                 + "Wi-Fi, Bluetooth, mobile data, airplane mode, location, NFC and battery saver are reserved for the system. With "
                 + (root ? "TickerBar root ready, " : "root or Shizuku available, ")
-                + "those tiles switch directly; otherwise they open Android's own panel. Hotspot always opens settings, "
-                + "and ultra battery saver and reverse charging open HyperOS's battery screen.\n\n"
+                + "those tiles switch directly; otherwise they open Android's own panel. With TickerBar root, hotspot, "
+                + "Ultra battery saver and reverse charging also switch directly; without root they open HyperOS settings.\n\n"
                 + status + "\n\n"
                 + "To make Location switch directly, connect the phone to a computer with adb (USB or wireless "
                 + "debugging) and run once:\n"

@@ -5,7 +5,7 @@ SDK="$HOME/Android/Sdk"
 BT="$SDK/build-tools/35.0.0"
 JAR="$SDK/platforms/android-35/android.jar"
 OUT="$P/build"
-rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/res"
+rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/res" "$OUT/stub-classes"
 
 GHOSTLOCK="$P/native/ghostlock"
 GHOST_PROJECT="songyuan-OS3.0.309.0.WGNMIXM"
@@ -32,9 +32,12 @@ cp "$GHOST_BIN" "$OUT/native/lib/arm64-v8a/libtickerroot.so"
 (cd "$OUT/native" && zip -q "$OUT/base.apk" lib/arm64-v8a/libtickerroot.so)
 
 echo "[4/6] javac"
+javac -nowarn -Xlint:none -source 17 -target 17 \
+  -classpath "$JAR" -d "$OUT/stub-classes" \
+  $(find "$P/compile-stubs" -name '*.java')
 find "$P/src" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
 javac -nowarn -Xlint:none -source 17 -target 17 \
-  -classpath "$JAR:$(ls "$P"/libs/*.jar | tr '\n' ':')" \
+  -classpath "$JAR:$OUT/stub-classes:$(ls "$P"/libs/*.jar | tr '\n' ':')" \
   -d "$OUT/classes" @"$OUT/sources.txt"
 if [ -z "$(find "$OUT/classes" -name '*.class' -print -quit)" ]; then
   echo "COMPILE FAILED - no classes produced"; exit 1

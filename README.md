@@ -32,7 +32,10 @@ and HyperOS between them wouldn't do these things.
 - **POCO F9 Ultra root bootstrap** uses Shizuku for the initial handoff to the bundled,
   device/build-specific native module, then runs a UID-authenticated local root daemon.
   TickerBar prefers that daemon for privileged controls and falls back to Shizuku when
-  root is unavailable. It makes at most one automatic or user-started attempt per boot.
+  root is unavailable. Root mode directly controls Android's system commands, real Wi-Fi
+  tethering, HyperOS Ultra battery saver and the POCO reverse-charging switch. A lease held
+  by the accessibility service suppresses HyperOS's competing shade and automatically
+  restores it if the service exits. It makes at most one automatic or user-started attempt per boot.
   This is experimental and a failed attempt can reboot the phone.
 
 ## Permissions
@@ -55,6 +58,9 @@ No Gradle. Needs a JDK and the Android SDK build-tools:
 ```
 
 Outputs a signed `tickerbar.apk`.
+
+`compile-stubs` contains declarations used only by `javac` for Android APIs supplied by
+the phone's tethering APEX; those stubs are not packaged in the APK.
 
 The native module currently targets only `songyuan` running
 `OS3.0.309.0.WGNMIXM`. Its Apache-2.0-licensed source is vendored under

@@ -79,6 +79,9 @@ public class ShadeService extends AccessibilityService {
     private WindowManager.LayoutParams tickerLp;
     private Item current;   // what the ticker is showing, for tap-to-open
     private UnifiedShade shade;          // the one-shade replacement, when switched on
+    private final Object shadeLeaseLock = new Object();
+    private RootShell.StatusBarLease shadeLease;
+    private boolean shadeLeaseWanted, shadeLeaseConnecting, shadeLeaseUnsupported;
     private CatcherView catcher;         // strip over the status bar that catches the pull
     private boolean catcherAttached, tickerTakesTouch;
     private boolean showing;
@@ -408,6 +411,7 @@ public class ShadeService extends AccessibilityService {
     }
 
     private void teardown() {
+        setShadeLease(false);
         if (receiverOn) { try { unregisterReceiver(screenR); } catch (Exception ignored) {} receiverOn = false; }
         if (shade != null) shade.closeNow();
         if (catcher != null && catcherAttached && wm != null) {
@@ -1226,8 +1230,9 @@ public class ShadeService extends AccessibilityService {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         // orientation from the configuration: the display size lags behind a rotation
         boolean portrait = getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE;
-        boolean want = oneShade() && (pm == null || pm.isInteractive()) && !isLocked()
-                && portrait && (shade == null || !shade.isOpen());
+        boolean protect = oneShade() && (pm == null || pm.isInteractive()) && !isLocked() && portrait;
+        setShadeLease(protect);
+        boolean want = protect && (shade == null || !shade.isOpen());
         if (!want) {
             if (catcher != null && catcherAttached) {
                 try { wm.removeViewImmediate(catcher); } catch (Exception ignored) {}
@@ -1244,6 +1249,34 @@ public class ShadeService extends AccessibilityService {
             if (catcherAttached) wm.updateViewLayout(catcher, lp);
             else { wm.addView(catcher, lp); catcherAttached = true; }
         } catch (Exception ignored) {}
+    }
+
+    /** Root daemon lease: stock shade is always restored when this service lets go. */
+    private void setShadeLease(boolean want) {
+        RootShell.StatusBarLease close = null;
+        synchronized (shadeLeaseLock) {
+            shadeLeaseWanted = want;
+            if (!want) {
+                close = shadeLease;
+                shadeLease = null;
+            } else if (shadeLease == null && !shadeLeaseConnecting && !shadeLeaseUnsupported) {
+                shadeLeaseConnecting = true;
+                new Thread(new Runnable() { public void run() {
+                    final RootShell.StatusBarLease opened = RootShell.acquireStatusBarLease();
+                    ui.post(new Runnable() { public void run() {
+                        RootShell.StatusBarLease reject = null;
+                        synchronized (shadeLeaseLock) {
+                            shadeLeaseConnecting = false;
+                            if (opened == null) shadeLeaseUnsupported = true;
+                            else if (shadeLeaseWanted) shadeLease = opened;
+                            else reject = opened;
+                        }
+                        if (reject != null) reject.close();
+                    }});
+                }}, "TickerBar-shade-root").start();
+            }
+        }
+        if (close != null) close.close();
     }
 
     /** The strip over the status bar: a pull drags the shade down; anything else passes through. */

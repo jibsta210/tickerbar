@@ -74,6 +74,20 @@ static int read_full(int fd, void *buf, size_t len) {
   return 1;
 }
 
+static int write_full(int fd, const void *buf, size_t len) {
+  const char *p = (const char *)buf;
+  while (len) {
+    ssize_t n = write(fd, p, len);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      return 0;
+    p += n;
+    len -= (size_t)n;
+  }
+  return 1;
+}
+
 static int connect_daemon(void) {
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
@@ -200,7 +214,11 @@ static int exec_command_client(int conn, const char *cmd) {
     dup2(conn, STDERR_FILENO);
     close(conn);
     set_root_env();
-    execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    /* Keep uid 0, but use Android's normal shell SELinux domain so Binder-backed
+     * commands can see servicemanager. The exploit starts us in u:r:kernel:s0,
+     * where direct file access works but `cmd`/`content` see no services. */
+    execl("/system/bin/runcon", "runcon", "u:r:shell:s0",
+          "/system/bin/sh", "-c", cmd, (char *)NULL);
     _exit(127);
   }
 
@@ -212,6 +230,54 @@ static int exec_command_client(int conn, const char *cmd) {
   if (WIFSIGNALED(status))
     return 128 + WTERMSIG(status);
   return 127;
+}
+
+static int exec_quiet(const char *cmd) {
+  pid_t pid = fork();
+  if (pid < 0)
+    return 127;
+  if (pid == 0) {
+    int nullfd = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (nullfd >= 0) {
+      dup2(nullfd, STDIN_FILENO);
+      dup2(nullfd, STDOUT_FILENO);
+      dup2(nullfd, STDERR_FILENO);
+      if (nullfd > STDERR_FILENO)
+        close(nullfd);
+    }
+    set_root_env();
+    execl("/system/bin/runcon", "runcon", "u:r:shell:s0",
+          "/system/bin/sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  if (WIFSIGNALED(status))
+    return 128 + WTERMSIG(status);
+  return 127;
+}
+
+/* Keep HyperOS's panel disabled only while the app holds this connection. If the
+ * accessibility service or app dies, socket EOF immediately restores the stock shade. */
+static void serve_statusbar_lease(int conn) {
+  static const char disable[] = "cmd statusbar send-disable-flag statusbar-expansion";
+  static const char restore[] = "cmd statusbar send-disable-flag none";
+  int status = exec_quiet(disable);
+  if (!write_full(conn, &status, sizeof(status))) {
+    if (status == 0)
+      (void)exec_quiet(restore);
+    return;
+  }
+  if (status != 0)
+    return;
+
+  char ignored[64];
+  while (read(conn, ignored, sizeof(ignored)) > 0) {
+  }
+  (void)exec_quiet(restore);
 }
 
 static int open_pty_master(char *slave, size_t slave_len) {
@@ -256,7 +322,8 @@ static void exec_interactive_client(int conn) {
     close(master);
     close(conn);
     set_root_env();
-    execl("/system/bin/sh", "sh", "-i", (char *)NULL);
+    execl("/system/bin/runcon", "runcon", "u:r:shell:s0",
+          "/system/bin/sh", "-i", (char *)NULL);
     _exit(127);
   }
 
@@ -302,6 +369,8 @@ static void serve_one(int conn) {
       xwrite(conn, &status, sizeof(status));
   } else if (mode == 'I') {
     exec_interactive_client(conn);
+  } else if (mode == 'S') {
+    serve_statusbar_lease(conn);
   }
 }
 
