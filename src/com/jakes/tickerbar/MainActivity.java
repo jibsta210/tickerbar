@@ -180,9 +180,9 @@ public class MainActivity extends Activity {
         c.addView(rootLine);
         actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
                 new Runnable() { public void run() { startRootAttempt(); }});
-        note(c, "TickerBar makes at most one explicit attempt per boot. When the root daemon is ready, "
-                + "TickerBar uses it for privileged controls and turns Shizuku off. Reboot before retrying "
-                + "a failed attempt.");
+        note(c, "TickerBar makes at most one attempt per boot, automatically after startup or from this "
+                + "button. When the root daemon is ready, TickerBar uses it for privileged controls and "
+                + "turns Shizuku off. Reboot before retrying a failed attempt.");
 
         // ---------------------------------------------------------- shade
         c = card("One shade");
@@ -581,10 +581,11 @@ public class MainActivity extends Activity {
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
         String status = "\u2022 Brightness & auto-rotate: " + (write ? "\u2713 working" : "needs \u201cAllow brightness and auto-rotate\u201d below")
                 + "\n\u2022 Location: " + (secure ? "\u2713 switches directly" : "opens settings until you run the adb command below");
+        boolean root = RootShell.available();
         note(card, "How the tiles work\n\n"
                 + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
-                + "Wi-Fi, Bluetooth, mobile data, airplane mode, NFC and battery saver are reserved for the system. With Shizuku "
-                + "running (free on the Play Store; start it from its app after each reboot) and TickerBar allowed in it, "
+                + "Wi-Fi, Bluetooth, mobile data, airplane mode, location, NFC and battery saver are reserved for the system. With "
+                + (root ? "TickerBar root ready, " : "root or Shizuku available, ")
                 + "those tiles switch directly; otherwise they open Android's own panel. Hotspot always opens settings, "
                 + "and ultra battery saver and reverse charging open HyperOS's battery screen.\n\n"
                 + status + "\n\n"

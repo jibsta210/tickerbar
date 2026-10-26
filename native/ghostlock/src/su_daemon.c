@@ -5,6 +5,7 @@
 #include <grp.h>
 #include <poll.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,9 +19,18 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define SOCK_PATH "/data/local/tmp/tickerbar-root.sock"
+#define SOCK_NAME "tickerbar-root"
 
 static uid_t allowed_uid = (uid_t)-1;
+
+static socklen_t daemon_address(struct sockaddr_un *sun) {
+  memset(sun, 0, sizeof(*sun));
+  sun->sun_family = AF_UNIX;
+  size_t name_len = strlen(SOCK_NAME);
+  sun->sun_path[0] = '\0';
+  memcpy(sun->sun_path + 1, SOCK_NAME, name_len);
+  return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
+}
 
 static void set_root_env(void) {
   setenv("PATH",
@@ -72,11 +82,9 @@ static int connect_daemon(void) {
   }
 
   struct sockaddr_un sun;
-  memset(&sun, 0, sizeof(sun));
-  sun.sun_family = AF_UNIX;
-  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", SOCK_PATH);
+  socklen_t sun_len = daemon_address(&sun);
 
-  if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
+  if (connect(fd, (struct sockaddr *)&sun, sun_len) != 0) {
     perror("su: connect daemon");
     close(fd);
     return -1;
@@ -182,8 +190,10 @@ static int client_main(int argc, char **argv) {
   return rc;
 }
 
-static void exec_command_client(int conn, const char *cmd) {
+static int exec_command_client(int conn, const char *cmd) {
   pid_t pid = fork();
+  if (pid < 0)
+    return 127;
   if (pid == 0) {
     dup2(conn, STDIN_FILENO);
     dup2(conn, STDOUT_FILENO);
@@ -197,6 +207,11 @@ static void exec_command_client(int conn, const char *cmd) {
   int status = 0;
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
   }
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  if (WIFSIGNALED(status))
+    return 128 + WTERMSIG(status);
+  return 127;
 }
 
 static int open_pty_master(char *slave, size_t slave_len) {
@@ -268,7 +283,7 @@ static void serve_one(int conn) {
     return;
   }
 
-  if (mode == 'C') {
+  if (mode == 'C' || mode == 'R') {
     uint32_t len = 0;
     if (!read_full(conn, &len, sizeof(len)) || len > 65536) {
       return;
@@ -281,8 +296,10 @@ static void serve_one(int conn) {
       free(cmd);
       return;
     }
-    exec_command_client(conn, cmd);
+    int status = exec_command_client(conn, cmd);
     free(cmd);
+    if (mode == 'R')
+      xwrite(conn, &status, sizeof(status));
   } else if (mode == 'I') {
     exec_interactive_client(conn);
   }
@@ -298,17 +315,13 @@ static int daemon_main(void) {
     return 1;
   }
 
-  unlink(SOCK_PATH);
   struct sockaddr_un sun;
-  memset(&sun, 0, sizeof(sun));
-  sun.sun_family = AF_UNIX;
-  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", SOCK_PATH);
+  socklen_t sun_len = daemon_address(&sun);
 
-  if (bind(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
+  if (bind(fd, (struct sockaddr *)&sun, sun_len) != 0) {
     perror("bind");
     return 1;
   }
-  chmod(SOCK_PATH, 0666);
   if (listen(fd, 16) != 0) {
     perror("listen");
     return 1;
@@ -371,6 +384,14 @@ int tickerbar_su_main(int argc, char **argv) {
 int tickerbar_start_daemon(uid_t app_uid) {
   allowed_uid = app_uid;
   return daemon_main();
+}
+
+int tickerbar_daemon_available(void) {
+  int fd = connect_daemon();
+  if (fd < 0)
+    return 0;
+  close(fd);
+  return 1;
 }
 
 #ifdef SU_DAEMON_STANDALONE

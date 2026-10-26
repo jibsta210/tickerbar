@@ -26,6 +26,124 @@ extern const char embedded_exp32_end[];
 /* Payload size: 16 uint64_t words (see src/exp32/main.c). */
 #define EXP_BUFFER_BYTES 128
 
+#ifdef USE_NATIVE_SIGRETURN_STAGE
+#define NATIVE_WORKER_MAX 12
+
+struct native_stage_worker {
+  pid_t pid;
+  int command_fd;
+  int result_fd;
+};
+
+static struct native_stage_worker native_workers[NATIVE_WORKER_MAX];
+static size_t native_worker_count;
+static size_t native_worker_next;
+
+static ssize_t transfer_full(int fd, void *buffer, size_t size, int writing) {
+  size_t offset = 0;
+  while (offset < size) {
+    ssize_t done = writing
+        ? write(fd, (const char *)buffer + offset, size - offset)
+        : read(fd, (char *)buffer + offset, size - offset);
+    if (done < 0 && errno == EINTR)
+      continue;
+    if (done <= 0)
+      return done;
+    offset += (size_t)done;
+  }
+  return (ssize_t)offset;
+}
+
+int songyuan_native_workers_prepare(size_t count) {
+  if (!count || count > NATIVE_WORKER_MAX || native_worker_count) {
+    pr_warning("native worker prepare invalid count=%zu existing=%zu\n",
+               count, native_worker_count);
+    return 0;
+  }
+
+  /* A worker can fail before reading its command.  Report EPIPE to the
+   * launcher instead of letting the default SIGPIPE action terminate it. */
+  (void)signal(SIGPIPE, SIG_IGN);
+
+  int command[NATIVE_WORKER_MAX][2];
+  int result[NATIVE_WORKER_MAX][2];
+  pid_t pids[NATIVE_WORKER_MAX];
+  memset(command, -1, sizeof(command));
+  memset(result, -1, sizeof(result));
+  memset(pids, 0, sizeof(pids));
+
+  for (size_t i = 0; i < count; ++i) {
+    if (pipe2(command[i], O_CLOEXEC) != 0 ||
+        pipe2(result[i], O_CLOEXEC) != 0) {
+      pr_warning("native worker pipe index=%zu errno=%d\n", i, errno);
+      goto fail;
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      pr_warning("native worker fork index=%zu errno=%d\n", i, errno);
+      goto fail;
+    }
+    if (pid == 0) {
+      (void)prctl(PR_SET_PDEATHSIG, SIGKILL);
+      if (getppid() == 1)
+        _exit(1);
+      for (size_t j = 0; j < count; ++j) {
+        close(command[j][1]);
+        close(result[j][0]);
+        if (j != i) {
+          close(command[j][0]);
+          close(result[j][1]);
+        }
+      }
+      uint64_t payload[EXP_BUFFER_BYTES / sizeof(uint64_t)];
+      if (transfer_full(command[i][0], payload, sizeof(payload), 0) !=
+          (ssize_t)sizeof(payload))
+        _exit(1);
+      close(command[i][0]);
+      int rc = getenv("TICKERBAR_WORKER_SELFTEST")
+          ? 0
+          : songyuan_native_sigreturn_stage(payload);
+      (void)transfer_full(result[i][1], &rc, sizeof(rc), 1);
+      close(result[i][1]);
+      _exit(rc == 0 ? 0 : 1);
+    }
+    pids[i] = pid;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    close(command[i][0]);
+    close(result[i][1]);
+    native_workers[i].pid = pids[i];
+    native_workers[i].command_fd = command[i][1];
+    native_workers[i].result_fd = result[i][0];
+  }
+  native_worker_count = count;
+  native_worker_next = 0;
+  pr_info("native workers prepared count=%zu before kernel writes\n", count);
+  return 1;
+
+fail:
+  for (size_t i = 0; i < count; ++i) {
+    if (pids[i] > 0)
+      (void)kill(pids[i], SIGKILL);
+    for (int end = 0; end < 2; ++end) {
+      if (command[i][end] >= 0)
+        close(command[i][end]);
+      if (result[i][end] >= 0)
+        close(result[i][end]);
+    }
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (pids[i] > 0)
+      while (waitpid(pids[i], NULL, 0) < 0 && errno == EINTR) {}
+  }
+  return 0;
+}
+#endif
+
 static const char *exp32_local_path(void) {
   static char path[256];
   if (!path[0]) {
@@ -79,24 +197,47 @@ int exp_stack_once(uint64_t *buffer) {
   }
 
 #ifdef USE_NATIVE_SIGRETURN_STAGE
-  pid_t native_pid = fork();
-  if (native_pid < 0) {
-    pr_warning("exp_stack_once: native fork errno=%d\n", errno);
+  if (!native_worker_count || native_worker_next >= native_worker_count) {
+    pr_warning("exp_stack_once: native worker unavailable used=%zu count=%zu\n",
+               native_worker_next, native_worker_count);
     return -1;
   }
-  if (native_pid == 0) {
-    int rc = songyuan_native_sigreturn_stage(buffer);
-    _exit(rc == 0 ? 0 : 1);
+  struct native_stage_worker *worker = &native_workers[native_worker_next++];
+  pr_info("native worker dispatch index=%zu pid=%d\n",
+          native_worker_next - 1, (int)worker->pid);
+  if (transfer_full(worker->command_fd, buffer, EXP_BUFFER_BYTES, 1) !=
+      EXP_BUFFER_BYTES) {
+    pr_warning("exp_stack_once: worker command index=%zu errno=%d\n",
+               native_worker_next - 1, errno);
+    close(worker->command_fd);
+    worker->command_fd = -1;
+    return -1;
   }
-
+  close(worker->command_fd);
+  worker->command_fd = -1;
+  int rc = -1;
+  ssize_t result_size = transfer_full(worker->result_fd, &rc, sizeof(rc), 0);
+  pr_info("native worker result index=%zu size=%zd rc=%d\n",
+          native_worker_next - 1, result_size, rc);
+  close(worker->result_fd);
+  worker->result_fd = -1;
   int native_status = 0;
-  while (waitpid(native_pid, &native_status, 0) < 0 && errno == EINTR) {
+  pid_t waited;
+  do {
+    waited = waitpid(worker->pid, &native_status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (result_size == (ssize_t)sizeof(rc) && waited == worker->pid &&
+      WIFEXITED(native_status) && WEXITSTATUS(native_status) == 0) {
+    pr_info("native worker reaped index=%zu status=%d\n",
+            native_worker_next - 1, native_status);
+    return rc;
   }
-  if (WIFEXITED(native_status))
-    return WEXITSTATUS(native_status);
-  if (WIFSIGNALED(native_status))
-    pr_warning("exp_stack_once: native child killed by signal %d\n",
+  if (waited == worker->pid && WIFSIGNALED(native_status))
+    pr_warning("exp_stack_once: native worker killed by signal %d\n",
                WTERMSIG(native_status));
+  else
+    pr_warning("exp_stack_once: native worker failed result=%zd rc=%d status=%d\n",
+               result_size, rc, native_status);
   return -1;
 #else
 

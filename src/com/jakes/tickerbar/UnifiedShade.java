@@ -939,6 +939,10 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
+                    if (shell("cmd location set-location-enabled " + (!active())
+                            + " || settings put secure location_mode "
+                            + (active() ? Settings.Secure.LOCATION_MODE_OFF
+                            : Settings.Secure.LOCATION_MODE_HIGH_ACCURACY))) return;
                     // with WRITE_SECURE_SETTINGS (granted once over adb) location really toggles
                     if (svc.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS)
                             == PackageManager.PERMISSION_GRANTED) {
@@ -991,14 +995,14 @@ final class UnifiedShade {
                     boolean miui = false;
                     try { svc.getPackageManager().getPackageInfo("com.miui.screenrecorder", 0); miui = true; }
                     catch (Exception ignored) {}
-                    if (miui && Shell.granted()) {
+                    if (miui && Shell.privileged()) {
                         closeNow();
                         Shell.run("am start -a miui.intent.screenrecorder.RECORDER_ACTIVITY -p com.miui.screenrecorder", null);
                         return;
                     }
                     Intent i = recorderIntent();
                     if (i != null) launch(i);
-                    else if (miui) svc.toast("Start Shizuku (and allow TickerBar in it) to use HyperOS's recorder");
+                    else if (miui) svc.toast("Root or Shizuku is needed to use HyperOS's recorder");
                     else svc.toast("No screen recorder app found");
                 }
             };
@@ -2233,12 +2237,15 @@ final class UnifiedShade {
     }
 
     /**
-     * Switch a radio through Shizuku, if it's running and allowed; false means the tile should
-     * fall back to Android's panel. The tiles refresh as the radio actually changes.
+     * Switch a radio through the root daemon, or Shizuku as a fallback. False means the tile
+     * should open Android's panel. The tiles refresh as the radio actually changes.
      */
     private boolean shell(String cmd) {
-        if (!Shell.granted()) return false;
-        Shell.run(cmd, new Runnable() { public void run() { refreshTiles(); } });
+        if (!Shell.privileged()) return false;
+        Shell.runResult(cmd, new Shell.ResultCallback() { public void done(Shell.Result result) {
+            if (result.code != 0) svc.toast("Privileged command failed (" + result.code + ")");
+            refreshTiles();
+        }});
         root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 1200);
         root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 3000);
         return true;

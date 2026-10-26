@@ -3,12 +3,15 @@ package com.jakes.tickerbar;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
@@ -59,7 +62,7 @@ final class RootBootstrap {
         }
     }
 
-    /** Authorizes exactly one user-requested bootstrap attempt. */
+    /** Arms exactly one bootstrap attempt, either from the root menu or boot receiver. */
     static void request(Context context) {
         if (!ROOT_ATTEMPTS_ENABLED) {
             app = context.getApplicationContext();
@@ -84,7 +87,14 @@ final class RootBootstrap {
 
     private static void bootstrap(Context c) {
         if (!busy.compareAndSet(false, true)) return;
+        PowerManager.WakeLock wakeLock = null;
         try {
+            PowerManager power = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+            if (power != null) {
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                        "TickerBar:root-bootstrap");
+                wakeLock.acquire(25 * 60 * 1000L);
+            }
             if (RootShell.available()) {
                 state(c, "ready", "Root daemon is ready");
                 return;
@@ -132,6 +142,7 @@ final class RootBootstrap {
             if (bootCount >= 0)
                 prefs(c).edit().putInt(KEY_ATTEMPT_BOOT, bootCount).apply();
             Shell.Result result = Shell.runShizukuSync(command);
+            saveAttemptLog(c, result);
             Log.i("TickerBarRoot", "bootstrap exit=" + result.code + " output=" + result.output);
 
             boolean ready = false;
@@ -148,6 +159,7 @@ final class RootBootstrap {
             state(c, "ready", "Root daemon is ready; Shizuku is no longer used");
             RootShell.exec("killall shizuku_server >/dev/null 2>&1 || true");
         } finally {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
             busy.set(false);
         }
     }
@@ -173,5 +185,18 @@ final class RootBootstrap {
 
     private static String quote(String value) {
         return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    private static void saveAttemptLog(Context c, Shell.Result result) {
+        File dir = c.getExternalFilesDir(null);
+        if (dir == null) dir = c.getFilesDir();
+        File out = new File(dir, "root-last-attempt.log");
+        String text = "timestamp=" + System.currentTimeMillis() + "\n"
+                + "exit=" + result.code + "\n" + result.output + "\n";
+        try (FileOutputStream stream = new FileOutputStream(out, false)) {
+            stream.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.w("TickerBarRoot", "Could not persist root attempt log", e);
+        }
     }
 }

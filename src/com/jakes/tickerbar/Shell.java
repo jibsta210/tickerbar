@@ -30,6 +30,8 @@ final class Shell {
         Result(int code, String output) { this.code = code; this.output = output; }
     }
 
+    interface ResultCallback { void done(Result result); }
+
     static boolean installed(Context c) {
         try { c.getPackageManager().getPackageInfo(SHIZUKU_PKG, 0); return true; }
         catch (Exception e) { return false; }
@@ -44,6 +46,11 @@ final class Shell {
             return running() && !Shizuku.isPreV11()
                     && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
         } catch (Throwable t) { return false; }
+    }
+
+    /** A privileged command channel is ready; root is preferred over Shizuku. */
+    static boolean privileged() {
+        return RootShell.available() || granted();
     }
 
     static void requestPermission() {
@@ -61,16 +68,27 @@ final class Shell {
 
     /** Run cmd with shell rights off the main thread, then call done (on the main thread). */
     static void run(final String cmd, final Runnable done) {
+        runResult(cmd, new ResultCallback() { public void done(Result result) {
+            if (done != null) done.run();
+        }});
+    }
+
+    /** Run a privileged command and return its exit status on the main thread. */
+    static void runResult(final String cmd, final ResultCallback done) {
         new Thread(new Runnable() { public void run() {
+            Result result;
             if (RootShell.available()) {
-                RootShell.Result r = RootShell.exec(cmd);
-                if (!r.connected) Log.w("TickerBar", "root shell failed: " + r.output);
+                RootShell.Result root = RootShell.exec(cmd);
+                result = new Result(root.connected ? root.code : -1, root.output);
             } else {
-                Result r = runShizukuSync(cmd);
-                if (r.code != 0) Log.w("TickerBar", "shell `" + cmd + "` exited "
-                        + r.code + ": " + r.output);
+                result = runShizukuSync(cmd);
             }
-            if (done != null) new Handler(Looper.getMainLooper()).post(done);
+            if (result.code != 0) Log.w("TickerBar", "shell `" + cmd + "` exited "
+                    + result.code + ": " + result.output);
+            final Result delivered = result;
+            if (done != null) new Handler(Looper.getMainLooper()).post(new Runnable() {
+                public void run() { done.done(delivered); }
+            });
         }}, "TickerBar-shell").start();
     }
 

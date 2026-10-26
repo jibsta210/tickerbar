@@ -95,7 +95,7 @@ static void *native_waiter_thread(void *unused) {
   }
   atomic_store(&native_waiter_ready, 1);
   while (!atomic_load(&native_owner_started))
-    sched_yield();
+    usleep(1000);
 
   struct timespec timeout;
   clock_gettime(CLOCK_MONOTONIC, &timeout);
@@ -141,7 +141,7 @@ static void *native_owner_thread(void *unused) {
     return NULL;
   }
   while (!atomic_load(&native_waiter_ready))
-    sched_yield();
+    usleep(1000);
   atomic_store(&native_owner_started, 1);
   syscall(SYS_futex, &native_pi_chain, FUTEX_LOCK_PI, 0,
           NULL, NULL, 0);
@@ -154,9 +154,9 @@ static void *native_consumer_thread(void *unused) {
   pin_to_core(3);
   int tid;
   while (!(tid = atomic_load(&native_waiter_tid)))
-    sched_yield();
+    usleep(1000);
   while (!atomic_load(&native_consumer_go))
-    __asm__ volatile("yield" ::: "memory");
+    usleep(1000);
 
   struct local_sched_attr attr;
   memset(&attr, 0, sizeof(attr));

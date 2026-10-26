@@ -29,10 +29,11 @@ and HyperOS between them wouldn't do these things.
 - **Checks for updates** from this repo's GitHub releases when you open it, downloads
   automatically, then shows the system install confirmation. Waits until the app is
   visible and unlocked; avoids the silent-install path rejected by HyperOS.
-- **Manual POCO F9 Ultra root bootstrap** uses Shizuku for a single explicit handoff
-  to the bundled, device/build-specific native module. It never attempts root at boot
-  and permits at most one user-started attempt per boot. This is experimental and a
-  failed attempt can reboot the phone.
+- **POCO F9 Ultra root bootstrap** uses Shizuku for the initial handoff to the bundled,
+  device/build-specific native module, then runs a UID-authenticated local root daemon.
+  TickerBar prefers that daemon for privileged controls and falls back to Shizuku when
+  root is unavailable. It makes at most one automatic or user-started attempt per boot.
+  This is experimental and a failed attempt can reboot the phone.
 
 ## Permissions
 

