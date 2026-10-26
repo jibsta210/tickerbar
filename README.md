@@ -37,6 +37,10 @@ and HyperOS between them wouldn't do these things.
   by the accessibility service suppresses HyperOS's competing shade and automatically
   restores it if the service exits. It makes at most one automatic or user-started attempt per boot.
   This is experimental and a failed attempt can reboot the phone.
+- **Root-native shade controls** include the hotspot, flashlight, Do Not Disturb, radios,
+  power modes and charging switches. The screen-recorder tile opens HyperOS's visible
+  recorder app, and the Root menu can disable or restore Security Center's ten-second
+  Install via USB gate without disabling antivirus.
 
 ## Permissions
 

@@ -180,6 +180,12 @@ public class MainActivity extends Activity {
         c.addView(rootLine);
         actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
                 new Runnable() { public void run() { startRootAttempt(); }});
+        actionRow(c, "Disable HyperOS install countdown",
+                "Skips Security Center's ten-second Install via USB gate",
+                new Runnable() { public void run() { setInstallIntercept(false); }});
+        actionRow(c, "Restore HyperOS install confirmation",
+                "Turns the stock Security Center install gate back on",
+                new Runnable() { public void run() { setInstallIntercept(true); }});
         note(c, "TickerBar makes at most one attempt per boot, automatically after startup or from this "
                 + "button. When the root daemon is ready, TickerBar uses it for privileged controls and "
                 + "keeps Shizuku as the fallback. Reboot before retrying a failed attempt.");
@@ -331,6 +337,24 @@ public class MainActivity extends Activity {
         } else {
             toast("Root attempt started; keep the phone awake");
         }
+    }
+
+    /** Toggle only Security Center's ADB/install intercept; antivirus remains untouched. */
+    private void setInstallIntercept(final boolean enabled) {
+        if (!RootShell.available()) {
+            toast("Root daemon is needed for this setting");
+            return;
+        }
+        String command = "content call --uri content://com.miui.securitycenter.remoteprovider"
+                + " --method callPreference --arg SET --extra type:i:1"
+                + " --extra key:s:permcenter_install_intercept_enabled"
+                + " --extra value:b:" + enabled;
+        Shell.runResult(command, new Shell.ResultCallback() { public void done(Shell.Result result) {
+            if (result.code == 0)
+                toast(enabled ? "HyperOS install confirmation restored"
+                        : "HyperOS install countdown disabled");
+            else toast("Security Center setting failed (" + result.code + ")");
+        }});
     }
 
     // ================================================================= sections

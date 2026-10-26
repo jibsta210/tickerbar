@@ -297,9 +297,14 @@ final class UnifiedShade {
                 v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                 if (ic == R.drawable.qs_nav_back) { back(); return; }
                 closeNow();
-                svc.performGlobalAction(ic == R.drawable.qs_nav_home
-                        ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
-                        : android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS);
+                if (RootShell.available()) {
+                    Shell.run(ic == R.drawable.qs_nav_home
+                            ? "input keyevent KEYCODE_HOME" : "input keyevent KEYCODE_APP_SWITCH", null);
+                } else {
+                    svc.performGlobalAction(ic == R.drawable.qs_nav_home
+                            ? android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
+                            : android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS);
+                }
             }});
             row.addView(cell, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
         }
@@ -867,7 +872,11 @@ final class UnifiedShade {
                         android.bluetooth.BluetoothManager bm = (android.bluetooth.BluetoothManager)
                                 svc.getSystemService(Context.BLUETOOTH_SERVICE);
                         return bm != null && bm.getAdapter() != null && bm.getAdapter().isEnabled();
-                    } catch (Exception e) { return false; }
+                    } catch (Exception e) {
+                        // Android 12+ guards BluetoothAdapter behind the Nearby devices
+                        // runtime permission.  HyperOS still exposes this read-only state.
+                        return Settings.Global.getInt(svc.getContentResolver(), "bluetooth_on", 0) == 1;
+                    }
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
@@ -884,7 +893,19 @@ final class UnifiedShade {
                     public boolean active() { return torchOn; }
                     public String state() { return torchOn ? "On" : "Off"; }
                     public void tap() {
-                        try { cams.setTorchMode(torchId, !torchOn); torchOn = !torchOn; } catch (Exception ignored) {}
+                        final boolean wanted = !torchOn;
+                        if (RootShell.available()) {
+                            Shell.runResult(rootTool("torch " + torchId + " "
+                                            + (wanted ? "on" : "off")),
+                                    new Shell.ResultCallback() { public void done(Shell.Result result) {
+                                        if (result.code != 0) svc.toast("Flashlight failed (" + result.code + ")");
+                                        else torchOn = wanted;
+                                        refreshTiles();
+                                    }});
+                            return;
+                        }
+                        try { cams.setTorchMode(torchId, wanted); torchOn = wanted; }
+                        catch (Exception e) { svc.toast("Root is needed to control the flashlight"); }
                     }
                 };
             case "dnd": return new Tile() {
@@ -895,6 +916,10 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
+                    if (RootShell.available()) {
+                        shell("cmd notification set_dnd " + (active() ? "off" : "priority"));
+                        return;
+                    }
                     if (nm == null || !nm.isNotificationPolicyAccessGranted()) {
                         launch(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
                         return;
@@ -1011,22 +1036,10 @@ final class UnifiedShade {
                 public int icon() { return R.drawable.qs_recorder; }
                 public String label() { return "Screen recorder"; }
                 public boolean active() { return false; }
-                public String state() { return "Tap to start"; }
+                public String state() { return "Open recorder"; }
                 public void tap() {
-                    // HyperOS's own tile opens this (the floating record button); it needs a
-                    // system permission, which Shizuku's shell has
-                    // (it has no home-screen icon, so check it's installed rather than launchable)
-                    boolean miui = false;
-                    try { svc.getPackageManager().getPackageInfo("com.miui.screenrecorder", 0); miui = true; }
-                    catch (Exception ignored) {}
-                    if (miui && Shell.privileged()) {
-                        closeNow();
-                        Shell.run("am start -a miui.intent.screenrecorder.RECORDER_ACTIVITY -p com.miui.screenrecorder", null);
-                        return;
-                    }
                     Intent i = recorderIntent();
                     if (i != null) launch(i);
-                    else if (miui) svc.toast("Root or Shizuku is needed to use HyperOS's recorder");
                     else svc.toast("No screen recorder app found");
                 }
             };
@@ -2346,6 +2359,12 @@ final class UnifiedShade {
 
     private Intent recorderIntent() {
         PackageManager pm = svc.getPackageManager();
+        // HyperOS deliberately ships its recorder without a launcher activity.  Its public
+        // settings action is the visible recorder app and works without the protected
+        // READ_FRAME_BUFFER permission needed by RECORDER_ACTIVITY.
+        Intent miui = new Intent("miui.intent.action.SCREENRECORDER_SETTINGS")
+                .setPackage("com.miui.screenrecorder");
+        if (miui.resolveActivity(pm) != null) return miui;
         for (String pkg : new String[]{"com.miui.screenrecorder", "com.samsung.android.app.screenrecorder",
                 "com.google.android.apps.screenrecorder"}) {
             Intent i = pm.getLaunchIntentForPackage(pkg);
