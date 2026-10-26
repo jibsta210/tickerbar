@@ -18,10 +18,10 @@ import rikka.shizuku.Shizuku;
 
 /** Owns the one-way Shizuku -> native bootstrap -> root-daemon transition. */
 final class RootBootstrap {
-    // The songyuan task-tail redirect has now produced a verified kernel panic.
-    // Keep the already-working Shizuku/Accessibility path available, but never
-    // arm the kernel module from a release build until the primitive is replaced.
-    private static final boolean ROOT_ATTEMPTS_ENABLED = false;
+    // The songyuan route now uses perf-based task discovery, the bounded
+    // right-child credential write, and an explicit post-route ghost disarm.
+    // Shizuku remains available as the bootstrap/fallback transport.
+    private static final boolean ROOT_ATTEMPTS_ENABLED = true;
     private static final String PREF = "tickerbar_root";
     private static final String KEY_STATE = "state";
     private static final String KEY_DETAIL = "detail";
@@ -144,7 +144,10 @@ final class RootBootstrap {
                 Log.w("TickerBarRoot", "preflight output=" + preflight.output);
                 return;
             }
-            String command = "export TICKERBAR_ROOT_ARMED=1 TICKERBAR_DAEMON=1 TICKERBAR_ALLOWED_UID="
+            // songyuan runs a 6.12 kernel. Its reliable page capture is the
+            // v6/Oppo reclaim teardown; the v5.10 hold-all profile misses the
+            // first KASLR write on this build.
+            String command = "export OPPO_RECLAIM_TEARDOWN=1 TICKERBAR_ROOT_ARMED=1 TICKERBAR_DAEMON=1 TICKERBAR_ALLOWED_UID="
                     + Process.myUid() + "; exec " + quote(payload.getAbsolutePath());
             if (bootCount >= 0)
                 prefs(c).edit().putInt(KEY_ATTEMPT_BOOT, bootCount).apply();

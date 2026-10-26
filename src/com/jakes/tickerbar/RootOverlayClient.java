@@ -16,6 +16,10 @@ import java.nio.charset.StandardCharsets;
 /** Persistent authenticated channel to the root-owned ticker and wallet windows. */
 final class RootOverlayClient {
     private static final String SOCKET = "tickerbar-overlay-v2";
+    // HyperOS 3 rejects a standalone uid-0 app_process as an unknown
+    // WindowManager client. Keep the proven Accessibility overlay fallback
+    // until this helper is hosted by an AMS-registered process.
+    private static final boolean ENABLED = false;
     private static volatile RootOverlayClient active;
 
     private final Context context;
@@ -28,6 +32,7 @@ final class RootOverlayClient {
     static boolean connected() { return active != null && active.output != null; }
 
     static synchronized void start(Context context) {
+        if (!ENABLED) return;
         if (!RootShell.available() || connected()) return;
         stop();
         RootOverlayClient client = new RootOverlayClient(context);
