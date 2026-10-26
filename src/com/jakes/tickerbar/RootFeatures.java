@@ -2,6 +2,8 @@ package com.jakes.tickerbar;
 
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
@@ -9,6 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Root-backed system integration that replaces HyperOS permission screens and hacks. */
 final class RootFeatures {
+    private static final String PREFS = "root_features";
+    private static final String KEY_SHADE_RESTART_BOOT = "shade_restart_boot";
     private static final AtomicBoolean APPLYING = new AtomicBoolean();
     private static final AtomicBoolean DETACHING = new AtomicBoolean();
     private static volatile boolean applied;
@@ -78,6 +82,7 @@ final class RootFeatures {
             Log.e("TickerBarRoot", "Root feature setup failed (" + result.code + "): " + result.output);
             return false;
         }
+        restartSystemUiForShadeOncePerBoot(c);
         applied = true;
         Log.i("TickerBarRoot", "Root system integration ready");
         ShadeService.refresh();
@@ -93,6 +98,38 @@ final class RootFeatures {
             }
         }}, "TickerBar-wait-native-ui").start();
         return true;
+    }
+
+    /**
+     * HyperOS snapshots debug.sysui.use_control_center when SystemUI starts. Root becomes
+     * available after that process has already started, so restart only SystemUI once after
+     * installing the override. The boot-count marker prevents repeated UI interruptions when
+     * applyAsync is called again by tiles, services, or an app activity.
+     */
+    private static void restartSystemUiForShadeOncePerBoot(Context context) {
+        int boot;
+        try {
+            boot = Settings.Global.getInt(context.getContentResolver(), Settings.Global.BOOT_COUNT);
+        } catch (Exception e) {
+            Log.w("TickerBarRoot", "Cannot read boot count; leaving the current SystemUI intact", e);
+            return;
+        }
+
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (prefs.getInt(KEY_SHADE_RESTART_BOOT, -1) == boot) return;
+
+        RootShell.Result restart = RootShell.exec(
+                "pid=\"$(pidof com.android.systemui)\"; "
+                        + "if [ -z \"$pid\" ]; then exit 3; fi; "
+                        + "kill -TERM $pid");
+        if (!restart.connected || restart.code != 0) {
+            Log.w("TickerBarRoot", "SystemUI restart for stock single-page shade failed ("
+                    + restart.code + "): " + restart.output);
+            return;
+        }
+
+        prefs.edit().putInt(KEY_SHADE_RESTART_BOOT, boot).apply();
+        Log.i("TickerBarRoot", "Restarted SystemUI for stock single-page shade on boot " + boot);
     }
 
     /** Opens HyperOS's actual floating recorder control, not its settings activity. */
