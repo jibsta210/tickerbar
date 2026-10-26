@@ -29,16 +29,16 @@ final class RootShell {
     private RootShell() {}
 
     static Result exec(String command) {
-        Result result = transact(command, 'R');
+        Result result = transact(command, 'R', false);
         // A daemon started by v1.14.17 or earlier only understands the original
         // output-only command mode. Keep root alive across an in-place app update;
         // the next boot starts the status-aware daemon bundled with this APK.
-        if (!result.connected && result.output.startsWith("Root daemon returned an incomplete"))
-            return transact(command, 'C');
+        if (!result.connected)
+            return transact(command, 'C', true);
         return result;
     }
 
-    private static Result transact(String command, int mode) {
+    private static Result transact(String command, int mode, boolean logFailure) {
         LocalSocket socket = new LocalSocket();
         try {
             socket.connect(new LocalSocketAddress(SOCKET,
@@ -69,7 +69,7 @@ final class RootShell {
             return new Result(true, status,
                     new String(response, 0, response.length - 4, StandardCharsets.UTF_8));
         } catch (Throwable t) {
-            Log.w("TickerBarRoot", "Root socket unavailable: " + t);
+            if (logFailure) Log.w("TickerBarRoot", "Root socket unavailable: " + t);
             return new Result(false, -1, t.toString());
         } finally {
             try { socket.close(); } catch (Throwable ignored) {}
