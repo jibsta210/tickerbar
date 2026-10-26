@@ -1288,7 +1288,10 @@ final class UnifiedShade {
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
             if (Prefs.typeHidden(svc, s.getPackageName(), s.getNotification().getChannelId())) continue;
-            if (isMedia(s) && mediaPkgs.contains(s.getPackageName())) continue;   // shown as its player
+            // media notifications live only as players, like stock: a stopped session (YouTube
+            // leaves its notification behind) would otherwise sit here as an ongoing card that
+            // can't be swiped away
+            if (isMedia(s)) continue;
             String g = s.getGroupKey() != null ? s.getGroupKey() : s.getKey();
             Entry en = groups.get(g);
             if (en == null) { en = new Entry(g); groups.put(g, en); out.add(en); }
