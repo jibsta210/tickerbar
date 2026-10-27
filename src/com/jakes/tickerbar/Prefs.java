@@ -78,6 +78,16 @@ public final class Prefs {
     public static final String SHADE_ACCENT = "shade_accent";   // UnifiedShade.ACCENTS index, 0 system
     public static final String SHADE_ALPHA  = "shade_alpha";    // panel opacity %
     public static final String SHADE_BLUR   = "shade_blur";     // blur behind, dp (0 off)
+    // 0 follows the Material You palette; any non-zero value is an opaque custom ARGB colour.
+    public static final String SHADE_BG_COLOR = "shade_bg_color";
+    public static final String SHADE_PANEL_COLOR = "shade_panel_color";
+    public static final String SHADE_INACTIVE_COLOR = "shade_inactive_color";
+    public static final String SHADE_ACTIVE_COLOR = "shade_active_color";
+    public static final String SHADE_TEXT_COLOR = "shade_text_color";
+    public static final String SHADE_SECONDARY_COLOR = "shade_secondary_color";
+    public static final String SHADE_NOTIFICATION_TEXT_COLOR = "shade_notification_text_color";
+    public static final String SHADE_NOTIFICATIONS_EXPANDED = "shade_notifications_expanded";
+    public static final String HOME_SHELF   = "home_shelf";     // location-aware Home row in UnifiedShade
     public static final String SHADE_NAV_ORDER = "shade_nav_order"; // 0 follow HyperOS, 1 back-home-recents, 2 recents-home-back      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts
@@ -113,6 +123,11 @@ public final class Prefs {
     static {
         DEF.put(VOLUME_ON, 1); DEF.put(VOLUME_STEP, 5); DEF.put(RINGER_CYCLE, 0); DEF.put(ONE_SHADE, 0);
         DEF.put(SHADE_NAV_ORDER, 0); DEF.put(SHADE_THEME, 0); DEF.put(SHADE_ACCENT, 0); DEF.put(SHADE_ALPHA, 95); DEF.put(SHADE_BLUR, 36);
+        DEF.put(SHADE_BG_COLOR, 0); DEF.put(SHADE_PANEL_COLOR, 0); DEF.put(SHADE_INACTIVE_COLOR, 0);
+        DEF.put(SHADE_ACTIVE_COLOR, 0); DEF.put(SHADE_TEXT_COLOR, 0); DEF.put(SHADE_SECONDARY_COLOR, 0);
+        DEF.put(SHADE_NOTIFICATION_TEXT_COLOR, 0);
+        DEF.put(SHADE_NOTIFICATIONS_EXPANDED, 0);
+        DEF.put(HOME_SHELF, 1);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);

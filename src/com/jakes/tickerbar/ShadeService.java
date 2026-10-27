@@ -497,6 +497,14 @@ public class ShadeService extends AccessibilityService {
                         + "cut-out and clear the rounded corners", "com.jakes.tickerbar", ic), true);
     }
 
+    /** Opens UnifiedShade for visual/interaction testing without changing the user's mode. */
+    public static boolean previewUnifiedShade() {
+        final ShadeService s = self;
+        if (s == null || s.wm == null || s.isLocked()) return false;
+        s.ui.post(new Runnable() { public void run() { s.openShade(); }});
+        return true;
+    }
+
     private static boolean dispatch(final Item it, final boolean force) {
         final ShadeService s = self;
         if (s == null) return false;
@@ -517,6 +525,9 @@ public class ShadeService extends AccessibilityService {
 
     private void applySettings() {
         if (wm == null) return;
+        // Package replacement and process recreation stop the Java-side socket reader even
+        // though the root helper survives. Reconnect it whenever the host service comes up.
+        RootPowerGestures.sync(this);
         Display d = display();
         readGeometry(d);
         if (ticker != null) {
@@ -985,7 +996,8 @@ public class ShadeService extends AccessibilityService {
                 onHome = foreground.equals(launcherPkg);
             }
         }
-        boolean want = !RootOverlayClient.connected() && Prefs.on(this, Prefs.SWIPE_ON) && screenOn
+        boolean want = (shade == null || !shade.isOpen())
+                && !RootOverlayClient.connected() && Prefs.on(this, Prefs.SWIPE_ON) && screenOn
                 && (locked ? Prefs.on(this, Prefs.CARD_LOCK)
                            : Prefs.on(this, Prefs.CARD_HOME) && onHome);
         if (!want) {
@@ -1002,6 +1014,14 @@ public class ShadeService extends AccessibilityService {
             else { wm.addView(button, lp); buttonAttached = true; }
         } catch (Exception ignored) {}
         button.invalidate();
+    }
+
+    /** Never let the legacy wallet gesture surface sit above SystemUI's real navbar. */
+    private void hideWalletOverlay() {
+        if (button != null && buttonAttached && wm != null) {
+            try { wm.removeViewImmediate(button); } catch (Exception ignored) {}
+        }
+        buttonAttached = false;
     }
 
     private WindowManager.LayoutParams buttonParams() {
@@ -1189,9 +1209,9 @@ public class ShadeService extends AccessibilityService {
         }
     }
 
-    /** Root uses SystemUI's real combined shade; this custom panel is fallback only. */
+    /** Root can lease/suppress the stock shade, so custom and native modes remain switchable. */
     private boolean oneShade() {
-        return Prefs.on(this, Prefs.ONE_SHADE) && !RootFeatures.applied();
+        return Prefs.on(this, Prefs.ONE_SHADE);
     }
 
     private UnifiedShade shade() {
@@ -1201,8 +1221,19 @@ public class ShadeService extends AccessibilityService {
 
     void openShade() {
         if (wm == null || isLocked()) { performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS); return; }
+        if (Build.VERSION.SDK_INT >= 30) try {
+            WindowInsets in = wm.getCurrentWindowMetrics().getWindowInsets();
+            if (in.isVisible(WindowInsets.Type.ime()))
+                performGlobalAction(GLOBAL_ACTION_BACK);   // dismiss an existing app keyboard
+        } catch (Exception ignored) {}
         hideTickerNow();
-        shade().openAnimated();
+        UnifiedShade panel = shade();
+        panel.openAnimated();
+        // Never strand the wallet card because an overlay attach was rejected or raced a
+        // screen-state change. Only hide it once the shade really owns the screen.
+        if (!panel.isOpen()) { updateButton(); return; }
+        hideWalletOverlay();
+        ui.postDelayed(new Runnable() { public void run() { hideWalletOverlay(); } }, 150);
     }
 
     void startFromShade(Intent i) {
@@ -1217,11 +1248,14 @@ public class ShadeService extends AccessibilityService {
         performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
     }
 
-    void shadeClosed() { updateCatcher(); }
+    void shadeClosed() { updateCatcher(); updateButton(); }
 
     void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
     WindowManager windows() { return wm; }
+    WindowManager applicationWindows() {
+        return (WindowManager) getApplicationContext().getSystemService(WINDOW_SERVICE);
+    }
     WindowManager.LayoutParams overlay(int w, int h, int flags) { return overlayParams(w, h, flags); }
     int px(float dp) { return dp(dp); }
     int screenH() { return screenHeight(); }
@@ -1259,7 +1293,9 @@ public class ShadeService extends AccessibilityService {
         // orientation from the configuration: the display size lags behind a rotation
         boolean portrait = getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE;
         boolean protect = oneShade() && (pm == null || pm.isInteractive()) && !isLocked() && portrait;
-        setShadeLease(protect);
+        // HyperOS folds Back/Home/Recents into its "disable expansion" flag. The catcher is
+        // sufficient to own top-edge pulls; keeping the root lease would hide the real navbar.
+        setShadeLease(false);
         boolean want = protect && (shade == null || !shade.isOpen());
         if (!want) {
             if (catcher != null && catcherAttached) {

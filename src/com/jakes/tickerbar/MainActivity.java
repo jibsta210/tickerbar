@@ -167,12 +167,12 @@ public class MainActivity extends Activity {
 
         // ---------------------------------------------------------- power button
         c = card("Power button gestures");
-        choiceRow(c, "Double-click", "Runs after the multi-press window closes",
+        powerChoiceRow(c, "Double-click", "Runs after the multi-press window closes",
                 Prefs.POWER_DOUBLE_ACTION, RootPowerGestures.ACTION_IDS,
                 RootPowerGestures.ACTION_NAMES);
         appPickerRow(c, "Double-click app", "Used when the action is Open an app",
                 Prefs.POWER_DOUBLE_PKG);
-        choiceRow(c, "Triple-click", "Four or five clicks are ignored so emergency SOS remains stock",
+        powerChoiceRow(c, "Triple-click", "Four or five clicks are ignored so emergency SOS remains stock",
                 Prefs.POWER_TRIPLE_ACTION, RootPowerGestures.ACTION_IDS,
                 RootPowerGestures.ACTION_NAMES);
         appPickerRow(c, "Triple-click app", "Used when the action is Open an app",
@@ -307,6 +307,15 @@ public class MainActivity extends Activity {
         c = card("One shade");
         switchRow(c, "One shade like stock Android",
                 "Pull down from the status bar for quick settings and notifications together", Prefs.ONE_SHADE);
+        actionRow(c, "Preview UnifiedShade v2", "Opens the custom shade without changing the fallback",
+                new Runnable() { public void run() {
+                    if (!ShadeService.previewUnifiedShade())
+                        toast("Turn on TickerBar Accessibility once to host the custom shade");
+                }});
+        switchRow(c, "Google Home shelf", "Scrollable light controls above notifications", Prefs.HOME_SHELF);
+        switchRow(c, "Notifications expanded by default",
+                "New cards start open; each card's arrow can still fold or expand it",
+                Prefs.SHADE_NOTIFICATIONS_EXPANDED);
         toggleGuide(c);
         actionRow(c, "Allow brightness and auto-rotate", "Lets the shade's slider and rotate tile change them",
                 new Runnable() { public void run() {
@@ -318,8 +327,23 @@ public class MainActivity extends Activity {
         choiceRow(c, "Shade colours", Prefs.SHADE_THEME, new int[]{0, 1, 2},
                 new String[]{"Match system theme", "Always dark", "Always light"});
         choiceRow(c, "Accent", Prefs.SHADE_ACCENT, accentIds, UnifiedShade.ACCENT_NAMES);
-        choiceRow(c, "Nav buttons in the shade", Prefs.SHADE_NAV_ORDER, new int[]{0, 1, 2},
-                new String[]{"Match HyperOS", "Back \u00b7 Home \u00b7 Recents", "Recents \u00b7 Home \u00b7 Back"});
+        colorRow(c, "Shade backdrop", "Tint behind the panels", Prefs.SHADE_BG_COLOR);
+        colorRow(c, "Panel background", "Quick settings and Home cards", Prefs.SHADE_PANEL_COLOR);
+        colorRow(c, "Inactive controls", "Tiles, buttons and notification cards", Prefs.SHADE_INACTIVE_COLOR);
+        colorRow(c, "Active controls", "Enabled tiles, switches and highlights", Prefs.SHADE_ACTIVE_COLOR);
+        colorRow(c, "Primary text", "Clock, titles and labels", Prefs.SHADE_TEXT_COLOR);
+        colorRow(c, "Secondary text", "Dates, states and descriptions", Prefs.SHADE_SECONDARY_COLOR);
+        colorRow(c, "Notification text", "Message bodies, independent of metadata", Prefs.SHADE_NOTIFICATION_TEXT_COLOR);
+        actionRow(c, "Reset custom shade colours", "Return every colour to Material You",
+                new Runnable() { public void run() {
+                    String[] keys = {Prefs.SHADE_BG_COLOR, Prefs.SHADE_PANEL_COLOR,
+                            Prefs.SHADE_INACTIVE_COLOR, Prefs.SHADE_ACTIVE_COLOR,
+                            Prefs.SHADE_TEXT_COLOR, Prefs.SHADE_SECONDARY_COLOR,
+                            Prefs.SHADE_NOTIFICATION_TEXT_COLOR};
+                    for (String key : keys) Prefs.put(MainActivity.this, key, 0);
+                    changed();
+                    recreate();
+                }});
         numberRow(c, "Panel opacity", Prefs.SHADE_ALPHA, "%");
         numberRow(c, "Blur behind  \u00b7 0 = off", Prefs.SHADE_BLUR, "dp");
         for (int i = 0; i < UnifiedShade.TILE_IDS.length; i++)
@@ -328,6 +352,7 @@ public class MainActivity extends Activity {
                     new String[]{"First row + expanded", "Expanded only", "Hidden"});
         note(c, "The first row shows up to six tiles. Wi-Fi, Bluetooth, mobile data, airplane mode and "
                 + "location are switched by Android itself, so those tiles open its panel for them. "
+                + "The Home shelf uses demo lights until Google Home OAuth is connected. "
                 + "The lock screen and landscape keep the system shade.");
 
         c = card("Hidden apps");
@@ -676,7 +701,6 @@ public class MainActivity extends Activity {
         RootOverlayClient.refresh(this);
         NativeTicker.refresh(this);
         RootInput.stop();
-        RootPowerGestures.sync(this);
         TickerListener.filterActive();
         MemoryProfile.applyAsync(this);
         if (cardPreview != null) cardPreview.invalidate();
@@ -998,6 +1022,217 @@ public class MainActivity extends Activity {
         int cur = Prefs.n(this, key);
         for (int i = 0; i < values.length; i++) if (values[i] == cur) return names[i];
         return String.valueOf(cur);
+    }
+
+    /** Arbitrary RGB override with an explicit Material You reset. */
+    private void colorRow(LinearLayout card, String title, String subtitle, final String key) {
+        final TextView value = tv("", 13, pal.onSurface);
+        value.setTypeface(MEDIUM);
+        value.setGravity(Gravity.CENTER);
+        value.setMinWidth(dp(92));
+        value.setPadding(dp(10), dp(7), dp(10), dp(7));
+        paintColorValue(value, Prefs.n(this, key));
+        LinearLayout r = row(card, title, subtitle, value);
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            showColorDialog(title, key, value);
+        }});
+    }
+
+    private void paintColorValue(TextView value, int color) {
+        if (color == 0) {
+            value.setText("System");
+            value.setTextColor(pal.onSurface);
+            value.setBackground(round(pal.surfaceHigh, dp(16)));
+            return;
+        }
+        color |= 0xFF000000;
+        value.setText(String.format(java.util.Locale.US, "#%06X", color & 0xFFFFFF));
+        value.setTextColor(Palette.luminance(color) > 0.48 ? 0xFF111111 : 0xFFFFFFFF);
+        value.setBackground(round(color, dp(16)));
+    }
+
+    private void showColorDialog(String title, final String key, final TextView value) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+        int pad = dp(22);
+        box.setPadding(pad, dp(8), pad, 0);
+        TextView help = tv("Drag around the wheel, then tune brightness. Hex stays available for exact colours.",
+                13, pal.onSurfaceVariant);
+        box.addView(help);
+
+        int current = Prefs.n(this, key);
+        final ColorWheelView wheel = new ColorWheelView(current == 0 ? pal.primary : current);
+        LinearLayout.LayoutParams wp = new LinearLayout.LayoutParams(dp(220), dp(220));
+        wp.topMargin = dp(10);
+        box.addView(wheel, wp);
+
+        TextView brightnessLabel = tv("Brightness", 13, pal.onSurfaceVariant);
+        brightnessLabel.setPadding(0, dp(6), 0, 0);
+        box.addView(brightnessLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        final android.widget.SeekBar brightness = new android.widget.SeekBar(this);
+        brightness.setMax(100);
+        brightness.setProgress(Math.round(wheel.value() * 100));
+        brightness.setProgressTintList(ColorStateList.valueOf(pal.primary));
+        brightness.setThumbTintList(ColorStateList.valueOf(pal.primary));
+        box.addView(brightness, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+
+        final TextView swatch = tv("", 14, pal.onSurface);
+        swatch.setGravity(Gravity.CENTER);
+        swatch.setTypeface(MEDIUM);
+        box.addView(swatch, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+        final EditText hex = new EditText(this);
+        hex.setSingleLine(true);
+        hex.setHint("#RRGGBB");
+        hex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        hp.topMargin = dp(6);
+        box.addView(hex, hp);
+        final boolean[] internal = new boolean[1];
+        final Runnable sync = new Runnable() { public void run() {
+            int color = wheel.color();
+            String text = String.format(java.util.Locale.US, "#%06X", color & 0xFFFFFF);
+            internal[0] = true;
+            hex.setText(text);
+            hex.setSelection(text.length());
+            internal[0] = false;
+            paintColorValue(swatch, color);
+        }};
+        wheel.setListener(new Runnable() { public void run() {
+            brightness.setProgress(Math.round(wheel.value() * 100));
+            sync.run();
+        }});
+        brightness.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar s, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                wheel.setValue(progress / 100f);
+                sync.run();
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar s) {}
+            public void onStopTrackingTouch(android.widget.SeekBar s) {}
+        });
+        hex.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(Editable e) {
+                if (internal[0]) return;
+                String raw = e.toString().trim().replace("#", "");
+                if (!raw.matches("[0-9A-Fa-f]{6}")) return;
+                try {
+                    int color = (int) (0xFF000000L | Long.parseLong(raw, 16));
+                    wheel.setColor(color);
+                    brightness.setProgress(Math.round(wheel.value() * 100));
+                    paintColorValue(swatch, color);
+                } catch (Exception ignored) {}
+            }
+        });
+        sync.run();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setNeutralButton("Use system", new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        Prefs.put(MainActivity.this, key, 0);
+                        paintColorValue(value, 0);
+                        changed();
+                    }})
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        int color = wheel.color();
+                        Prefs.put(MainActivity.this, key, color);
+                        paintColorValue(value, color);
+                        changed();
+                    }})
+                .show();
+    }
+
+    /** Lightweight HSV wheel: hue around the ring, saturation outward, value on the slider. */
+    private final class ColorWheelView extends View {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final float[] hsv = new float[3];
+        private Runnable listener;
+
+        ColorWheelView(int color) {
+            super(MainActivity.this);
+            setColor(color);
+            setContentDescription("Colour wheel");
+        }
+
+        void setListener(Runnable r) { listener = r; }
+        int color() { return android.graphics.Color.HSVToColor(hsv); }
+        float value() { return hsv[2]; }
+        void setValue(float value) { hsv[2] = Math.max(0f, Math.min(1f, value)); invalidate(); }
+        void setColor(int color) { android.graphics.Color.colorToHSV(color, hsv); invalidate(); }
+
+        @Override protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            float cx = getWidth() / 2f, cy = getHeight() / 2f;
+            float r = Math.max(1, Math.min(cx, cy) - dp(9));
+            int[] hues = {0xFFFF0000, 0xFFFFFF00, 0xFF00FF00, 0xFF00FFFF,
+                    0xFF0000FF, 0xFFFF00FF, 0xFFFF0000};
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setShader(new android.graphics.SweepGradient(cx, cy, hues, null));
+            c.drawCircle(cx, cy, r, paint);
+            paint.setShader(new android.graphics.RadialGradient(cx, cy, r, 0xFFFFFFFF, 0x00FFFFFF,
+                    android.graphics.Shader.TileMode.CLAMP));
+            c.drawCircle(cx, cy, r, paint);
+            paint.setShader(null);
+            paint.setColor(Palette.alpha(0xFF000000, Math.round((1f - hsv[2]) * 255)));
+            c.drawCircle(cx, cy, r, paint);
+
+            double a = Math.toRadians(hsv[0]);
+            float x = cx + (float) Math.cos(a) * hsv[1] * r;
+            float y = cy + (float) Math.sin(a) * hsv[1] * r;
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(5));
+            paint.setColor(0xAA000000);
+            c.drawCircle(x, y, dp(9), paint);
+            paint.setStrokeWidth(dp(2));
+            paint.setColor(0xFFFFFFFF);
+            c.drawCircle(x, y, dp(9), paint);
+        }
+
+        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
+            if (e.getActionMasked() != android.view.MotionEvent.ACTION_DOWN
+                    && e.getActionMasked() != android.view.MotionEvent.ACTION_MOVE) return true;
+            float cx = getWidth() / 2f, cy = getHeight() / 2f;
+            float dx = e.getX() - cx, dy = e.getY() - cy;
+            float r = Math.max(1, Math.min(cx, cy) - dp(9));
+            hsv[0] = ((float) Math.toDegrees(Math.atan2(dy, dx)) + 360f) % 360f;
+            hsv[1] = Math.max(0f, Math.min(1f, (float) Math.sqrt(dx * dx + dy * dy) / r));
+            invalidate();
+            if (listener != null) listener.run();
+            return true;
+        }
+    }
+
+    /** Power-native work starts only after an explicit power-action choice. */
+    private void powerChoiceRow(LinearLayout card, String title, String subtitle,
+                                final String key, final int[] values, final String[] names) {
+        final TextView val = tv(nameFor(key, values, names), 14, pal.primary);
+        val.setTypeface(MEDIUM);
+        val.setMaxWidth(dp(190));
+        val.setSingleLine(true);
+        val.setEllipsize(TextUtils.TruncateAt.END);
+        final LinearLayout r = row(card, title, subtitle, val);
+        r.addView(tv("  ▾", 14, pal.primary));
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            PopupMenu menu = new PopupMenu(MainActivity.this, val, Gravity.END);
+            for (int i = 0; i < names.length; i++)
+                menu.getMenu().add(Menu.NONE, i, i, names[i]);
+            menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+                public boolean onMenuItemClick(android.view.MenuItem item) {
+                    Prefs.put(MainActivity.this, key, values[item.getItemId()]);
+                    val.setText(names[item.getItemId()]);
+                    changed();
+                    RootPowerGestures.sync(MainActivity.this);
+                    return true;
+                }});
+            menu.show();
+        }});
     }
 
     /** A compact number field on the right, applied as you type. */

@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Optional passive KEY_POWER observer backed by the authenticated root daemon. */
 final class RootPowerGestures {
+    private static final String TAG = "TickerBarPower";
     static final int ACTION_NONE = 0;
     static final int ACTION_HOME = 1;
     static final int ACTION_SEARCH = 2;
@@ -44,11 +45,19 @@ final class RootPowerGestures {
     private final Runnable finishClicks = new Runnable() { public void run() {
         int count;
         synchronized (RootPowerGestures.this) { count = clicks; clicks = 0; }
+        Log.i(TAG, "Power sequence settled: clicks=" + count);
         // Four/five presses belong entirely to HyperOS emergency handling.
-        if (count == 2) trigger(Prefs.n(context, Prefs.POWER_DOUBLE_ACTION),
-                Prefs.POWER_DOUBLE_PKG);
-        else if (count == 3) trigger(Prefs.n(context, Prefs.POWER_TRIPLE_ACTION),
-                Prefs.POWER_TRIPLE_PKG);
+        if (count == 2) {
+            int action = Prefs.n(context, Prefs.POWER_DOUBLE_ACTION);
+            Log.i(TAG, "Double press selected action=" + actionName(action));
+            trigger(action, Prefs.POWER_DOUBLE_PKG);
+        } else if (count == 3) {
+            int action = Prefs.n(context, Prefs.POWER_TRIPLE_ACTION);
+            Log.i(TAG, "Triple press selected action=" + actionName(action));
+            trigger(action, Prefs.POWER_TRIPLE_PKG);
+        } else {
+            Log.i(TAG, "Power sequence left to HyperOS (no TickerBar action)");
+        }
     }};
 
     private RootPowerGestures(Context context) {
@@ -59,8 +68,11 @@ final class RootPowerGestures {
         Context app = context.getApplicationContext();
         boolean doubleOn = Prefs.n(app, Prefs.POWER_DOUBLE_ACTION) != ACTION_NONE;
         boolean tripleOn = Prefs.n(app, Prefs.POWER_TRIPLE_ACTION) != ACTION_NONE;
+        boolean rootReady = RootShell.available();
+        Log.i(TAG, "Sync: root=" + rootReady + " double=" + doubleOn
+                + " triple=" + tripleOn + " observer=" + (active != null));
         updateStockDouble(app, doubleOn);
-        if (!RootShell.available() || (!doubleOn && !tripleOn)) {
+        if (!rootReady || (!doubleOn && !tripleOn)) {
             stop();
             return;
         }
@@ -88,9 +100,11 @@ final class RootPowerGestures {
             if (!payload.isFile()) throw new IllegalStateException("root payload missing");
             LocalSocket connected = tryConnect();
             if (connected == null) {
-                String command = "pidof tb-power >/dev/null 2>&1 || ("
-                        + quote(payload.getAbsolutePath()) + " --power-helper " + Process.myUid()
-                        + " >/dev/null 2>&1 &)";
+                // tryConnect() is the authoritative existence check. Android's pidof reports
+                // this executable as libtickerroot.so despite PR_SET_NAME("tb-power"), and the
+                // old pidof guard therefore attempted a redundant helper on every reconnect.
+                String command = quote(payload.getAbsolutePath()) + " --power-helper "
+                        + Process.myUid() + " >/dev/null 2>&1 &";
                 RootShell.Result launch = RootShell.exec(command);
                 if (!launch.connected || launch.code != 0)
                     throw new IllegalStateException("power helper launch failed: " + launch.output);
@@ -104,14 +118,14 @@ final class RootPowerGestures {
             InputStream in = connected.getInputStream();
             int status = ByteBuffer.wrap(readFully(in, 4)).order(ByteOrder.nativeOrder()).getInt();
             if (status != 0) throw new IllegalStateException("power-key observer failed");
-            Log.i("TickerBarPower", "Passive root power-button observer ready");
+            Log.i(TAG, "Passive root power-button observer ready");
             while (!stopped) {
                 int event = in.read();
                 if (event < 0) throw new java.io.EOFException();
                 if (event == 'P') powerPressed();
             }
         } catch (Throwable failure) {
-            if (!stopped) Log.w("TickerBarPower", "Power-button observer ended", failure);
+            if (!stopped) Log.w(TAG, "Power-button observer ended", failure);
         } finally {
             close();
             synchronized (RootPowerGestures.class) { if (active == this) active = null; }
@@ -121,36 +135,72 @@ final class RootPowerGestures {
     }
 
     private void powerPressed() {
-        synchronized (this) { clicks++; }
+        int count;
+        synchronized (this) { clicks++; count = clicks; }
         main.removeCallbacks(finishClicks);
         int window = Math.max(250, Math.min(1_500,
                 Prefs.n(context, Prefs.POWER_MULTI_MS)));
+        Log.i(TAG, "Native KEY_POWER down: count=" + count + " windowMs=" + window);
         main.postDelayed(finishClicks, window);
     }
 
     private void trigger(int action, String packageKey) {
-        if (stopped || !RootShell.available() || action == ACTION_NONE) return;
+        if (stopped) {
+            Log.w(TAG, "Dispatch skipped: observer stopped");
+            return;
+        }
+        if (action == ACTION_NONE) {
+            Log.i(TAG, "Dispatch skipped: action is Off");
+            return;
+        }
+        if (!RootShell.available()) {
+            Log.w(TAG, "Dispatch skipped: root daemon unavailable");
+            return;
+        }
+        Log.i(TAG, "Dispatching action=" + actionName(action));
         if (action == ACTION_HOME) {
-            Shell.run("input keyevent KEYCODE_WAKEUP; cmd statusbar click-tile controls", null);
+            runLogged("input keyevent KEYCODE_WAKEUP; cmd statusbar click-tile controls", action);
         } else if (action == ACTION_SEARCH) {
-            Shell.run("input keyevent KEYCODE_WAKEUP; am start --user 0 -n "
-                    + quote(context.getPackageName() + "/.SearchActivity") + " >/dev/null", null);
+            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0 -n "
+                    + quote(context.getPackageName() + "/.SearchActivity") + " >/dev/null", action);
         } else if (action == ACTION_WALLET) {
-            Shell.run("input keyevent KEYCODE_WAKEUP; am start --user 0"
+            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0"
                     + " -a com.google.android.apps.wallet.main.QUICKDRAW"
-                    + " -p com.google.android.apps.walletnfcrel >/dev/null", null);
+                    + " -p com.google.android.apps.walletnfcrel >/dev/null", action);
         } else if (action == ACTION_CAMERA) {
-            Shell.run("input keyevent KEYCODE_WAKEUP; am start --user 0"
-                    + " -a android.media.action.STILL_IMAGE_CAMERA >/dev/null", null);
+            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0"
+                    + " -a android.media.action.STILL_IMAGE_CAMERA >/dev/null", action);
         } else if (action == ACTION_RECORDER) {
+            Log.i(TAG, "Handing Screen recorder action to RootFeatures");
             RootFeatures.openRecorder(context, null);
         } else if (action == ACTION_FLASHLIGHT) {
-            Shell.run("cmd statusbar click-tile flashlight", null);
+            runLogged("cmd statusbar click-tile flashlight", action);
         } else if (action == ACTION_APP) {
             String pkg = Prefs.str(context, packageKey).trim();
-            if (!pkg.isEmpty()) Shell.run("input keyevent KEYCODE_WAKEUP; monkey --pct-syskeys 0 -p "
-                    + quote(pkg) + " 1 >/dev/null 2>&1", null);
+            if (pkg.isEmpty()) {
+                Log.w(TAG, "Open-app dispatch skipped: no package selected");
+            } else {
+                Log.i(TAG, "Open-app target=" + pkg);
+                runLogged("input keyevent KEYCODE_WAKEUP; monkey --pct-syskeys 0 -p "
+                        + quote(pkg) + " 1 >/dev/null 2>&1", action);
+            }
+        } else {
+            Log.w(TAG, "Dispatch skipped: unknown action=" + action);
         }
+    }
+
+    private void runLogged(String command, final int action) {
+        Shell.runResult(command, new Shell.ResultCallback() { public void done(Shell.Result result) {
+            if (result.code == 0) Log.i(TAG, "Action completed: " + actionName(action));
+            else Log.w(TAG, "Action failed: " + actionName(action) + " code=" + result.code
+                    + " output=" + result.output.trim());
+        }});
+    }
+
+    private static String actionName(int action) {
+        for (int i = 0; i < ACTION_IDS.length; i++)
+            if (ACTION_IDS[i] == action) return ACTION_NAMES[i] + "(" + action + ")";
+        return "Unknown(" + action + ")";
     }
 
     /** Avoid launching both HyperOS's double-click action and TickerBar's selected action. */

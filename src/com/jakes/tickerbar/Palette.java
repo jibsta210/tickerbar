@@ -81,6 +81,26 @@ final class Palette {
                 accent, on, container, onContainer);
     }
 
+    /** Applies the shade's optional colour overrides; zero means keep Material You. */
+    Palette withShadeColors(int bgColor, int panelColor, int inactiveColor, int activeColor,
+                            int textColor, int secondaryColor) {
+        int customPrimary = activeColor == 0 ? primary : opaque(activeColor);
+        int customOnPrimary = luminance(customPrimary) > 0.48 ? 0xFF111111 : 0xFFFFFFFF;
+        int customContainer = blend(customPrimary, dark ? 0xFF000000 : 0xFFFFFFFF, 0.62f);
+        int customOnContainer = luminance(customContainer) > 0.48 ? 0xFF111111 : 0xFFFFFFFF;
+        int customSecondary = secondaryColor == 0 ? onSurfaceVariant : opaque(secondaryColor);
+        return new Palette(dark,
+                bgColor == 0 ? bg : opaque(bgColor),
+                panelColor == 0 ? surface : opaque(panelColor),
+                inactiveColor == 0 ? surfaceHigh : opaque(inactiveColor),
+                textColor == 0 ? onSurface : opaque(textColor),
+                customSecondary,
+                secondaryColor == 0 ? outline : alpha(customSecondary, 0x66),
+                customPrimary, customOnPrimary, customContainer, customOnContainer);
+    }
+
+    private static int opaque(int color) { return color | 0xFF000000; }
+
     static double luminance(int c) {
         return (0.2126 * ((c >> 16) & 0xFF) + 0.7152 * ((c >> 8) & 0xFF) + 0.0722 * (c & 0xFF)) / 255.0;
     }

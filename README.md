@@ -36,6 +36,12 @@ and HyperOS between them wouldn't do these things.
   keeps the stock 150-level volume path, hides selected notification apps/channels from the
   stock shade and can relax HyperOS's extra process-killing layer without disabling Android's
   normal low-memory handling.
+- **Unified Shade** is an optional single-page replacement with animated compact-to-expanded
+  controls, grouped and individually expandable notifications, inline actions/replies, a live
+  automatic-brightness bias slider, the real SystemUI navigation bar, and full colour-wheel
+  control over its backdrop, panels, controls and text. Notification expansion can default
+  open or closed. Its Google Home shelf is currently an explicitly labelled interactive demo;
+  live Home device discovery/control still needs Google OAuth integration.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
   replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
   opens its real floating control. Pairing is remembered; Shizuku 13.6+ can restart its

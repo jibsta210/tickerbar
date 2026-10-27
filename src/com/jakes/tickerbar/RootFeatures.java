@@ -141,7 +141,6 @@ final class RootFeatures {
         Log.i("TickerBarRoot", "Root system integration ready");
         TickerListener.filterActive();
         ShadeService.refresh();
-        RootPowerGestures.sync(c);
         startNativeServices(c);
         RootOverlayClient.start(c);
         new Thread(new Runnable() { public void run() {
