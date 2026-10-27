@@ -206,17 +206,18 @@ public class MainActivity extends Activity {
                         }
                     });
                 }});
-        actionRow(c, "Disable HyperOS install countdown",
-                "Skips Security Center's ten-second Install via USB gate",
-                new Runnable() { public void run() { setInstallIntercept(false); }});
-        actionRow(c, "Restore HyperOS install confirmation",
-                "Turns the stock Security Center install gate back on",
-                new Runnable() { public void run() { setInstallIntercept(true); }});
+        actionRow(c, "Disable Xiaomi permission countdowns",
+                "Accessibility, debugging, notification access and installs",
+                new Runnable() { public void run() { setSecurityCountdowns(false); }});
+        actionRow(c, "Restore Xiaomi permission countdowns",
+                "Re-enables Security Center's stock warning activity",
+                new Runnable() { public void run() { setSecurityCountdowns(true); }});
         switchRow(c, "Relax HyperOS memory killing",
                 "Disables Smart Power Control's extra kill/free layer; Android's normal low-memory handling stays active",
                 Prefs.MEMORY_RELAXED);
         note(c, "The floating recorder and replacement tile work through either root or Shizuku. "
-                + "The HyperOS install countdown provider has a signature-only permission and still requires root.");
+                + "Countdown removal disables only Security Center's warning activity; the rest of Security "
+                + "Center, Android permission dialogs and Play Protect remain intact.");
 
         // ---------------------------------------------------------- status bar
         c = card("Status bar");
@@ -412,20 +413,23 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Toggle only Security Center's ADB/install intercept; antivirus remains untouched. */
-    private void setInstallIntercept(final boolean enabled) {
+    /** Toggle Xiaomi's shared 10-second intercept activity; Security Center stays installed. */
+    private void setSecurityCountdowns(final boolean enabled) {
         if (!RootShell.available()) {
             toast("Root is needed for HyperOS's protected Security Center setting");
             return;
         }
-        String command = "content call --uri content://com.miui.securitycenter.remoteprovider"
+        String component = "com.miui.securitycenter/"
+                + "com.miui.permcenter.privacymanager.SpecialPermissionInterceptActivity";
+        String command = "pm " + (enabled ? "enable" : "disable") + " --user 0 "
+                + component + "; content call --uri content://com.miui.securitycenter.remoteprovider"
                 + " --method callPreference --arg SET --extra type:i:1"
                 + " --extra key:s:permcenter_install_intercept_enabled"
                 + " --extra value:b:" + enabled;
         Shell.runResult(command, new Shell.ResultCallback() { public void done(Shell.Result result) {
             if (result.code == 0)
-                toast(enabled ? "HyperOS install confirmation restored"
-                        : "HyperOS install countdown disabled");
+                toast(enabled ? "Xiaomi permission countdowns restored"
+                        : "Xiaomi permission countdowns disabled");
             else toast("Security Center setting failed (" + result.code + ")");
         }});
     }

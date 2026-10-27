@@ -54,6 +54,8 @@ final class RootFeatures {
         String recorderTile = "custom(com.jakes.tickerbar/.RecorderTileService)";
         String stockRecorderTile = "custom(com.miui.screenrecorder/.service.QuickService)";
         String powerTile = "custom(com.jakes.tickerbar/.PowerTileService)";
+        String securityCountdown = "com.miui.securitycenter/"
+                + "com.miui.permcenter.privacymanager.SpecialPermissionInterceptActivity";
         String command =
                 // Trigger SystemUI's observed setting flow after installing the debug override.
                 "settings put system use_control_panel 0; "
@@ -122,6 +124,17 @@ final class RootFeatures {
             Log.e("TickerBarRoot", "Root feature setup failed (" + result.code + "): " + result.output);
             return false;
         }
+        // Settings checks that Xiaomi's intercept activity resolves before launching it and
+        // falls back to Android's normal dialog if it does not. Disable only that hard-coded
+        // 10-second activity, not the Security Center package. Keep this separate so a
+        // firmware policy rejection is visible and cannot poison the rest of integration.
+        RootShell.Result countdown = RootShell.exec(
+                "pm disable --user 0 " + quote(securityCountdown));
+        if (!countdown.connected || countdown.code != 0)
+            Log.w("TickerBarRoot", "Security countdown component stayed enabled ("
+                    + countdown.code + "): " + countdown.output);
+        else Log.i("TickerBarRoot", "Security countdown component result: "
+                + countdown.output.trim());
         installSystemUiForBoot(c);
         MemoryProfile.apply(c);
         applied = true;
