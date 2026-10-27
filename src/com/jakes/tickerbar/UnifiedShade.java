@@ -3195,29 +3195,33 @@ final class UnifiedShade {
             card.addView(pic, pl);
         }
 
+        // One action rail for both system-suggested replies and app actions. Splitting these
+        // into separate LinearLayouts made cards grow into two action rows even when there
+        // was ample horizontal room. Chips never wrap; the rail scrolls when it truly overflows.
+        final LinearLayout actionChips = new LinearLayout(svc);
+        actionChips.setOrientation(LinearLayout.HORIZONTAL);
+        actionChips.setGravity(Gravity.CENTER_VERTICAL);
+        actionChips.setPadding(0, svc.px(10), svc.px(4), 0);
+        final int[] actionChipCount = {0};
+
         // smart replies the system suggested for this message
         final Notification.Action replyA = replyAction(n);
         NotificationListenerService.Ranking r = rank(s.getKey());
         if (replyA != null && r != null && Build.VERSION.SDK_INT >= 29) {
             List<CharSequence> smart = r.getSmartReplies();
             if (smart != null && !smart.isEmpty()) {
-                LinearLayout chips = new LinearLayout(svc);
-                chips.setPadding(0, svc.px(8), 0, 0);
                 int shown = 0;
                 for (final CharSequence q : smart) {
                     if (shown++ >= 3) break;
-                    TextView c = pill(q.toString(), new View.OnClickListener() { public void onClick(View v) {
+                    TextView c = actionPill(q.toString(), new View.OnClickListener() { public void onClick(View v) {
                         reply(replyA, q, true);
                     }});
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT);
                     lp.setMarginEnd(svc.px(8));
-                    chips.addView(c, lp);
+                    actionChips.addView(c, lp);
+                    actionChipCount[0]++;
                 }
-                android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(svc);
-                hs.setHorizontalScrollBarEnabled(false);
-                hs.addView(chips);
-                card.addView(hs);
             }
         }
 
@@ -3274,8 +3278,6 @@ final class UnifiedShade {
 
         // actions: replies open the inline box; the rest fire straight away
         if (n.actions != null && n.actions.length > 0) {
-            LinearLayout acts = new LinearLayout(svc);
-            acts.setPadding(0, svc.px(12), 0, 0);
             int shown = 0;
             for (final Notification.Action a : n.actions) {
                 if (a == null || TextUtils.isEmpty(a.title) || a.actionIntent == null || shown >= 3) continue;
@@ -3283,7 +3285,7 @@ final class UnifiedShade {
                 // action chip when this card has no second visual state to reveal.
                 if (!expandable && isExpansionAction(a.title)) continue;
                 final boolean isReply = a == replyA;
-                TextView b = pill(a.title.toString(), new View.OnClickListener() { public void onClick(View v) {
+                TextView b = actionPill(a.title.toString(), new View.OnClickListener() { public void onClick(View v) {
                     if (isReply) {
                         replyBox.setVisibility(View.VISIBLE);
                         replying = true;
@@ -3309,10 +3311,20 @@ final class UnifiedShade {
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
                 lp.setMarginEnd(svc.px(8));
-                acts.addView(b, lp);
+                actionChips.addView(b, lp);
+                actionChipCount[0]++;
                 shown++;
             }
-            if (shown > 0) card.addView(acts);
+        }
+        if (actionChipCount[0] > 0) {
+            HorizontalScrollView rail = new HorizontalScrollView(svc);
+            rail.setHorizontalScrollBarEnabled(false);
+            rail.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            rail.setFillViewport(false);
+            rail.addView(actionChips, new HorizontalScrollView.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            card.addView(rail, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
         card.addView(replyBox, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -3672,6 +3684,14 @@ final class UnifiedShade {
         t.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
         t.setOnClickListener(l);
         return t;
+    }
+
+    /** Notification actions are always one physical line; their shared rail owns overflow. */
+    private TextView actionPill(String label, View.OnClickListener listener) {
+        TextView action = pill(label, listener);
+        action.setSingleLine(true);
+        action.setMaxLines(1);
+        return action;
     }
 
     private GradientDrawable round(int color, int r) {
