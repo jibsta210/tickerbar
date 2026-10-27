@@ -1208,6 +1208,8 @@ final class UnifiedShade {
         // TickerBar card behind it produced two differently coloured borders and dead space.
         card.setPadding(0, 0, 0, 0);
         card.setBackground(null);
+        card.setClipToOutline(true);
+        card.setOutlineProvider(roundOutline(svc.px(28)));
 
         View hosted = createHomeWidget();
         if (hosted != null) {
@@ -1440,8 +1442,14 @@ final class UnifiedShade {
         }
         // RemoteViews nests several full-size containers. Styling all of them caused the
         // green inner outline plus dark outer frame seen in the screenshot. Keep one surface.
-        for (View layer : largeLayers) layer.setBackground(layer == homeSurface
-                ? round(Palette.alpha(pal.surfaceHigh, panelA), svc.px(26)) : null);
+        for (View layer : largeLayers) {
+            layer.setBackground(layer == homeSurface
+                    ? round(Palette.alpha(pal.surfaceHigh, panelA), svc.px(28)) : null);
+            if (layer == homeSurface) {
+                layer.setClipToOutline(true);
+                layer.setOutlineProvider(roundOutline(svc.px(28)));
+            }
+        }
         for (final View tile : views) {
             if (!(tile instanceof ViewGroup) || !tile.hasOnClickListeners()) continue;
             int widthDp = Math.round(tile.getWidth() / density);
@@ -1530,9 +1538,13 @@ final class UnifiedShade {
         ArrayList<View> children = new ArrayList<View>();
         collectViews(tile, children);
         for (View child : children) {
-            if (child == tile || child.getBackground() == null) continue;
-            if (child.getWidth() >= tile.getWidth() * .65f
-                    && child.getHeight() >= tile.getHeight() * .65f)
+            if (child == tile) continue;
+            boolean fullTile = child.getWidth() >= tile.getWidth() * .65f
+                    && child.getHeight() >= tile.getHeight() * .65f;
+            if (!fullTile) continue;
+            if (child instanceof ImageView)
+                ((ImageView) child).setImageDrawable(null); // Home's opaque state artwork
+            if (child.getBackground() != null)
                 child.setBackground(null);
         }
     }
@@ -1547,9 +1559,21 @@ final class UnifiedShade {
             if (child instanceof TextView) {
                 ((TextView) child).setTextColor(textIndex++ == 0 ? primary : secondary);
             } else if (child instanceof ImageView) {
-                ((ImageView) child).setImageTintList(ColorStateList.valueOf(primary));
+                // Some Home versions use a tile-sized ImageView as their state background.
+                // Tinting that "icon" paints the whole control black. Only tint real icons.
+                if (child.getWidth() < tile.getWidth() * .60f
+                        && child.getHeight() < tile.getHeight() * .60f)
+                    ((ImageView) child).setImageTintList(ColorStateList.valueOf(primary));
             }
         }
+    }
+
+    private ViewOutlineProvider roundOutline(final int radius) {
+        return new ViewOutlineProvider() {
+            @Override public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+            }
+        };
     }
 
     private boolean isDescendantOf(View view, ViewGroup ancestor) {
