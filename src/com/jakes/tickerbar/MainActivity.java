@@ -312,7 +312,7 @@ public class MainActivity extends Activity {
                     if (!ShadeService.previewUnifiedShade())
                         toast("Turn on TickerBar Accessibility once to host the custom shade");
                 }});
-        switchRow(c, "Google Home shelf", "Scrollable light controls above notifications", Prefs.HOME_SHELF);
+        switchRow(c, "Google Home shelf", "Your live Google Home Favorites widget above notifications", Prefs.HOME_SHELF);
         switchRow(c, "Notifications expanded by default",
                 "New cards start open; each card's arrow can still fold or expand it",
                 Prefs.SHADE_NOTIFICATIONS_EXPANDED);
@@ -352,7 +352,7 @@ public class MainActivity extends Activity {
                     new String[]{"First row + expanded", "Expanded only", "Hidden"});
         note(c, "The first row shows up to six tiles. Wi-Fi, Bluetooth, mobile data, airplane mode and "
                 + "location are switched by Android itself, so those tiles open its panel for them. "
-                + "The Home shelf uses demo lights until Google Home OAuth is connected. "
+                + "Choose the Google Home shelf once to select its home and favorite devices. "
                 + "The lock screen and landscape keep the system shade.");
 
         c = card("Hidden apps");

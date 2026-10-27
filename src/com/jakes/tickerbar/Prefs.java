@@ -88,6 +88,7 @@ public final class Prefs {
     public static final String SHADE_NOTIFICATION_TEXT_COLOR = "shade_notification_text_color";
     public static final String SHADE_NOTIFICATIONS_EXPANDED = "shade_notifications_expanded";
     public static final String HOME_SHELF   = "home_shelf";     // location-aware Home row in UnifiedShade
+    public static final String HOME_WIDGET_ID = "home_widget_id"; // Google Home Favorites AppWidget id
     public static final String SHADE_NAV_ORDER = "shade_nav_order"; // 0 follow HyperOS, 1 back-home-recents, 2 recents-home-back      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts

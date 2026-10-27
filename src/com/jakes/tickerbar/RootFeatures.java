@@ -71,6 +71,11 @@ final class RootFeatures {
                 + "appops set " + quote(c.getPackageName()) + " WRITE_SETTINGS allow; "
                 + "pm grant " + quote(c.getPackageName())
                 + " android.permission.WRITE_SECURE_SETTINGS; "
+                // Let TickerBar host Google Home's real Favorites RemoteViews. This is the
+                // AppWidget service's explicit host allow-list, not a package permission;
+                // transaction 21 is setBindAppWidgetPermission on this Android 15 build.
+                + "service call appwidget 21 s16 " + quote(c.getPackageName())
+                + " i32 0 i32 1 >/dev/null; "
                 + "appops set " + quote(c.getPackageName()) + " REQUEST_INSTALL_PACKAGES allow; "
                 + "appops set " + quote(c.getPackageName()) + " ACCESS_RESTRICTED_SETTINGS allow; "
                 // Keep ADB authorization permanent and remove Xiaomi's separate install

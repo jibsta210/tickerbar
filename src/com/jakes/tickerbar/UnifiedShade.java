@@ -6,6 +6,11 @@ import android.animation.LayoutTransition;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.appwidget.AppWidgetHost;
+import android.appwidget.AppWidgetHostView;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProviderInfo;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -92,6 +97,10 @@ final class UnifiedShade {
             "Pink", "Purple", "Graphite"};
     private int panelA = 0xF2;
     private int notificationTextColor;
+    private static final int HOME_WIDGET_HOST_ID = 0x5442;
+    private static final ComponentName HOME_WIDGET_PROVIDER = new ComponentName(
+            "com.google.android.apps.chromecast.app",
+            "com.google.android.apps.chromecast.app.appwidget.favorites.FavoritesWidgetReceiver");
 
     static int defaultPlace(int index) { return index < ROW_MAX ? PLACE_BOTH : PLACE_GRID; }
 
@@ -127,6 +136,8 @@ final class UnifiedShade {
     private boolean pendingBrightnessPreviewSet;
     private boolean brightnessPreviewWorkerRunning;
     private boolean brightnessPreviewUnavailable;
+    /** HyperOS's stock linear -1..1 adjustment is almost imperceptible near neutral. */
+    private static final float AUTO_BIAS_GAIN = 10f;
     private boolean attached, expanded, closing;
     private boolean chromeIntroPending;
     /** One opening choreography per shade attachment; live refreshes never replay it. */
@@ -138,10 +149,10 @@ final class UnifiedShade {
     private final List<Runnable> refreshers = new ArrayList<Runnable>();   // tiles, rebuilt with them
     private final List<Runnable> fixed = new ArrayList<Runnable>();        // header and brightness row
     private final HashMap<String, CharSequence> labels = new HashMap<String, CharSequence>();
-    private final HashSet<String> demoLightsOn = new HashSet<String>();
     private final List<ImageView> headerStatusIcons = new ArrayList<ImageView>();
     private final List<MorphTile> morphTiles = new ArrayList<MorphTile>();
-    private boolean demoLightsInitialized;
+    private AppWidgetHost homeWidgetHost;
+    private AppWidgetHostView homeWidgetView;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -204,15 +215,22 @@ final class UnifiedShade {
         if (!open) closing = true;
         sheet.animate().cancel();
         if (scrim != null) scrim.animate().cancel();
+        if (navBackdrop != null) navBackdrop.animate().cancel();
+        // The chrome belongs to the sheet. Start any one-shot colour handoff with the
+        // sheet itself instead of waiting for the panel to land and making its controls
+        // look as though they were inflated late.
+        if (open) runChromeIntroIfNeeded();
         sheet.animate().translationY(target).scaleX(open ? 1f : 0.985f).scaleY(open ? 1f : 0.985f)
                 .setDuration(ms).setInterpolator(open ? OPEN_EASE : CLOSE_EASE)
                 .setListener(new AnimatorListenerAdapter() {
                     @Override public void onAnimationEnd(Animator a) {
                         sheet.animate().setListener(null);
-                        if (!open) detach(); else runChromeIntroIfNeeded();
+                        if (!open) detach();
                     }
                 }).start();
         if (scrim != null) scrim.animate().alpha(open ? 1f : 0f).setDuration(ms)
+                .setInterpolator(open ? OPEN_EASE : CLOSE_EASE).start();
+        if (navBackdrop != null) navBackdrop.animate().alpha(open ? 1f : 0f).setDuration(ms)
                 .setInterpolator(open ? OPEN_EASE : CLOSE_EASE).start();
     }
 
@@ -223,6 +241,7 @@ final class UnifiedShade {
         sheet.setScaleX(scale);
         sheet.setScaleY(scale);
         if (scrim != null) scrim.setAlpha(p);
+        if (navBackdrop != null) navBackdrop.setAlpha(p);
     }
 
     private boolean attach() {
@@ -247,7 +266,10 @@ final class UnifiedShade {
                 Prefs.n(svc, Prefs.SHADE_TEXT_COLOR),
                 Prefs.n(svc, Prefs.SHADE_SECONDARY_COLOR));
         int notificationColor = Prefs.n(svc, Prefs.SHADE_NOTIFICATION_TEXT_COLOR);
-        notificationTextColor = notificationColor == 0 ? pal.onSurfaceVariant : notificationColor | 0xFF000000;
+        // Message bodies are primary readable content, not metadata. Keep their default tied
+        // to primary foreground (normally white in the dark shade) and let the dedicated
+        // Notification text override remain completely independent of secondary text.
+        notificationTextColor = notificationColor == 0 ? pal.onSurface : notificationColor | 0xFF000000;
         panelA = Math.round(255 * Math.max(40, Math.min(100, Prefs.n(svc, Prefs.SHADE_ALPHA))) / 100f);
         build();
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -268,8 +290,17 @@ final class UnifiedShade {
         // Keep our bounds above SystemUI's real navigation bar. The IME is handled below.
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING;
         lp.setTitle("TickerBar shade");
-        try { svc.windows().addView(root, lp); } catch (Exception e) { return false; }
+        // Submit the lower application-overlay first. It can then be composed on the same
+        // first frame as the accessibility sheet instead of appearing a frame or two later.
         attachNavBackdrop();
+        try { svc.windows().addView(root, lp); } catch (Exception e) {
+            if (navBackdrop != null) {
+                try { navBackdropWm.removeViewImmediate(navBackdrop); } catch (Exception ignored) {}
+                navBackdrop = null;
+                navBackdropWm = null;
+            }
+            return false;
+        }
 
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
@@ -304,6 +335,7 @@ final class UnifiedShade {
         if (svc.navBar() <= 0 || navBackdrop != null) return;
         FrameLayout backdrop = new FrameLayout(svc);
         backdrop.setBackgroundColor(Color.TRANSPARENT);
+        backdrop.setAlpha(0f);
         View navTint = new View(svc);
         navTint.setBackgroundColor(Palette.alpha(
                 pal.dark ? Color.BLACK : pal.bg, pal.dark ? 0x88 : 0x99));
@@ -397,6 +429,7 @@ final class UnifiedShade {
         expansionProgress = 0f;
         expanded = false;
         stopTorchWatch();
+        stopHomeWidgetHost();
         if (Build.VERSION.SDK_INT >= 33 && backCb != null && root != null) {
             android.window.OnBackInvokedDispatcher d = root.findOnBackInvokedDispatcher();
             if (d != null) try { d.unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCb); }
@@ -459,14 +492,26 @@ final class UnifiedShade {
                         if (vt != null) vt.addMovement(e);
                         float up = y0 - e.getRawY();
                         int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
-                        if (up > slop * 2 && up > Math.abs(e.getRawX() - x0) && !scroll.canScrollVertically(1)) {
-                            if (expanded) {   // stock: the first swipe up folds the controls, the next closes
+                        if (up > slop * 2 && up > Math.abs(e.getRawX() - x0)) {
+                            // An upward pull that started on an open notification folds that
+                            // entry first. Previously the root interceptor stole it for the
+                            // whole shade/control panel, so only the tiny chevron worked.
+                            View under = entryAt(x0, y0);
+                            Runnable collapse = collapsers.get(under);
+                            if (collapse != null) {
                                 pulledOpen = true;
-                                setExpanded(false);
+                                collapse.run();
                                 return true;
                             }
-                            dragging = true;
-                            return true;
+                            if (!scroll.canScrollVertically(1)) {
+                                if (expanded) {   // stock: the first swipe up folds the controls, the next closes
+                                    pulledOpen = true;
+                                    setExpanded(false);
+                                    return true;
+                                }
+                                dragging = true;
+                                return true;
+                            }
                         }
                         // pulling down: on a notification expands that one; elsewhere (empty space,
                         // with the list at its top) opens the full quick settings
@@ -605,34 +650,58 @@ final class UnifiedShade {
         chevron.setBackground(ripple(null));
         chevron.setContentDescription("Expand quick settings");
         chevron.setOnTouchListener(new View.OnTouchListener() {
-            float y0, startProgress, lastY, lastAt; boolean dragging;
+            float y0, startProgress;
+            boolean dragging;
+            VelocityTracker velocity;
             public boolean onTouch(View v, MotionEvent e) {
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        y0 = lastY = e.getRawY();
-                        lastAt = android.os.SystemClock.uptimeMillis();
+                        y0 = e.getRawY();
                         startProgress = expanded ? 1f : 0f;
                         expansionProgress = startProgress;
                         dragging = false;
+                        if (velocity != null) velocity.recycle();
+                        velocity = VelocityTracker.obtain();
+                        velocity.addMovement(e);
                         prepareExpansionDrag();
                         v.getParent().requestDisallowInterceptTouchEvent(true);
                         return true;
                     case MotionEvent.ACTION_MOVE: {
+                        if (velocity != null) velocity.addMovement(e);
                         float dy = e.getRawY() - y0;
                         if (Math.abs(dy) > ViewConfiguration.get(svc).getScaledTouchSlop()) dragging = true;
                         float direction = expanded ? -dy : dy;
-                        float p = expanded ? 1f - direction / svc.px(220) : direction / svc.px(220);
+                        // A compact 120dp throw makes the handle feel directly attached to the
+                        // grid. The old 220dp range required nearly half a screen before a
+                        // gesture crossed its settle threshold.
+                        float p = expanded ? 1f - direction / svc.px(120) : direction / svc.px(120);
                         applyExpansionProgress(Math.max(0f, Math.min(1f, p)));
-                        lastY = e.getRawY(); lastAt = android.os.SystemClock.uptimeMillis();
                         return true;
                     }
                     case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        if (!dragging && e.getActionMasked() == MotionEvent.ACTION_UP)
+                    case MotionEvent.ACTION_CANCEL: {
+                        float vy = 0f;
+                        if (velocity != null) {
+                            velocity.addMovement(e);
+                            velocity.computeCurrentVelocity(1000);
+                            vy = velocity.getYVelocity();
+                            velocity.recycle();
+                            velocity = null;
+                        }
+                        if (!dragging && e.getActionMasked() == MotionEvent.ACTION_UP) {
                             settleExpansionProgress(!expanded);
-                        else settleExpansionProgress(expansionProgress >= 0.45f);
+                        } else if (e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                            settleExpansionProgress(expansionProgress >= 0.5f);
+                        } else if (vy > 350f) {
+                            settleExpansionProgress(true);
+                        } else if (vy < -350f) {
+                            settleExpansionProgress(false);
+                        } else {
+                            settleExpansionProgress(expansionProgress >= 0.35f);
+                        }
                         v.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
                         return true;
+                    }
                     default: return true;
                 }
             }
@@ -925,7 +994,7 @@ final class UnifiedShade {
                 if (autoBrightness()) {
                     float bias = Settings.System.getFloat(svc.getContentResolver(),
                             "screen_auto_brightness_adj", 0f);
-                    brightness.setProgress(Math.max(0, Math.min(1000, Math.round(500 + bias * 500))));
+                    brightness.setProgress(autoSliderForBias(bias));
                     brightness.setContentDescription("Automatic brightness adjustment "
                             + Math.round(bias * 100) + " percent");
                 } else {
@@ -946,7 +1015,7 @@ final class UnifiedShade {
             return;
         }
         if (autoBrightness()) {
-            float bias = Math.max(-1f, Math.min(1f, (progress - 500f) / 500f));
+            float bias = autoBiasForSlider(progress);
             try { Settings.System.putFloat(svc.getContentResolver(),
                     "screen_auto_brightness_adj", bias); } catch (Exception ignored) {}
             brightness.setContentDescription("Automatic brightness adjustment "
@@ -984,6 +1053,25 @@ final class UnifiedShade {
         brightnessPreviewMax = 1f;
         brightnessPreviewBase = Math.max(brightnessPreviewMin,
                 Math.min(brightnessPreviewMax, brightnessPreviewBase));
+    }
+
+    /**
+     * Give automatic brightness a useful control surface on HyperOS. Its native adjustment is
+     * linear and so weak around zero that most of the slider appears inert. This exposure-style
+     * curve has exactly 10x the stock slope at neutral, remains continuous/monotonic, and still
+     * maps the physical endpoints to Android's supported -1..1 range.
+     */
+    private static float autoBiasForSlider(int progress) {
+        float x = Math.max(-1f, Math.min(1f, (progress - 500f) / 500f));
+        float magnitude = 1f - (float) Math.pow(1f - Math.abs(x), AUTO_BIAS_GAIN);
+        return Math.copySign(magnitude, x);
+    }
+
+    /** Inverse of autoBiasForSlider, so reopening the shade never makes the thumb jump. */
+    private static int autoSliderForBias(float bias) {
+        float y = Math.max(-1f, Math.min(1f, bias));
+        float x = 1f - (float) Math.pow(1f - Math.abs(y), 1f / AUTO_BIAS_GAIN);
+        return Math.max(0, Math.min(1000, Math.round(500f + Math.copySign(x, y) * 500f)));
     }
 
     /** Map both ends of the bias scale onto the currently available brightness range. */
@@ -1049,17 +1137,8 @@ final class UnifiedShade {
         if (afterCommit && root != null) root.postDelayed(clear, 220); else clear.run();
     }
 
-    /**
-     * Demo surface for the Google Home integration. The horizontal interaction and control
-     * states are real; device discovery remains deliberately labelled demo until the user has
-     * completed Google's OAuth flow, so the shade never pretends to control an unpaired light.
-     */
+    /** Google Home's authenticated Favorites widget, hosted directly inside the shade. */
     private View homeShelf() {
-        if (!demoLightsInitialized) {
-            demoLightsOn.add("Living room");
-            demoLightsOn.add("Kitchen");
-            demoLightsInitialized = true;
-        }
         LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(svc.px(14), svc.px(10), svc.px(10), svc.px(10));
@@ -1071,85 +1150,143 @@ final class UnifiedShade {
         TextView title = tv("Google Home", 16, pal.onSurface);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         titleRow.addView(title);
-        TextView demo = tv("DEMO", 10, pal.onPrimaryContainer);
-        demo.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        demo.setGravity(Gravity.CENTER);
-        demo.setPadding(svc.px(8), svc.px(3), svc.px(8), svc.px(3));
-        demo.setBackground(round(pal.primaryContainer, svc.px(10)));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.setMarginStart(svc.px(8));
-        titleRow.addView(demo, dlp);
         titleRow.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
+        TextView choose = pill("Choose", new View.OnClickListener() { public void onClick(View v) {
+            configureHomeWidget();
+        }});
+        choose.setContentDescription("Choose Google Home favorites");
+        titleRow.addView(choose);
         TextView open = pill("Open", new View.OnClickListener() { public void onClick(View v) {
             openHomeControls();
         }});
-        open.setContentDescription("Open Google Home controls");
-        titleRow.addView(open);
+        LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        openLp.setMarginStart(svc.px(6));
+        titleRow.addView(open, openLp);
         card.addView(titleRow);
 
-        HorizontalScrollView strip = new HorizontalScrollView(svc);
-        strip.setHorizontalScrollBarEnabled(false);
-        strip.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-        strip.setClipToPadding(false);
-        LinearLayout lights = new LinearLayout(svc);
-        lights.setOrientation(LinearLayout.HORIZONTAL);
-        lights.setPadding(0, svc.px(8), svc.px(6), 0);
-        String[] rooms = {"Living room", "Kitchen", "Bedroom", "Outside", "Hallway"};
-        for (String room : rooms) {
-            View chip = homeLight(room);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(svc.px(126), svc.px(54));
-            lp.setMarginEnd(svc.px(8));
-            lights.addView(chip, lp);
+        View hosted = createHomeWidget();
+        if (hosted != null) {
+            LinearLayout.LayoutParams widgetLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, svc.px(132));
+            widgetLp.topMargin = svc.px(8);
+            card.addView(hosted, widgetLp);
+        } else {
+            LinearLayout empty = new LinearLayout(svc);
+            empty.setOrientation(LinearLayout.VERTICAL);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(svc.px(16), svc.px(18), svc.px(16), svc.px(18));
+            empty.setBackground(round(pal.surfaceHigh, svc.px(22)));
+            TextView message = tv("Choose your home and favorite lights once, then control them here.",
+                    14, pal.onSurfaceVariant);
+            message.setGravity(Gravity.CENTER);
+            empty.addView(message);
+            TextView setup = pill("Set up Google Home", new View.OnClickListener() {
+                public void onClick(View v) { configureHomeWidget(); }
+            });
+            LinearLayout.LayoutParams setupLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            setupLp.topMargin = svc.px(10);
+            setupLp.gravity = Gravity.CENTER_HORIZONTAL;
+            empty.addView(setup, setupLp);
+            LinearLayout.LayoutParams emptyLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            emptyLp.topMargin = svc.px(8);
+            card.addView(empty, emptyLp);
         }
-        strip.addView(lights, new HorizontalScrollView.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        card.addView(strip, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
         return card;
     }
 
-    private View homeLight(final String room) {
-        final LinearLayout chip = new LinearLayout(svc);
-        chip.setOrientation(LinearLayout.HORIZONTAL);
-        chip.setGravity(Gravity.CENTER_VERTICAL);
-        chip.setPadding(svc.px(12), 0, svc.px(10), 0);
-        final ImageView bulb = new ImageView(svc);
-        bulb.setImageResource(R.drawable.qs_brightness);
-        chip.addView(bulb, new LinearLayout.LayoutParams(svc.px(22), svc.px(22)));
-        LinearLayout words = new LinearLayout(svc);
-        words.setOrientation(LinearLayout.VERTICAL);
-        words.setPadding(svc.px(9), 0, 0, 0);
-        TextView name = tv(room, 14, pal.onSurface);
-        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        name.setSingleLine(true);
-        name.setEllipsize(TextUtils.TruncateAt.END);
-        words.addView(name);
-        final TextView state = tv("", 11, pal.onSurfaceVariant);
-        words.addView(state);
-        chip.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        final Runnable paint = new Runnable() { public void run() {
-            boolean on = demoLightsOn.contains(room);
-            chip.setBackground(ripple(round(on ? pal.primary : pal.surfaceHigh, svc.px(27))));
-            bulb.setImageTintList(ColorStateList.valueOf(on ? pal.onPrimary : pal.onSurfaceVariant));
-            name.setTextColor(on ? pal.onPrimary : pal.onSurface);
-            state.setText(on ? "Demo on" : "Demo off");
-            state.setTextColor(on ? Palette.alpha(pal.onPrimary, 0xC8) : pal.onSurfaceVariant);
-        }};
-        paint.run();
-        chip.setContentDescription(room + " demo light");
-        chip.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-            if (demoLightsOn.contains(room)) demoLightsOn.remove(room); else demoLightsOn.add(room);
-            v.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
-            v.animate().cancel();
-            v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).withEndAction(new Runnable() {
-                public void run() {
-                    paint.run();
-                    chip.animate().scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(OPEN_EASE).start();
-                }
-            }).start();
-        }});
-        return chip;
+    private View createHomeWidget() {
+        AppWidgetManager manager = AppWidgetManager.getInstance(svc);
+        if (manager == null) return null;
+        try {
+            svc.getPackageManager().getReceiverInfo(HOME_WIDGET_PROVIDER, 0);
+        } catch (Exception missing) {
+            android.util.Log.w("TickerBarHome", "Google Home Favorites provider is unavailable", missing);
+            return null;
+        }
+
+        homeWidgetHost = new AppWidgetHost(svc, HOME_WIDGET_HOST_ID);
+        try { homeWidgetHost.startListening(); }
+        catch (Exception denied) {
+            android.util.Log.w("TickerBarHome", "Could not start widget host", denied);
+            homeWidgetHost = null;
+            return null;
+        }
+
+        int id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
+        AppWidgetProviderInfo info = id > 0 ? manager.getAppWidgetInfo(id) : null;
+        if (info == null || !HOME_WIDGET_PROVIDER.equals(info.provider)) {
+            if (id > 0) try { homeWidgetHost.deleteAppWidgetId(id); } catch (Exception ignored) {}
+            try { id = homeWidgetHost.allocateAppWidgetId(); }
+            catch (Exception denied) { stopHomeWidgetHost(); return null; }
+            Bundle options = homeWidgetOptions();
+            boolean bound;
+            try { bound = manager.bindAppWidgetIdIfAllowed(id, HOME_WIDGET_PROVIDER, options); }
+            catch (Exception denied) { bound = false; }
+            if (!bound) {
+                try { homeWidgetHost.deleteAppWidgetId(id); } catch (Exception ignored) {}
+                stopHomeWidgetHost();
+                android.util.Log.w("TickerBarHome", "Google Home widget binding was not allowed");
+                return null;
+            }
+            Prefs.put(svc, Prefs.HOME_WIDGET_ID, id);
+            android.util.Log.i("TickerBarHome", "Bound Google Home Favorites widget id=" + id);
+            info = manager.getAppWidgetInfo(id);
+        }
+        if (info == null) return null;
+        try {
+            manager.updateAppWidgetOptions(id, homeWidgetOptions());
+            homeWidgetView = homeWidgetHost.createView(svc, id, info);
+            homeWidgetView.setAppWidget(id, info);
+            homeWidgetView.setPadding(0, 0, 0, 0);
+            return homeWidgetView;
+        } catch (Exception unavailable) {
+            android.util.Log.w("TickerBarHome", "Could not inflate Google Home widget", unavailable);
+            stopHomeWidgetHost();
+            return null;
+        }
+    }
+
+    private void stopHomeWidgetHost() {
+        if (homeWidgetHost != null) try { homeWidgetHost.stopListening(); } catch (Exception ignored) {}
+        homeWidgetHost = null;
+        homeWidgetView = null;
+    }
+
+    private Bundle homeWidgetOptions() {
+        Bundle options = new Bundle();
+        int widthDp = Math.max(220, Math.round((svc.screenW() - svc.px(52))
+                / svc.getResources().getDisplayMetrics().density));
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp);
+        // Google Home advertises a 56dp minimum resize height. A compact one-row host keeps
+        // the shelf useful without pushing the first notification halfway off the screen.
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 112);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 132);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
+                AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN);
+        return options;
+    }
+
+    private void configureHomeWidget() {
+        int id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
+        AppWidgetProviderInfo info = id > 0
+                ? AppWidgetManager.getInstance(svc).getAppWidgetInfo(id) : null;
+        if (info == null) {
+            // Creating the host here also covers the first tap after root has just granted
+            // widget binding. Reopening the shade will show the resulting live RemoteViews.
+            createHomeWidget();
+            id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
+            info = id > 0 ? AppWidgetManager.getInstance(svc).getAppWidgetInfo(id) : null;
+        }
+        if (info != null && info.configure != null) {
+            Intent setup = new Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
+                    .setComponent(info.configure)
+                    .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id);
+            launch(setup);
+        } else openHomeControls();
     }
 
     private void openHomeControls() {
@@ -1204,12 +1341,10 @@ final class UnifiedShade {
         expansionProgress = Math.max(0f, Math.min(1f, progress));
         if (tileStage == null) return;
         int width = tileStage.getWidth();
-        if (width <= 0) {
-            tileStage.post(new Runnable() { public void run() {
-                if (attached) applyExpansionProgress(expansionProgress);
-            }});
-            return;
-        }
+        // Seed the exact screen-derived width before the first layout pass so the tile set
+        // already occupies its compact geometry on frame one. Waiting for a posted layout
+        // callback left every tile stacked at (0,0) for a frame, perceived as a late pop-in.
+        if (width <= 0) width = Math.max(1, svc.screenW() - svc.px(40));
         int rows = Math.max(1, (morphTiles.size() + 3) / 4);
         int openHeight = rows * svc.px(60) + Math.max(0, rows - 1) * svc.px(10);
         ViewGroup.LayoutParams stageLp = tileStage.getLayoutParams();
@@ -1284,13 +1419,16 @@ final class UnifiedShade {
         int stockTint = pal.dark ? 0xFFFFFFFF : 0xFF111111;
         for (ImageView icon : headerStatusIcons)
             icon.setImageTintList(ColorStateList.valueOf(stockTint));
+        // These views travel with the sheet and must be present on its very first revealed
+        // pixel, especially during direct pull-down. Hiding them here and animating them only
+        // after settle made the real circles/pills visibly pop in after the panel.
         for (View v : new View[]{headerView, tileStage, homeShelfView}) {
             if (v == null) continue;
             v.animate().cancel();
-            v.setAlpha(0f);
-            v.setTranslationY(-svc.px(12));
-            v.setScaleX(0.98f);
-            v.setScaleY(0.98f);
+            v.setAlpha(1f);
+            v.setTranslationY(0f);
+            v.setScaleX(1f);
+            v.setScaleY(1f);
         }
     }
 
@@ -1298,14 +1436,6 @@ final class UnifiedShade {
     private void runChromeIntroIfNeeded() {
         if (!chromeIntroPending || !attached) return;
         chromeIntroPending = false;
-        View[] views = {headerView, tileStage, homeShelfView};
-        long delay = 0;
-        for (View v : views) {
-            if (v == null) continue;
-            v.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
-                    .setStartDelay(delay).setDuration(300).setInterpolator(OPEN_EASE).start();
-            delay += 38;
-        }
         final int stockTint = pal.dark ? 0xFFFFFFFF : 0xFF111111;
         android.animation.ValueAnimator tint = android.animation.ValueAnimator.ofArgb(
                 stockTint, pal.primary, pal.onSurfaceVariant);
@@ -1342,6 +1472,7 @@ final class UnifiedShade {
             morphTiles.add(view);
             tileStage.addView(view, new FrameLayout.LayoutParams(svc.px(50), svc.px(50)));
         }
+        applyExpansionProgress(expanded ? 1f : 0f);
         tileStage.post(new Runnable() { public void run() {
             if (attached) applyExpansionProgress(expanded ? 1f : 0f);
         }});
@@ -1876,6 +2007,7 @@ final class UnifiedShade {
         notifBox.removeAllViews();
         clearable.clear();
         expanders.clear();
+        collapsers.clear();
         entryViews.clear();
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
@@ -1948,6 +2080,7 @@ final class UnifiedShade {
 
     private final List<View> clearable = new ArrayList<View>();   // swipeable entries, in list order
     private final HashMap<View, Runnable> expanders = new HashMap<View, Runnable>();   // entry -> expand it
+    private final HashMap<View, Runnable> collapsers = new HashMap<View, Runnable>();  // entry -> fold it
     private final List<View> entryViews = new ArrayList<View>();                       // every card / group
 
     /** The notification entry (card or group) under a screen point, if any. */
@@ -2373,6 +2506,9 @@ final class UnifiedShade {
         final Runnable toggle = new Runnable() { public void run() {
             open[0] = !open[0];
             groupOpenState.put(en.group, open[0]);
+            expanders.remove(box);
+            collapsers.remove(box);
+            if (open[0]) collapsers.put(box, this); else expanders.put(box, this);
             preview.setVisibility(open[0] ? View.GONE : View.VISIBLE);
             kids.setVisibility(open[0] ? View.VISIBLE : View.GONE);
             if (open[0]) { kids.setAlpha(0f); kids.animate().alpha(1f).setDuration(220).start(); }
@@ -2381,7 +2517,7 @@ final class UnifiedShade {
         }};
         chev[0] = chevron(open[0], toggle);
         top.addView(chev[0], new LinearLayout.LayoutParams(svc.px(40), svc.px(40)));
-        expanders.put(box, new Runnable() { public void run() { if (!open[0]) toggle.run(); }});
+        if (open[0]) collapsers.put(box, toggle); else expanders.put(box, toggle);
         box.addView(top);
 
         int n = Math.min(2, en.kids.size());
@@ -2718,6 +2854,9 @@ final class UnifiedShade {
             final Runnable toggle = new Runnable() { public void run() {
                 open[0] = !open[0];
                 cardOpenState.put(s.getKey(), open[0]);
+                expanders.remove(card);
+                collapsers.remove(card);
+                if (open[0]) collapsers.put(card, this); else expanders.put(card, this);
                 if (bodyView != null) bodyView.setMaxLines(open[0] ? 30 : shortLines);   // the card grows, animated
                 if (pics[0] != null) {
                     pics[0].setVisibility(open[0] ? View.VISIBLE : View.GONE);
@@ -2728,7 +2867,7 @@ final class UnifiedShade {
             }};
             chev[0] = chevron(open[0], toggle);
             top.addView(chev[0], new LinearLayout.LayoutParams(svc.px(40), svc.px(40)));
-            expanders.put(card, new Runnable() { public void run() { if (!open[0]) toggle.run(); }});
+            if (open[0]) collapsers.put(card, toggle); else expanders.put(card, toggle);
         }
         if (picture != null) {
             ImageView pic = new ImageView(svc);
@@ -3017,6 +3156,7 @@ final class UnifiedShade {
         clearable.remove(v);
         entryViews.remove(v);
         expanders.remove(v);
+        collapsers.remove(v);
         parent.removeView(v);
         dismiss.run();                 // listener refreshes are held by swipingCard
         root.postDelayed(new Runnable() { public void run() {

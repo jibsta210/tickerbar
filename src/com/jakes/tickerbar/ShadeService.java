@@ -1258,6 +1258,7 @@ public class ShadeService extends AccessibilityService {
     }
     WindowManager.LayoutParams overlay(int w, int h, int flags) { return overlayParams(w, h, flags); }
     int px(float dp) { return dp(dp); }
+    int screenW() { return screenWidth(); }
     int screenH() { return screenHeight(); }
     int navBar() { return navZoneHeight(); }
 
