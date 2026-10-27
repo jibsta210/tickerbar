@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
         numberRow(c, "Swipe area height  · 0 = nav bar", Prefs.SWIPE_H, "px");
         numberRow(c, "Raise or lower  \u00b7 negative sinks it", Prefs.SWIPE_Y, "px");
         numberRow(c, "Swipe distance", Prefs.SWIPE_DIST, "px");
-        textRow(c, "App to open", "Package name", Prefs.SWIPE_PKG);
+        appPickerRow(c, "App to open", "Choose the wallet card's app", Prefs.SWIPE_PKG);
         note(c, "The card uses the proven Accessibility overlay at the navigation-bar edge. Root leaves "
                 + "HyperOS's actual navigation layout untouched, avoiding the SystemUI flicker/reboots caused "
                 + "by the experimental navbar resource replacement.");
@@ -156,7 +156,7 @@ public class MainActivity extends Activity {
         choiceRow(c, "Trigger", Prefs.CORNER_TRIGGER, new int[]{0, 1}, new String[]{"Long-press", "Double-tap"});
         choiceRow(c, "Corner", Prefs.CORNER_SIDE, new int[]{2, 0}, new String[]{"Bottom right", "Bottom left"});
         choiceRow(c, "Action", Prefs.CORNER_ACTION, new int[]{0, 1}, new String[]{"Google", "Open an app"});
-        textRow(c, "App to open", "For “Open an app”", Prefs.CORNER_PKG);
+        appPickerRow(c, "App to open", "Used when the action is Open an app", Prefs.CORNER_PKG);
         numberRow(c, "Long-press hold time", Prefs.CORNER_MS, "ms");
         numberRow(c, "Zone width  · 0 = auto", Prefs.CORNER_W, "px");
         switchRow(c, "Show a dot where the zone is", null, Prefs.CORNER_HINT);
@@ -170,12 +170,12 @@ public class MainActivity extends Activity {
         choiceRow(c, "Double-click", "Runs after the multi-press window closes",
                 Prefs.POWER_DOUBLE_ACTION, RootPowerGestures.ACTION_IDS,
                 RootPowerGestures.ACTION_NAMES);
-        textRow(c, "Double-click app", "Package name, used when the action is Open an app",
+        appPickerRow(c, "Double-click app", "Used when the action is Open an app",
                 Prefs.POWER_DOUBLE_PKG);
         choiceRow(c, "Triple-click", "Four or five clicks are ignored so emergency SOS remains stock",
                 Prefs.POWER_TRIPLE_ACTION, RootPowerGestures.ACTION_IDS,
                 RootPowerGestures.ACTION_NAMES);
-        textRow(c, "Triple-click app", "Package name, used when the action is Open an app",
+        appPickerRow(c, "Triple-click app", "Used when the action is Open an app",
                 Prefs.POWER_TRIPLE_PKG);
         numberRow(c, "Multi-press window", Prefs.POWER_MULTI_MS, "ms");
         note(c, "Requires TickerBar root. The helper only observes KEY_POWER; it never grabs or reinjects "
@@ -198,7 +198,7 @@ public class MainActivity extends Activity {
         rootLine.setLineSpacing(0, 1.15f);
         c.addView(rootLine);
         if (RootBootstrap.attemptsEnabled()) {
-            switchRow(c, "Automatically root after Shizuku starts",
+            autoRootSwitchRow(c, "Automatically root after Shizuku starts",
                     "One guarded attempt per boot; disables itself if an attempt reboots the phone",
                     Prefs.AUTO_ROOT);
             actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
@@ -672,7 +672,6 @@ public class MainActivity extends Activity {
         NativeTicker.refresh(this);
         RootInput.stop();
         RootPowerGestures.sync(this);
-        RootBootstrap.settingsChanged(this);
         TickerListener.filterActive();
         MemoryProfile.applyAsync(this);
         if (cardPreview != null) cardPreview.invalidate();
@@ -871,6 +870,19 @@ public class MainActivity extends Activity {
         r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
     }
 
+    /** The root bootstrap is re-evaluated only when its own switch changes. */
+    private void autoRootSwitchRow(LinearLayout card, String title, String subtitle,
+                                   final String key) {
+        final Switch sw = styledSwitch(Prefs.on(this, key));
+        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                Prefs.put(MainActivity.this, key, on ? 1 : 0);
+                RootBootstrap.settingsChanged(MainActivity.this);
+            }});
+        LinearLayout r = row(card, title, subtitle, sw);
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+    }
+
     /** A SystemUI icon slot controlled by Android's native icon_blacklist tuner. */
     private void statusSlotRow(LinearLayout card, String title, String subtitle,
                                final String... slots) {
@@ -1040,6 +1052,67 @@ public class MainActivity extends Activity {
             Prefs.put(MainActivity.this, key, s.toString().trim());
             changed();
         }});
+    }
+
+    /** A real launcher-app picker; preferences still store the stable package name. */
+    private void appPickerRow(LinearLayout card, String title, String subtitle, final String key) {
+        final TextView val = tv(appLabel(Prefs.str(this, key)), 14, pal.primary);
+        val.setTypeface(MEDIUM);
+        val.setMaxWidth(dp(180));
+        val.setSingleLine(true);
+        val.setEllipsize(TextUtils.TruncateAt.END);
+        final LinearLayout r = row(card, title, subtitle, val);
+        r.addView(tv("  ›", 18, pal.primary));
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            final java.util.List<String[]> apps = launcherApps();
+            if (apps.isEmpty()) { toast("No launchable apps found"); return; }
+            String[] labels = new String[apps.size()];
+            for (int i = 0; i < apps.size(); i++) {
+                String[] app = apps.get(i);
+                labels[i] = app[0] + (app[0].equals(app[1]) ? "" : "\n" + app[1]);
+            }
+            new android.app.AlertDialog.Builder(MainActivity.this)
+                    .setTitle("Choose an app")
+                    .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                        public void onClick(android.content.DialogInterface dialog, int which) {
+                            String[] app = apps.get(which);
+                            Prefs.put(MainActivity.this, key, app[1]);
+                            val.setText(app[0]);
+                            changed();
+                        }})
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        }});
+    }
+
+    private java.util.List<String[]> launcherApps() {
+        android.content.pm.PackageManager pm = getPackageManager();
+        Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        java.util.List<android.content.pm.ResolveInfo> resolved =
+                pm.queryIntentActivities(query, android.content.pm.PackageManager.MATCH_ALL);
+        java.util.LinkedHashMap<String, String[]> unique = new java.util.LinkedHashMap<String, String[]>();
+        for (android.content.pm.ResolveInfo info : resolved) {
+            if (info.activityInfo == null || info.activityInfo.packageName == null) continue;
+            String pkg = info.activityInfo.packageName;
+            CharSequence loaded = info.loadLabel(pm);
+            String label = loaded == null || loaded.length() == 0 ? pkg : loaded.toString();
+            if (!unique.containsKey(pkg)) unique.put(pkg, new String[]{label, pkg});
+        }
+        java.util.List<String[]> apps = new java.util.ArrayList<String[]>(unique.values());
+        java.util.Collections.sort(apps, new java.util.Comparator<String[]>() {
+            public int compare(String[] a, String[] b) {
+                int byLabel = a[0].compareToIgnoreCase(b[0]);
+                return byLabel != 0 ? byLabel : a[1].compareToIgnoreCase(b[1]);
+            }});
+        return apps;
+    }
+
+    private String appLabel(String pkg) {
+        if (pkg == null || pkg.trim().isEmpty()) return "Choose app";
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString();
+        } catch (Exception ignored) { return pkg; }
     }
 
     private void actionRow(LinearLayout card, String title, String subtitle, final Runnable r) {

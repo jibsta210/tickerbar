@@ -113,12 +113,10 @@ final class RootPowerGestures {
         } catch (Throwable failure) {
             if (!stopped) Log.w("TickerBarPower", "Power-button observer ended", failure);
         } finally {
-            boolean retry = !stopped && RootShell.available()
-                    && (Prefs.n(context, Prefs.POWER_DOUBLE_ACTION) != ACTION_NONE
-                    || Prefs.n(context, Prefs.POWER_TRIPLE_ACTION) != ACTION_NONE);
             close();
             synchronized (RootPowerGestures.class) { if (active == this) active = null; }
-            if (retry) main.postDelayed(new Runnable() { public void run() { start(context); }}, 1_000);
+            // Never retry a native helper in a loop. A settings change or root integration
+            // re-apply may start one fresh attempt after the underlying problem is corrected.
         }
     }
 
