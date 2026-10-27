@@ -86,9 +86,7 @@ public final class HomeWidgetSetupActivity extends Activity {
     private void showSwitcher() {
         final List<HomeWidgetProfiles.Profile> choices = HomeWidgetProfiles.choices(this);
         if (choices.size() < 2) {
-            Toast.makeText(this, "Use the gear to add Cottage or another Wi-Fi home first",
-                    Toast.LENGTH_LONG).show();
-            finish();
+            showManager();
             return;
         }
         String[] names = new String[choices.size()];

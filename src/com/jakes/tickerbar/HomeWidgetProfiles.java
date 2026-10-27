@@ -132,6 +132,19 @@ final class HomeWidgetProfiles {
         return new ArrayList<Profile>(unique.values());
     }
 
+    static String displayName(Context context, int widgetId) {
+        if (widgetId <= 0) return "Home";
+        if (widgetId == Prefs.n(context, Prefs.HOME_WIDGET_ID)) {
+            String label = Prefs.str(context, Prefs.HOME_WIDGET_DEFAULT_LABEL).trim();
+            if (!label.isEmpty()) return label;
+        }
+        for (Profile profile : profiles(context)) if (profile.widgetId == widgetId) {
+            if (profile.label != null && !profile.label.trim().isEmpty()) return profile.label.trim();
+            if (profile.network != null && !profile.network.trim().isEmpty()) return profile.network.trim();
+        }
+        return "Home";
+    }
+
     private static void save(Context context, List<Profile> profiles) {
         JSONArray array = new JSONArray();
         try {

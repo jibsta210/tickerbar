@@ -156,6 +156,7 @@ final class UnifiedShade {
     private final List<MorphTile> morphTiles = new ArrayList<MorphTile>();
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
+    private TextView homeLocationLabel;
     private int homeWidgetId;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
@@ -1226,20 +1227,21 @@ final class UnifiedShade {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE)));
 
-            LinearLayout actions = new LinearLayout(svc);
-            actions.setGravity(Gravity.CENTER_VERTICAL);
-            actions.addView(homeIconButton(R.drawable.qs_settings, "Configure Home shelf",
-                    new View.OnClickListener() { public void onClick(View v) { configureHomeWidget(); }}));
-            LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(svc.px(28), svc.px(28));
-            openLp.setMarginStart(svc.px(4));
-            ImageView open = homeIconButton(R.drawable.qs_open, "Open Google Home",
-                    new View.OnClickListener() { public void onClick(View v) { openHomeControls(); }});
-            actions.addView(open, openLp);
-            FrameLayout.LayoutParams actionsLp = new FrameLayout.LayoutParams(
+            homeLocationLabel = tv(HomeWidgetProfiles.displayName(svc, homeWidgetId), 14, pal.primary);
+            homeLocationLabel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            homeLocationLabel.setSingleLine(true);
+            homeLocationLabel.setGravity(Gravity.CENTER);
+            homeLocationLabel.setPadding(svc.px(12), 0, svc.px(12), 0);
+            homeLocationLabel.setBackground(ripple(round(Palette.alpha(pal.surface, 0xE6), svc.px(14))));
+            homeLocationLabel.setContentDescription("Switch Google Home location");
+            homeLocationLabel.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) { openHomeWidgetSetup(true); }
+            });
+            FrameLayout.LayoutParams nameLp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, svc.px(28), Gravity.TOP | Gravity.END);
-            actionsLp.topMargin = svc.px(4);
-            actionsLp.setMarginEnd(svc.px(5));
-            stage.addView(actions, actionsLp);
+            nameLp.topMargin = svc.px(4);
+            nameLp.setMarginEnd(svc.px(5));
+            stage.addView(homeLocationLabel, nameLp);
 
             card.addView(stage, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1279,18 +1281,6 @@ final class UnifiedShade {
             card.addView(empty, emptyLp);
         }
         return card;
-    }
-
-    private ImageView homeIconButton(int icon, String description, View.OnClickListener click) {
-        ImageView button = new ImageView(svc);
-        button.setImageResource(icon);
-        button.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
-        button.setPadding(svc.px(6), svc.px(6), svc.px(6), svc.px(6));
-        button.setBackground(ripple(round(Palette.alpha(pal.surface, 0xE6), svc.px(14))));
-        button.setContentDescription(description);
-        button.setOnClickListener(click);
-        button.setLayoutParams(new LinearLayout.LayoutParams(svc.px(28), svc.px(28)));
-        return button;
     }
 
     private View createHomeWidget() {
@@ -1390,6 +1380,7 @@ final class UnifiedShade {
         if (homeWidgetHost != null) try { homeWidgetHost.stopListening(); } catch (Exception ignored) {}
         homeWidgetHost = null;
         homeWidgetView = null;
+        homeLocationLabel = null;
         homeWidgetId = 0;
     }
 
@@ -1509,6 +1500,8 @@ final class UnifiedShade {
                         && textAt[1] - widgetAt[1] < svc.px(52)
                         && textAt[0] - widgetAt[0] < widget.getWidth() * .70f) {
                     HomeWidgetProfiles.label(svc, homeWidgetId, text.getText().toString());
+                    if (homeLocationLabel != null)
+                        homeLocationLabel.setText(text.getText().toString());
                     text.setClickable(true);
                     text.setContentDescription("Switch Google Home location");
                     text.setOnClickListener(new View.OnClickListener() {
