@@ -212,7 +212,7 @@ public class MainActivity extends Activity {
                     "Combined system shade, stock volume, ticker, nav gestures and direct permissions",
                     new Runnable() { public void run() {
                         RootFeatures.applyAsync(MainActivity.this);
-                        RootInput.stop();
+                        RootInput.start(MainActivity.this);
                         RootOverlayClient.start(MainActivity.this);
                         toast("Applying root integration");
                     }});
@@ -702,7 +702,7 @@ public class MainActivity extends Activity {
         ShadeService.refresh();
         RootOverlayClient.refresh(this);
         NativeTicker.refresh(this);
-        RootInput.stop();
+        RootInput.refresh(this);
         TickerListener.filterActive();
         MemoryProfile.applyAsync(this);
         if (cardPreview != null) cardPreview.invalidate();
@@ -982,17 +982,7 @@ public class MainActivity extends Activity {
     }
 
     private void configureHomeShelf() {
-        int id = Prefs.n(this, Prefs.HOME_WIDGET_ID);
-        android.appwidget.AppWidgetManager manager = android.appwidget.AppWidgetManager.getInstance(this);
-        android.appwidget.AppWidgetProviderInfo info = id > 0 ? manager.getAppWidgetInfo(id) : null;
-        if (info == null || info.configure == null) {
-            toast("Open the Home shelf once, then configure it here");
-            return;
-        }
-        Intent setup = new Intent(android.appwidget.AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
-                .setComponent(info.configure)
-                .putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, id);
-        try { startActivity(setup); }
+        try { startActivity(new Intent(this, HomeWidgetSetupActivity.class)); }
         catch (Exception e) { toast("Couldn't open Google Home setup"); }
     }
 

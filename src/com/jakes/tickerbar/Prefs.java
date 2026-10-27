@@ -89,6 +89,10 @@ public final class Prefs {
     public static final String SHADE_NOTIFICATIONS_EXPANDED = "shade_notifications_expanded";
     public static final String HOME_SHELF   = "home_shelf";     // location-aware Home row in UnifiedShade
     public static final String HOME_WIDGET_ID = "home_widget_id"; // Google Home Favorites AppWidget id
+    public static final String HOME_WIDGET_PROFILES = "home_widget_profiles"; // Wi-Fi -> widget id JSON
+    public static final String HOME_WIDGET_DEFAULT_LABEL = "home_widget_default_label";
+    public static final String HOME_WIDGET_OVERRIDE_ID = "home_widget_override_id";
+    public static final String HOME_WIDGET_OVERRIDE_NETWORK = "home_widget_override_network";
     public static final String AUTO_BRIGHTNESS_LEVEL = "auto_brightness_level"; // 0..1000 native slider position
     public static final String SHADE_NAV_ORDER = "shade_nav_order"; // 0 follow HyperOS, 1 back-home-recents, 2 recents-home-back      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
@@ -130,6 +134,7 @@ public final class Prefs {
         DEF.put(SHADE_NOTIFICATION_TEXT_COLOR, 0);
         DEF.put(SHADE_NOTIFICATIONS_EXPANDED, 0);
         DEF.put(HOME_SHELF, 1);
+        DEF.put(HOME_WIDGET_OVERRIDE_ID, 0);
         DEF.put(AUTO_BRIGHTNESS_LEVEL, 500);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);

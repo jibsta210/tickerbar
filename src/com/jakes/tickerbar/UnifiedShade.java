@@ -156,6 +156,7 @@ final class UnifiedShade {
     private final List<MorphTile> morphTiles = new ArrayList<MorphTile>();
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
+    private int homeWidgetId;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -1306,10 +1307,12 @@ final class UnifiedShade {
             return null;
         }
 
-        int id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
+        int id = HomeWidgetProfiles.selectedId(svc);
         AppWidgetProviderInfo info = id > 0 ? manager.getAppWidgetInfo(id) : null;
         if (info == null || !HOME_WIDGET_PROVIDER.equals(info.provider)) {
-            if (id > 0) try { homeWidgetHost.deleteAppWidgetId(id); } catch (Exception ignored) {}
+            // A stale network profile must not delete a different home's still-valid widget.
+            if (id > 0 && id == Prefs.n(svc, Prefs.HOME_WIDGET_ID))
+                try { homeWidgetHost.deleteAppWidgetId(id); } catch (Exception ignored) {}
             try { id = homeWidgetHost.allocateAppWidgetId(); }
             catch (Exception denied) { stopHomeWidgetHost(); return null; }
             Bundle options = homeWidgetOptions();
@@ -1328,6 +1331,7 @@ final class UnifiedShade {
         }
         if (info == null) return null;
         try {
+            homeWidgetId = id;
             manager.updateAppWidgetOptions(id, homeWidgetOptions());
             homeWidgetView = homeWidgetHost.createView(svc, id, info);
             homeWidgetView.setAppWidget(id, info);
@@ -1382,6 +1386,7 @@ final class UnifiedShade {
         if (homeWidgetHost != null) try { homeWidgetHost.stopListening(); } catch (Exception ignored) {}
         homeWidgetHost = null;
         homeWidgetView = null;
+        homeWidgetId = 0;
     }
 
     private Bundle homeWidgetOptions() {
@@ -1428,18 +1433,10 @@ final class UnifiedShade {
             int widthDp = Math.round(tile.getWidth() / density);
             int heightDp = Math.round(tile.getHeight() / density);
             if (widthDp < 52 || widthDp > 140 || heightDp < 42 || heightDp > 125) continue;
-            final boolean active = homeTileActive((ViewGroup) tile);
-            tile.setBackground(ripple(round(active ? pal.primaryContainer : pal.surfaceHigh,
-                    Math.round(Math.min(tile.getHeight() / 2f, svc.px(28))))));
-            tile.setClipToOutline(true);
-            tile.setOutlineProvider(new ViewOutlineProvider() {
-                @Override public void getOutline(View view, Outline outline) {
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
-                            Math.min(view.getHeight() / 2f, svc.px(28)));
-                }
-            });
-            tintHomeControl((ViewGroup) tile, active);
-            hideTrailingHomeChevron((ViewGroup) tile);
+            // A RemoteViews provider owns its control-state colors. Replacing the clicked
+            // container's background also replaces Google's state-list drawable; on some
+            // Home revisions that leaves an opaque white layer over the icon and labels.
+            // Preserve the provider's live on/off styling and PendingIntent hierarchy.
             tiles.add((ViewGroup) tile);
         }
 
@@ -1468,7 +1465,25 @@ final class UnifiedShade {
                 if (isDescendantOf(view, tile)) { insideTile = true; break; }
             }
             if (insideTile) continue;
-            if (view instanceof TextView) ((TextView) view).setTextColor(pal.onSurface);
+            if (view instanceof TextView) {
+                TextView text = (TextView) view;
+                text.setTextColor(pal.onSurface);
+                // Google's header is the authoritative structure name (Home, Cottage, …).
+                // Make that name the obvious switch affordance as well as keeping the gear.
+                int[] widgetAt = new int[2], textAt = new int[2];
+                widget.getLocationOnScreen(widgetAt);
+                text.getLocationOnScreen(textAt);
+                if (!TextUtils.isEmpty(text.getText())
+                        && textAt[1] - widgetAt[1] < svc.px(52)
+                        && textAt[0] - widgetAt[0] < widget.getWidth() * .70f) {
+                    HomeWidgetProfiles.label(svc, homeWidgetId, text.getText().toString());
+                    text.setClickable(true);
+                    text.setContentDescription("Switch Google Home location");
+                    text.setOnClickListener(new View.OnClickListener() {
+                        public void onClick(View ignored) { openHomeWidgetSetup(true); }
+                    });
+                }
+            }
             else if (view instanceof ImageView)
                 ((ImageView) view).setImageTintList(ColorStateList.valueOf(pal.primary));
         }
@@ -1534,19 +1549,13 @@ final class UnifiedShade {
         int id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
         AppWidgetProviderInfo info = id > 0
                 ? AppWidgetManager.getInstance(svc).getAppWidgetInfo(id) : null;
-        if (info == null) {
-            // Creating the host here also covers the first tap after root has just granted
-            // widget binding. Reopening the shade will show the resulting live RemoteViews.
-            createHomeWidget();
-            id = Prefs.n(svc, Prefs.HOME_WIDGET_ID);
-            info = id > 0 ? AppWidgetManager.getInstance(svc).getAppWidgetInfo(id) : null;
-        }
-        if (info != null && info.configure != null) {
-            Intent setup = new Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
-                    .setComponent(info.configure)
-                    .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id);
-            launch(setup);
-        } else openHomeControls();
+        if (info == null) createHomeWidget();
+        openHomeWidgetSetup(false);
+    }
+
+    private void openHomeWidgetSetup(boolean switcher) {
+        launch(new Intent(svc, HomeWidgetSetupActivity.class)
+                .putExtra(HomeWidgetSetupActivity.EXTRA_SWITCHER, switcher));
     }
 
     private void openHomeControls() {

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="99"
-    android:versionName="1.14.45">
+    android:versionCode="100"
+    android:versionName="1.14.46">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -12,6 +12,8 @@
     <!-- one shade: brightness and rotation (user-granted), and showing radio states -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"/>
     <uses-permission android:name="android.permission.NFC"/>
     <!-- granted once over adb (pm grant), never at install: lets the shade switch location -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
@@ -45,6 +47,12 @@
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
         </activity>
+
+        <activity android:name=".HomeWidgetSetupActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
 
         <activity android:name=".OpenNotificationsActivity"
             android:exported="true"

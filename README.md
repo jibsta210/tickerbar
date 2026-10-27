@@ -42,7 +42,10 @@ and HyperOS between them wouldn't do these things.
   control over its backdrop, panels, controls and text. Notification expansion can default
   open or closed. Its compact Home shelf hosts Google Home's authenticated Favorites widget
   directly, uses Google's own structure header without a duplicate TickerBar toolbar, and keeps
-  Google's live device state/actions after a one-time home/device selection. Non-expandable notifications omit
+  Google's live device state/actions after a one-time home/device selection. Device tiles retain
+  Google Home's own live state colours. Multiple widget instances can be associated with their
+  home Wi-Fi (for example Home and Cottage), selected automatically as the network changes, or
+  switched manually by tapping the structure name. Non-expandable notifications omit
   empty expand affordances. Home and media cards share the shade's configured palette and
   opening motion; the compact media player is roughly 40% shorter, and individual notifications
   inside an expanded app group can be swiped away without dismissing the entire group.
@@ -70,6 +73,7 @@ and HyperOS between them wouldn't do these things.
 | Notification access | reading notifications for the ticker |
 | Display over other apps | root-native ticker (granted by TickerBar's root integration) |
 | Usage access | identifies the foreground/home app for native ticker and wallet behavior |
+| Nearby Wi-Fi / location | reads the connected network name to select the matching Google Home shelf; no location history is collected |
 
 On MIUI you may need **App info → ⋮ → Allow restricted settings** before notification
 access can be granted to a sideloaded app.

@@ -41,8 +41,9 @@ final class RootInput {
     static boolean connected() { return active != null && active.output != null; }
 
     static synchronized void start(Context context) {
-        if (!RootShell.available() || connected()) return;
-        stop();
+        // A connection attempt may legitimately take a few seconds while the helper starts.
+        // Do not tear that in-flight client down when another lifecycle owner also asks for it.
+        if (!RootShell.available() || active != null) return;
         RootInput input = new RootInput(context);
         active = input;
         new Thread(new Runnable() { public void run() { input.run(); }},
@@ -57,13 +58,23 @@ final class RootInput {
 
     static void refresh(Context context) {
         RootInput input = active;
-        if (input == null || input.output == null) { start(context); return; }
+        if (input == null) { start(context); return; }
+        if (input.output == null) return; // run() sends the latest fields after connecting
         input.sendConfig();
     }
 
     static void setTickerVisible(Context context, int height) {
         RootInput input = active;
-        if (input == null) { if (height > 0) start(context); return; }
+        // The native ticker window is deliberately NOT_TOUCHABLE so SystemUI keeps its
+        // normal status-bar gesture stream.  This passive observer is therefore also the
+        // ticker's tap target.  Starting it used to return before copying the visible
+        // height into the freshly-created client, which sent ticker_on=0 and made every
+        // native ticker notification inert.
+        if (input == null && height > 0) {
+            start(context);
+            input = active;
+        }
+        if (input == null) return;
         input.tickerHeight = Math.max(0, height);
         input.sendConfig();
     }

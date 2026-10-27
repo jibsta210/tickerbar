@@ -26,7 +26,7 @@ public class TickerListener extends NotificationListenerService {
         Shortcuts.publish(this);
         RootBootstrap.start(this);
         NativeTicker.start(this);
-        RootInput.stop();
+        RootInput.start(this);
         RootOverlayClient.start(this);
         try {
             StatusBarNotification[] current = getActiveNotifications();

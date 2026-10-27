@@ -71,6 +71,12 @@ final class RootFeatures {
                 + "appops set " + quote(c.getPackageName()) + " WRITE_SETTINGS allow; "
                 + "pm grant " + quote(c.getPackageName())
                 + " android.permission.WRITE_SECURE_SETTINGS; "
+                // Wi-Fi names select the matching Home/Cottage widget. These runtime grants
+                // avoid a permission sheet because this integration is already root-managed.
+                + "pm grant " + quote(c.getPackageName())
+                + " android.permission.ACCESS_FINE_LOCATION; "
+                + "pm grant " + quote(c.getPackageName())
+                + " android.permission.NEARBY_WIFI_DEVICES; "
                 // Let TickerBar host Google Home's real Favorites RemoteViews. This is the
                 // AppWidget service's explicit host allow-list, not a package permission;
                 // transaction 21 is setBindAppWidgetPermission on this Android 15 build.
@@ -179,8 +185,8 @@ final class RootFeatures {
                         + " SYSTEM_ALERT_WINDOW allow; appops set " + quote(app.getPackageName())
                         + " GET_USAGE_STATS allow");
                 NativeTicker.start(app);
-                RootInput.stop();
-                if (NativeTicker.ready()) return;
+                RootInput.start(app);
+                if (NativeTicker.ready() && RootInput.connected()) return;
                 try { Thread.sleep(500); } catch (InterruptedException ignored) { return; }
             }
         }}, "TickerBar-native-services").start();
