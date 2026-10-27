@@ -297,6 +297,24 @@ static void serve_statusbar_lease(int conn) {
   (void)exec_quiet(restore);
 }
 
+/* Application overlays are intentionally below SystemUI's status-bar window. While the
+ * ticker is visible, hide only the three collapsed-status-bar icon regions so the ticker
+ * is the sole content in that band. The live socket is the lease: a crash or disconnect
+ * restores SystemUI immediately instead of leaving the phone without status indicators. */
+static void serve_statusicon_lease(int conn) {
+  static const char disable[] =
+      "cmd statusbar send-disable-flag system-icons clock notification-icons";
+  static const char restore[] = "cmd statusbar send-disable-flag none";
+  int status = exec_quiet(disable);
+  xwrite(conn, &status, sizeof(status));
+  if (status != 0)
+    return;
+  char sink[32];
+  while (read(conn, sink, sizeof(sink)) > 0) {
+  }
+  (void)exec_quiet(restore);
+}
+
 static int open_pty_master(char *slave, size_t slave_len) {
   int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
   if (master < 0) {
@@ -388,6 +406,8 @@ static void serve_one(int conn) {
     exec_interactive_client(conn);
   } else if (mode == 'S') {
     serve_statusbar_lease(conn);
+  } else if (mode == 'T') {
+    serve_statusicon_lease(conn);
   }
 }
 

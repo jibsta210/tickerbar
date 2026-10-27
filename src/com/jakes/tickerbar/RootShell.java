@@ -110,13 +110,22 @@ final class RootShell {
 
     /** New daemons acknowledge this mode after disabling HyperOS's shade. */
     static StatusBarLease acquireStatusBarLease() {
+        return acquireLease('S', "Native shade suppression");
+    }
+
+    /** Hide collapsed status-bar content only while the native ticker owns this socket. */
+    static StatusBarLease acquireStatusIconLease() {
+        return acquireLease('T', "Native ticker status-icon suppression");
+    }
+
+    private static StatusBarLease acquireLease(int mode, String label) {
         LocalSocket socket = new LocalSocket();
         try {
             socket.connect(new LocalSocketAddress(SOCKET,
                     LocalSocketAddress.Namespace.ABSTRACT));
             socket.setSoTimeout(8_000);
             OutputStream out = socket.getOutputStream();
-            out.write('S');
+            out.write(mode);
             out.flush();
             byte[] raw = new byte[4];
             InputStream in = socket.getInputStream();
@@ -132,7 +141,7 @@ final class RootShell {
             return new StatusBarLease(socket);
         } catch (Throwable t) {
             try { socket.close(); } catch (Throwable ignored) {}
-            Log.i("TickerBarRoot", "Native shade suppression unavailable: " + t);
+            Log.i("TickerBarRoot", label + " unavailable: " + t);
             return null;
         }
     }

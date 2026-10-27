@@ -20,6 +20,8 @@ import android.view.WindowManager;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Root-authorized app overlay for the ticker; no AccessibilityService is involved. */
 final class NativeTicker {
@@ -36,6 +38,12 @@ final class NativeTicker {
     private boolean attached;
     private int animOut;
     private int animMs;
+    /** Serializes SystemUI icon leases so a fast replacement cannot restore an older ticker. */
+    private final ExecutorService statusCommands = Executors.newSingleThreadExecutor();
+    private RootShell.StatusBarLease statusIconLease;       // accessed only by statusCommands
+    private String fallbackIconToken;                       // accessed only by statusCommands
+    private boolean nativeIconLeaseUnsupported;             // old root daemons use the fallback
+    private static final String ICON_OWNER = "/data/local/tmp/tickerbar-status-icons";
 
     private NativeTicker(Context context) {
         this.context = context.getApplicationContext();
@@ -56,7 +64,10 @@ final class NativeTicker {
     static synchronized void stop() {
         NativeTicker old = active;
         active = null;
-        if (old != null) old.ui.post(new Runnable() { public void run() { old.remove(); }});
+        if (old != null) old.ui.post(new Runnable() { public void run() {
+            old.remove();
+            old.statusCommands.shutdown();
+        }});
     }
 
     static boolean ready() { return active != null; }
@@ -140,10 +151,9 @@ final class NativeTicker {
         if (view == null) view = new TickerView(context);
         geometry();
         int status = statusBarHeight();
-        // The app overlay sits below SystemUI. Keep ticker content out from under
-        // the clock and status cluster, which remain visible above its background.
-        view.setContentInsets(Math.max(dp(56), status * 3 / 2),
-                Math.max(dp(100), status * 5 / 2));
+        // Root leases the collapsed status-bar icon regions while this is visible, so the
+        // ticker owns the complete band instead of drawing underneath the clock and battery.
+        view.setContentInsets(0, 0);
         view.configure(Prefs.on(context, Prefs.AUTO_PAD), Prefs.n(context, Prefs.PAD),
                 Prefs.on(context, Prefs.HOP), Prefs.n(context, Prefs.HOP_GAP),
                 Prefs.n(context, Prefs.SCROLL_MODE), Prefs.n(context, Prefs.SPEED),
@@ -180,6 +190,9 @@ final class NativeTicker {
         int height = Prefs.n(context, Prefs.HEIGHT);
         if (height <= 0) height = Math.max(statusBarHeight(),
                 (int)Math.ceil(TickerView.lineHeight(textPx) * (lines + 0.3f)));
+        long visibleMs = Math.max(800, Prefs.n(context, Prefs.DWELL))
+                + Math.max(0, Prefs.n(context, Prefs.ANIM_MS)) + 2000L;
+        coverStatusIcons(visibleMs);
         layout = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -248,6 +261,52 @@ final class NativeTicker {
         attached = false;
         current = null;
         RootInput.setTickerVisible(context, 0);
+        releaseStatusIcons();
+    }
+
+    /**
+     * Prefer the root daemon's socket-scoped lease. An already-running older daemon does not
+     * know that protocol until the next root start, so retain a guarded shell fallback for
+     * seamless APK updates. Its owner token prevents an old watchdog restoring a newer ticker.
+     */
+    private void coverStatusIcons(final long visibleMs) {
+        statusCommands.execute(new Runnable() { public void run() {
+            if (statusIconLease != null) return;   // a replacement ticker extends the same live lease
+            if (!nativeIconLeaseUnsupported) {
+                statusIconLease = RootShell.acquireStatusIconLease();
+                if (statusIconLease != null) return;
+                nativeIconLeaseUnsupported = true;
+            }
+            final String token = Long.toHexString(android.os.SystemClock.elapsedRealtimeNanos());
+            fallbackIconToken = token;
+            long watchdogSeconds = Math.max(8L, Math.min(300L, (visibleMs + 5999L) / 1000L));
+            String command = "printf %s " + token + " > " + ICON_OWNER + "; "
+                    + "cmd statusbar send-disable-flag system-icons clock notification-icons; "
+                    + "(sleep " + watchdogSeconds + "; "
+                    + "if [ \"$(cat " + ICON_OWNER + " 2>/dev/null)\" = \"" + token + "\" ]; then "
+                    + "cmd statusbar send-disable-flag none; rm -f " + ICON_OWNER + "; fi) "
+                    + ">/dev/null 2>&1 &";
+            RootShell.Result result = RootShell.exec(command);
+            if (!result.connected || result.code != 0)
+                Log.w("TickerBarNative", "Could not suppress status icons: " + result.output);
+        }});
+    }
+
+    private void releaseStatusIcons() {
+        statusCommands.execute(new Runnable() { public void run() {
+            if (statusIconLease != null) {
+                statusIconLease.close();
+                statusIconLease = null;
+            }
+            String token = fallbackIconToken;
+            fallbackIconToken = null;
+            if (token == null) return;
+            RootShell.Result result = RootShell.exec(
+                    "if [ \"$(cat " + ICON_OWNER + " 2>/dev/null)\" = \"" + token + "\" ]; then "
+                            + "cmd statusbar send-disable-flag none; rm -f " + ICON_OWNER + "; fi");
+            if (!result.connected || result.code != 0)
+                Log.w("TickerBarNative", "Could not restore status icons: " + result.output);
+        }});
     }
 
     private void geometry() {
