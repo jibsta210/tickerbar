@@ -313,6 +313,8 @@ public class MainActivity extends Activity {
                         toast("Turn on TickerBar Accessibility once to host the custom shade");
                 }});
         switchRow(c, "Google Home shelf", "Your live Google Home Favorites widget above notifications", Prefs.HOME_SHELF);
+        actionRow(c, "Configure Home shelf", "Choose the home and favorite devices shown in the shade",
+                new Runnable() { public void run() { configureHomeShelf(); }});
         switchRow(c, "Notifications expanded by default",
                 "New cards start open; each card's arrow can still fold or expand it",
                 Prefs.SHADE_NOTIFICATIONS_EXPANDED);
@@ -977,6 +979,21 @@ public class MainActivity extends Activity {
                 }});
             menu.show();
         }});
+    }
+
+    private void configureHomeShelf() {
+        int id = Prefs.n(this, Prefs.HOME_WIDGET_ID);
+        android.appwidget.AppWidgetManager manager = android.appwidget.AppWidgetManager.getInstance(this);
+        android.appwidget.AppWidgetProviderInfo info = id > 0 ? manager.getAppWidgetInfo(id) : null;
+        if (info == null || info.configure == null) {
+            toast("Open the Home shelf once, then configure it here");
+            return;
+        }
+        Intent setup = new Intent(android.appwidget.AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
+                .setComponent(info.configure)
+                .putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, id);
+        try { startActivity(setup); }
+        catch (Exception e) { toast("Couldn't open Google Home setup"); }
     }
 
     private Switch styledSwitch(boolean checked) {

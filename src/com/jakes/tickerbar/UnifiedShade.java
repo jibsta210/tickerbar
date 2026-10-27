@@ -155,7 +155,6 @@ final class UnifiedShade {
     private final List<MorphTile> morphTiles = new ArrayList<MorphTile>();
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
-    private TextView homeShelfTitle;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -1196,39 +1195,35 @@ final class UnifiedShade {
     private View homeShelf() {
         LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(svc.px(14), svc.px(10), svc.px(10), svc.px(10));
+        card.setPadding(svc.px(10), svc.px(10), svc.px(10), svc.px(10));
         card.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(30))));
-        card.setClickable(true);
-
-        LinearLayout titleRow = new LinearLayout(svc);
-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = tv("Google Home", 16, pal.onSurface);
-        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        homeShelfTitle = title;
-        titleRow.addView(title);
-        titleRow.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
-        TextView choose = pill("Choose", new View.OnClickListener() { public void onClick(View v) {
-            configureHomeWidget();
-        }});
-        choose.setContentDescription("Choose Google Home favorites");
-        titleRow.addView(choose);
-        TextView open = pill("Open", new View.OnClickListener() { public void onClick(View v) {
-            openHomeControls();
-        }});
-        LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        openLp.setMarginStart(svc.px(6));
-        titleRow.addView(open, openLp);
-        card.addView(titleRow);
 
         View hosted = createHomeWidget();
         if (hosted != null) {
+            card.setContentDescription("Google Home controls. Long press to choose a different home or favorites.");
+            card.setOnLongClickListener(new View.OnLongClickListener() {
+                public boolean onLongClick(View v) {
+                    v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                    configureHomeWidget();
+                    return true;
+                }
+            });
             LinearLayout.LayoutParams widgetLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE));
-            widgetLp.topMargin = svc.px(8);
             card.addView(hosted, widgetLp);
         } else {
+            LinearLayout titleRow = new LinearLayout(svc);
+            titleRow.setGravity(Gravity.CENTER_VERTICAL);
+            TextView title = tv("Google Home", 16, pal.onSurface);
+            title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            titleRow.addView(title);
+            titleRow.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
+            TextView open = pill("Open", new View.OnClickListener() { public void onClick(View v) {
+                openHomeControls();
+            }});
+            titleRow.addView(open);
+            card.addView(titleRow);
             LinearLayout empty = new LinearLayout(svc);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
@@ -1336,7 +1331,6 @@ final class UnifiedShade {
         if (homeWidgetHost != null) try { homeWidgetHost.stopListening(); } catch (Exception ignored) {}
         homeWidgetHost = null;
         homeWidgetView = null;
-        homeShelfTitle = null;
     }
 
     private Bundle homeWidgetOptions() {
@@ -1355,31 +1349,13 @@ final class UnifiedShade {
     /**
      * Google Home supplies the live state and PendingIntents, but its generic 3x2 widget
      * defaults to tall launcher cards. Keep those real controls while adapting their
-     * presentation to a one-shade shelf: rounded compact pills, no misleading trailing
-     * detail arrow, and the provider's selected structure name in our header.
+     * presentation to a one-shade shelf: rounded compact pills and no misleading trailing
+     * detail arrow. Google's own header remains the single source of the structure name.
      */
     private void polishHomeWidget(View widget) {
         if (widget == null || widget.getWidth() <= 0) return;
         ArrayList<View> views = new ArrayList<View>();
         collectViews(widget, views);
-
-        TextView structure = null;
-        int structureTop = Integer.MAX_VALUE;
-        for (View view : views) {
-            if (!(view instanceof TextView) || view.getVisibility() != View.VISIBLE) continue;
-            CharSequence text = ((TextView) view).getText();
-            if (TextUtils.isEmpty(text) || text.length() > 48) continue;
-            int[] location = new int[2];
-            view.getLocationOnScreen(location);
-            if (location[1] < structureTop) {
-                structure = (TextView) view;
-                structureTop = location[1];
-            }
-        }
-        if (structure != null && homeShelfTitle != null) {
-            String name = structure.getText().toString().trim();
-            if (!name.isEmpty()) homeShelfTitle.setText("Google Home  ·  " + name);
-        }
 
         final float density = svc.getResources().getDisplayMetrics().density;
         for (final View tile : views) {
