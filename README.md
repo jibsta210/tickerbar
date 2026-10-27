@@ -38,8 +38,16 @@ and HyperOS between them wouldn't do these things.
   normal low-memory handling.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
   replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
-  opens its real floating control. Pairing is remembered, but Android still requires the
-  Shizuku server to be started again after each reboot.
+  opens its real floating control. Pairing is remembered; Shizuku 13.6+ can restart its
+  ADB server after boot on trusted Wi-Fi once `WRITE_SECURE_SETTINGS` and background startup
+  are prepared from TickerBar's Root page.
+- **Guarded automatic root handoff** can wait for Shizuku after boot and make one root
+  attempt. A pending attempt marker disables automation after an unexpected reboot, so an
+  unstable kernel route cannot become an automatic boot loop. The Root page includes the
+  complete Shizuku 13.6+ wireless-debugging and autostart setup.
+- **Root power-button gestures** optionally map double- and triple-click to Home Controls,
+  Google search, Wallet, camera, recorder, flashlight, or an app. The helper observes input
+  passively and leaves single press, long press, the power menu, and five-click SOS stock.
 
 ## Permissions
 

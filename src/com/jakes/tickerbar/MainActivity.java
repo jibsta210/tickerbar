@@ -165,6 +165,23 @@ public class MainActivity extends Activity {
         note(c, "The corner stays on the proven Accessibility overlay even while root is active. The low-level "
                 + "input observer is disabled on this firmware because it was part of the unstable navbar path.");
 
+        // ---------------------------------------------------------- power button
+        c = card("Power button gestures");
+        choiceRow(c, "Double-click", "Runs after the multi-press window closes",
+                Prefs.POWER_DOUBLE_ACTION, RootPowerGestures.ACTION_IDS,
+                RootPowerGestures.ACTION_NAMES);
+        textRow(c, "Double-click app", "Package name, used when the action is Open an app",
+                Prefs.POWER_DOUBLE_PKG);
+        choiceRow(c, "Triple-click", "Four or five clicks are ignored so emergency SOS remains stock",
+                Prefs.POWER_TRIPLE_ACTION, RootPowerGestures.ACTION_IDS,
+                RootPowerGestures.ACTION_NAMES);
+        textRow(c, "Triple-click app", "Package name, used when the action is Open an app",
+                Prefs.POWER_TRIPLE_PKG);
+        numberRow(c, "Multi-press window", Prefs.POWER_MULTI_MS, "ms");
+        note(c, "Requires TickerBar root. The helper only observes KEY_POWER; it never grabs or reinjects "
+                + "the button. Single press, long press, the stock power menu and five-click emergency SOS "
+                + "continue through HyperOS normally.");
+
         // ---------------------------------------------------------- google
         c = card("Google");
         choiceRow(c, "Opens to", Prefs.GOOGLE_MODE, new int[]{0, 1},
@@ -181,6 +198,9 @@ public class MainActivity extends Activity {
         rootLine.setLineSpacing(0, 1.15f);
         c.addView(rootLine);
         if (RootBootstrap.attemptsEnabled()) {
+            switchRow(c, "Automatically root after Shizuku starts",
+                    "One guarded attempt per boot; disables itself if an attempt reboots the phone",
+                    Prefs.AUTO_ROOT);
             actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
                     new Runnable() { public void run() { startRootAttempt(); }});
             actionRow(c, "Apply root system integration",
@@ -191,6 +211,29 @@ public class MainActivity extends Activity {
                         RootOverlayClient.start(MainActivity.this);
                         toast("Applying root integration");
                     }});
+            actionRow(c, "Prepare Shizuku automatic startup",
+                    "Grants its boot permission and removes background restrictions",
+                    new Runnable() { public void run() { prepareShizukuAutoStart(); }});
+            actionRow(c, "Open Shizuku", "Pair once and start it in wireless-debugging mode",
+                    new Runnable() { public void run() { openShizuku(); }});
+            actionRow(c, "Open Wireless debugging", "Developer options → Wireless debugging",
+                    new Runnable() { public void run() {
+                        try { startActivity(new Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS")); }
+                        catch (Exception e) { startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)); }
+                    }});
+            note(c, "Shizuku setup and automatic startup\n\n"
+                    + "1. Install Shizuku 13.6.0 or newer and allow HyperOS Autostart/background activity for it.\n\n"
+                    + "2. In Developer options, enable USB debugging, USB debugging (Security settings), "
+                    + "Wireless debugging and Disable adb authorization timeout.\n\n"
+                    + "3. In Shizuku choose Start via wireless debugging, pair once, then start it once. "
+                    + "Pairing is normally retained.\n\n"
+                    + "4. Allow TickerBar when Shizuku asks. Tap Prepare Shizuku automatic startup once; "
+                    + "this grants Shizuku WRITE_SECURE_SETTINGS, keeps ADB authorization permanent and "
+                    + "allows background startup.\n\n"
+                    + "5. On Android 13+ Shizuku 13.6 can start its ADB server after boot when the phone "
+                    + "joins trusted Wi-Fi. TickerBar waits for its binder, then makes one guarded root attempt. "
+                    + "If that attempt crashes/reboots the phone, automatic root switches itself off before "
+                    + "the next attempt so it cannot form a boot loop. Root remains temporary and is lost at reboot.");
         } else {
             note(c, "Kernel root is safety-paused after a verified panic on this exact firmware. "
                     + "TickerBar will not arm it; Shizuku and Accessibility remain the stable path.");
@@ -628,9 +671,42 @@ public class MainActivity extends Activity {
         RootOverlayClient.refresh(this);
         NativeTicker.refresh(this);
         RootInput.stop();
+        RootPowerGestures.sync(this);
+        RootBootstrap.settingsChanged(this);
         TickerListener.filterActive();
         MemoryProfile.applyAsync(this);
         if (cardPreview != null) cardPreview.invalidate();
+    }
+
+    private void openShizuku() {
+        Intent i = getPackageManager().getLaunchIntentForPackage(Shell.SHIZUKU_PKG);
+        if (i != null) {
+            try { startActivity(i); return; } catch (Exception ignored) {}
+        }
+        try { startActivity(new Intent(Intent.ACTION_VIEW,
+                Uri.parse("market://details?id=" + Shell.SHIZUKU_PKG))); }
+        catch (Exception e) { toast("Install Shizuku 13.6.0 or newer"); }
+    }
+
+    private void prepareShizukuAutoStart() {
+        if (!Shell.privileged()) {
+            toast("Start Shizuku or TickerBar root first");
+            openShizuku();
+            return;
+        }
+        final String pkg = Shell.SHIZUKU_PKG;
+        String command = "pm grant " + pkg + " android.permission.WRITE_SECURE_SETTINGS; "
+                + "settings put global adb_allowed_connection_time 0; "
+                + "appops set " + pkg + " RUN_ANY_IN_BACKGROUND allow; "
+                + "appops set " + pkg + " START_FOREGROUND allow; "
+                + "am set-standby-bucket " + pkg + " active; "
+                + "cmd deviceidle whitelist +" + pkg;
+        Shell.runResult(command, new Shell.ResultCallback() { public void done(final Shell.Result result) {
+            runOnUiThread(new Runnable() { public void run() {
+                if (result.code == 0) toast("Shizuku automatic startup is prepared");
+                else toast("Shizuku setup failed: " + result.output.trim());
+            }});
+        }});
     }
 
     // ================================================================= cards and rows
@@ -874,12 +950,17 @@ public class MainActivity extends Activity {
     /** A value on the right; tapping the row opens a menu of choices. */
     private void choiceRow(LinearLayout card, String title, final String key,
                            final int[] values, final String[] names) {
+        choiceRow(card, title, null, key, values, names);
+    }
+
+    private void choiceRow(LinearLayout card, String title, String subtitle, final String key,
+                           final int[] values, final String[] names) {
         final TextView val = tv(nameFor(key, values, names), 14, pal.primary);
         val.setTypeface(MEDIUM);
         val.setMaxWidth(dp(190));
         val.setSingleLine(true);
         val.setEllipsize(TextUtils.TruncateAt.END);
-        final LinearLayout r = row(card, title, null, val);
+        final LinearLayout r = row(card, title, subtitle, val);
         TextView chev = tv("  ▾", 14, pal.primary);
         r.addView(chev);
         r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {

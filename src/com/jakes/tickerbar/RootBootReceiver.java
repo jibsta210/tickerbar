@@ -8,6 +8,14 @@ import android.content.Intent;
 public class RootBootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         Shortcuts.publish(context);
+        // v1.14.33 briefly prototyped a launcher-only Home notification. Remove it;
+        // the real location-aware light card is not represented by that placeholder.
+        android.app.NotificationManager notifications = (android.app.NotificationManager)
+                context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notifications != null) {
+            notifications.cancel(0x47484f4d);
+            notifications.deleteNotificationChannel("google_home_controls");
+        }
         RootBootstrap.start(context);
     }
 }

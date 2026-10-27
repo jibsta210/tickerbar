@@ -27,29 +27,36 @@ final class RootBootstrap {
     private static final String KEY_DETAIL = "detail";
     private static final String KEY_READY_AT = "ready_at";
     private static final String KEY_ATTEMPT_BOOT = "attempt_boot";
+    private static final String KEY_AUTO_PENDING_BOOT = "auto_pending_boot";
     private static final AtomicBoolean initialized = new AtomicBoolean();
     private static final AtomicBoolean busy = new AtomicBoolean();
     private static volatile Context app;
     private static volatile long lastAttempt;
     private static volatile boolean userRequested;
+    private static volatile boolean autoRequested;
+    private static volatile int guardCheckedBoot = Integer.MIN_VALUE;
 
     private RootBootstrap() {}
 
     static void start(Context context) {
         app = context.getApplicationContext();
+        int boot = Settings.Global.getInt(app.getContentResolver(),
+                Settings.Global.BOOT_COUNT, -1);
+        checkAutoGuard(app, boot);
+        autoRequested = Prefs.on(app, Prefs.AUTO_ROOT);
         if (initialized.compareAndSet(false, true)) {
             try {
                 Shizuku.addBinderReceivedListenerSticky(
                         new Shizuku.OnBinderReceivedListener() {
                             @Override public void onBinderReceived() {
                                 RootFeatures.restoreAccessibilityFallback(app);
-                                if (userRequested) kick();
+                                if (userRequested || autoRequested) kick();
                             }
                         });
                 Shizuku.addRequestPermissionResultListener(
                         new Shizuku.OnRequestPermissionResultListener() {
                             @Override public void onRequestPermissionResult(int requestCode, int result) {
-                                if (requestCode == Shell.REQUEST && userRequested) kick();
+                                if (requestCode == Shell.REQUEST && (userRequested || autoRequested)) kick();
                             }
                         });
             } catch (Throwable t) {
@@ -57,21 +64,35 @@ final class RootBootstrap {
             }
         }
         if (RootShell.available()) {
+            markAutoSuccess(app, boot);
             state(app, "ready", "Root daemon is ready");
             RootFeatures.applyAsync(app);
         } else if (!ROOT_ATTEMPTS_ENABLED) {
             state(app, "disabled",
                     "Root attempts paused after kernel panic — normal TickerBar is safe");
             RootFeatures.restoreAccessibilityFallback(app);
-        } else if (!userRequested) {
-            int boot = Settings.Global.getInt(app.getContentResolver(),
-                    Settings.Global.BOOT_COUNT, -1);
-            if (boot >= 0 && prefs(app).getInt(KEY_ATTEMPT_BOOT, -2) == boot)
+        } else if (!userRequested && !autoRequested) {
+            if ("auto_disarmed".equals(prefs(app).getString(KEY_STATE, ""))) {
+                // Keep the crash-guard explanation visible until the user explicitly
+                // turns automatic root back on or starts a manual attempt.
+            } else if (boot >= 0 && prefs(app).getInt(KEY_ATTEMPT_BOOT, -2) == boot)
                 state(app, "reboot_required",
                         "Root did not start this boot — reboot before the next attempt");
             else state(app, "idle", "Idle — tap Start root attempt");
             RootFeatures.restoreAccessibilityFallback(app);
+        } else {
+            kick();
         }
+    }
+
+    /** Re-evaluate the opt-in switch immediately without requiring an app restart. */
+    static void settingsChanged(Context context) {
+        app = context.getApplicationContext();
+        autoRequested = Prefs.on(app, Prefs.AUTO_ROOT);
+        if (!autoRequested && !busy.get())
+            prefs(app).edit().remove(KEY_AUTO_PENDING_BOOT).apply();
+        start(app);
+        if (autoRequested) kick();
     }
 
     /** Arms exactly one bootstrap attempt from the root menu. */
@@ -89,7 +110,7 @@ final class RootBootstrap {
 
     static void kick() {
         final Context c = app;
-        if (c == null || busy.get() || !userRequested) return;
+        if (c == null || busy.get() || (!userRequested && !autoRequested)) return;
         long now = SystemClock.elapsedRealtime();
         if (now - lastAttempt < 2_000) return;
         lastAttempt = now;
@@ -99,6 +120,9 @@ final class RootBootstrap {
 
     private static void bootstrap(Context c) {
         if (!busy.compareAndSet(false, true)) return;
+        // If automatic mode is enabled, guard every kernel attempt—including one the
+        // user manually starts while automation is armed—so the next boot cannot retry it.
+        final boolean guardThisAttempt = autoRequested;
         PowerManager.WakeLock wakeLock = null;
         try {
             PowerManager power = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
@@ -108,6 +132,9 @@ final class RootBootstrap {
                 wakeLock.acquire(25 * 60 * 1000L);
             }
             if (RootShell.available()) {
+                int boot = Settings.Global.getInt(c.getContentResolver(),
+                        Settings.Global.BOOT_COUNT, -1);
+                markAutoSuccess(c, boot);
                 state(c, "ready", "Root daemon is ready");
                 return;
             }
@@ -121,6 +148,7 @@ final class RootBootstrap {
                 state(c, "reboot_required",
                         "One attempt already ran this boot — reboot before retrying");
                 userRequested = false;
+                autoRequested = false;
                 return;
             }
             if (!Shell.running()) {
@@ -155,8 +183,14 @@ final class RootBootstrap {
             String command = "export OPPO_RECLAIM_TEARDOWN=1 TICKERBAR_ROOT_ARMED=1 TICKERBAR_DAEMON=1 TICKERBAR_STAGE_LOG=/data/local/tmp/tickerbar-root-stage-"
                     + bootCount + ".log TICKERBAR_ALLOWED_UID="
                     + Process.myUid() + "; exec " + quote(payload.getAbsolutePath());
-            if (bootCount >= 0)
-                prefs(c).edit().putInt(KEY_ATTEMPT_BOOT, bootCount).apply();
+            if (bootCount >= 0) {
+                SharedPreferences.Editor attempt = prefs(c).edit()
+                        .putInt(KEY_ATTEMPT_BOOT, bootCount);
+                // Commit before entering the kernel route. If the phone panics before Java
+                // returns, the next boot sees this marker and disables automatic retries.
+                if (guardThisAttempt) attempt.putInt(KEY_AUTO_PENDING_BOOT, bootCount);
+                attempt.commit();
+            }
             Shell.Result result = Shell.runShizukuSync(command);
             saveAttemptLog(c, result);
             Log.i("TickerBarRoot", "bootstrap exit=" + result.code + " output=" + result.output);
@@ -168,10 +202,13 @@ final class RootBootstrap {
             }
             if (!ready) {
                 state(c, "failed", "Root bootstrap failed (exit " + result.code + ")");
+                if (guardThisAttempt) disarmAuto(c,
+                        "Automatic root disabled after the failed attempt");
                 return;
             }
 
             prefs(c).edit().putLong(KEY_READY_AT, System.currentTimeMillis()).apply();
+            markAutoSuccess(c, bootCount);
             state(c, "ready", "Root daemon is ready; Shizuku remains available as fallback");
             RootFeatures.applyAsync(c);
         } finally {
@@ -193,6 +230,30 @@ final class RootBootstrap {
 
     static boolean isBusy() { return busy.get(); }
     static boolean attemptsEnabled() { return ROOT_ATTEMPTS_ENABLED; }
+
+    private static synchronized void checkAutoGuard(Context c, int boot) {
+        if (guardCheckedBoot == boot) return;
+        guardCheckedBoot = boot;
+        int pending = prefs(c).getInt(KEY_AUTO_PENDING_BOOT, -1);
+        if (pending >= 0 && pending != boot) {
+            prefs(c).edit().remove(KEY_AUTO_PENDING_BOOT).apply();
+            if (Prefs.on(c, Prefs.AUTO_ROOT))
+                disarmAuto(c, "Automatic root was disabled after the previous attempt rebooted the phone");
+        }
+    }
+
+    private static void markAutoSuccess(Context c, int boot) {
+        if (boot >= 0 && prefs(c).getInt(KEY_AUTO_PENDING_BOOT, -1) == boot)
+            prefs(c).edit().remove(KEY_AUTO_PENDING_BOOT).apply();
+    }
+
+    private static void disarmAuto(Context c, String detail) {
+        Prefs.put(c, Prefs.AUTO_ROOT, 0);
+        prefs(c).edit().remove(KEY_AUTO_PENDING_BOOT).apply();
+        autoRequested = false;
+        userRequested = false;
+        state(c, "auto_disarmed", detail);
+    }
 
     private static void state(Context c, String state, String detail) {
         prefs(c).edit().putString(KEY_STATE, state).putString(KEY_DETAIL, detail).apply();

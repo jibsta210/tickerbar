@@ -27,6 +27,7 @@
 #define SOCK_NAME "tickerbar-root"
 #define VOLUME_SOCK_NAME "tickerbar-volume-v2"
 #define INPUT_SOCK_NAME "tickerbar-input-v1"
+#define POWER_SOCK_NAME "tickerbar-power-v1"
 
 static uid_t allowed_uid = (uid_t)-1;
 
@@ -879,6 +880,114 @@ static int input_helper_main(uid_t app_uid) {
   return 1;
 }
 
+/* -------------------------------------------------------------------------
+ * Passive power-button observer.
+ *
+ * This deliberately never calls EVIOCGRAB and never injects a key. HyperOS
+ * remains the sole owner of single press, long press, power menu and SOS. The
+ * authenticated app client merely receives physical KEY_POWER down events.
+ */
+
+static int open_power_device(void) {
+  DIR *dir = opendir("/dev/input");
+  if (!dir)
+    return -1;
+  int best = -1;
+  int best_score = -1;
+  struct dirent *entry;
+  while ((entry = readdir(dir))) {
+    if (strncmp(entry->d_name, "event", 5) != 0)
+      continue;
+    char path[128];
+    snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0)
+      continue;
+    char name[128] = {0};
+    (void)ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+    unsigned long bits[(KEY_MAX + 8U * sizeof(unsigned long)) /
+                       (8U * sizeof(unsigned long))];
+    memset(bits, 0, sizeof(bits));
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) < 0 ||
+        !key_bit(bits, KEY_POWER) || strstr(name, "TickerBar") ||
+        strstr(name, "uinput") || strstr(name, "bark") ||
+        strstr(name, "touch") || strstr(name, "fts")) {
+      close(fd);
+      continue;
+    }
+    int score = strcmp(name, "pmic_pwrkey") == 0 ? 100
+              : strstr(name, "pwrkey") ? 50 : 1;
+    if (score > best_score) {
+      if (best >= 0) close(best);
+      best = fd;
+      best_score = score;
+    } else close(fd);
+  }
+  closedir(dir);
+  return best;
+}
+
+static void serve_power_client(int conn) {
+  int input = open_power_device();
+  int status = input >= 0 ? 0 : 1;
+  if (!write_full(conn, &status, sizeof(status)) || status != 0)
+    goto done;
+  for (;;) {
+    struct pollfd polls[2] = {
+      {conn, POLLIN | POLLHUP | POLLERR, 0},
+      {input, POLLIN | POLLHUP | POLLERR, 0}
+    };
+    int ready;
+    do { ready = poll(polls, 2, -1); } while (ready < 0 && errno == EINTR);
+    if (ready < 0 || (polls[0].revents & (POLLHUP | POLLERR | POLLNVAL)))
+      break;
+    if (polls[0].revents & POLLIN) {
+      char ignored[16];
+      if (read(conn, ignored, sizeof(ignored)) <= 0) break;
+    }
+    if (!(polls[1].revents & POLLIN))
+      continue;
+    struct input_event event;
+    while (read(input, &event, sizeof(event)) == sizeof(event)) {
+      if (event.type == EV_KEY && event.code == KEY_POWER && event.value == 1) {
+        char out = 'P';
+        if (!write_full(conn, &out, 1)) goto done;
+      }
+    }
+  }
+done:
+  if (input >= 0) close(input);
+}
+
+static int power_helper_main(uid_t app_uid) {
+  if (geteuid() != 0 || app_uid < 10000)
+    return 126;
+  (void)prctl(PR_SET_NAME, "tb-power", 0, 0, 0);
+  signal(SIGPIPE, SIG_IGN);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0)
+    return 1;
+  struct sockaddr_un sun;
+  socklen_t sun_len = named_address(&sun, POWER_SOCK_NAME);
+  if (bind(fd, (struct sockaddr *)&sun, sun_len) != 0 || listen(fd, 2) != 0) {
+    close(fd);
+    return 1;
+  }
+  for (;;) {
+    int conn = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
+    if (conn < 0 && errno == EINTR) continue;
+    if (conn < 0) break;
+    struct ucred peer;
+    socklen_t peer_len = sizeof(peer);
+    if (getsockopt(conn, SOL_SOCKET, SO_PEERCRED, &peer, &peer_len) == 0 &&
+        (peer.uid == app_uid || peer.uid == 0))
+      serve_power_client(conn);
+    close(conn);
+  }
+  close(fd);
+  return 1;
+}
+
 static int umh_main(void) {
   if (geteuid() != 0) {
     return 126;
@@ -919,6 +1028,13 @@ int tickerbar_su_main(int argc, char **argv) {
     if (!end || *end != '\0' || uid > UINT32_MAX)
       return 2;
     return input_helper_main((uid_t)uid);
+  }
+  if (argc >= 3 && strcmp(argv[1], "--power-helper") == 0) {
+    char *end = NULL;
+    unsigned long uid = strtoul(argv[2], &end, 10);
+    if (!end || *end != '\0' || uid > UINT32_MAX)
+      return 2;
+    return power_helper_main((uid_t)uid);
   }
   return client_main(argc, argv);
 }

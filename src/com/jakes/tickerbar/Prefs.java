@@ -95,6 +95,15 @@ public final class Prefs {
     // Root profile: keep standard Android process management but disable HyperOS's
     // extra Smart Power Control/free-memory kill layer for this boot.
     public static final String MEMORY_RELAXED = "memory_relaxed";
+    public static final String AUTO_ROOT = "auto_root_after_shizuku";
+
+    // Passive root power-button gestures. Actions are RootPowerGestures.ACTION_*.
+    public static final String POWER_DOUBLE_ACTION = "power_double_action";
+    public static final String POWER_TRIPLE_ACTION = "power_triple_action";
+    public static final String POWER_DOUBLE_PKG = "power_double_pkg";
+    public static final String POWER_TRIPLE_PKG = "power_triple_pkg";
+    public static final String POWER_MULTI_MS = "power_multi_ms";
+    public static final String POWER_STOCK_DOUBLE = "power_stock_double";
 
     // shade shortcuts
     public static final String SHADE_HOME   = "shade_home";
@@ -122,6 +131,9 @@ public final class Prefs {
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
         DEF.put(GOOGLE_MODE, 0);
         DEF.put(MEMORY_RELAXED, 1);
+        DEF.put(AUTO_ROOT, 1);
+        DEF.put(POWER_DOUBLE_ACTION, 0); DEF.put(POWER_TRIPLE_ACTION, 0);
+        DEF.put(POWER_MULTI_MS, 450);
         DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
         DEF.put(CORNER_HIDE_VIDEO, 1); DEF.put(FRONT_MODE, 1);
     }
