@@ -3216,13 +3216,21 @@ final class UnifiedShade {
 
         // expand: the whole text, and the picture for picture notifications
         Drawable picture = picture(n);
-        // The collapsed body is one line. At this card width text begins wrapping around
-        // 32 characters, so a higher threshold can ellipsize a message without an expand affordance.
-        // Decide from the text we actually render. Messaging notifications often repeat
-        // "Sender: " in EXTRA_TEXT; counting that discarded prefix produced an expand
-        // button whose open state revealed nothing new.
-        final boolean expandable = picture != null || (!TextUtils.isEmpty(shownBody)
-                && (shownBody.length() > 32 || shownBody.toString().contains("\n")));
+        // The collapsed body is one line. Character counts are not a useful overflow test:
+        // glyph widths, font scale, screen width and an optional avatar all change how much
+        // fits. Measure the exact text we render in the actual space the words receive, so a
+        // chevron is present only when opening the card can reveal another line (or picture).
+        int collapsedBodyWidth = svc.screenW() - svc.px(8 * 2)    // content side insets
+                - svc.px(16 * 2)                                 // card side padding
+                - (large == null ? 0 : svc.px(40 + 12));          // avatar + leading gap
+        boolean bodyOverflows = false;
+        if (bodyView != null && collapsedBodyWidth > 0) {
+            String rendered = shownBody.toString();
+            bodyOverflows = rendered.contains("\n")
+                    || android.text.Layout.getDesiredWidth(rendered, bodyView.getPaint())
+                    > collapsedBodyWidth;
+        }
+        final boolean expandable = picture != null || bodyOverflows;
         final ImageView[] pics = new ImageView[1];
         if (expandable && top != null) {
             final ImageView[] chev = new ImageView[1];
