@@ -54,6 +54,7 @@ import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
+import android.widget.GridView;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -244,6 +245,12 @@ final class UnifiedShade {
         sheet.setScaleY(scale);
         if (scrim != null) scrim.setAlpha(p);
         if (navBackdrop != null) navBackdrop.setAlpha(p);
+        if (chromeIntroPending) {
+            applyAccessoryReveal(homeShelfView, (p - 0.12f) / 0.58f, svc.px(18));
+            float mediaProgress = (p - 0.22f) / 0.58f;
+            for (int i = 0; i < mediaIntroViews.size(); i++)
+                applyAccessoryReveal(mediaIntroViews.get(i), mediaProgress - i * 0.05f, svc.px(22));
+        }
     }
 
     private boolean attach() {
@@ -452,6 +459,7 @@ final class UnifiedShade {
         closing = false;
         refreshers.clear();
         fixed.clear();
+        mediaIntroViews.clear();
         groupOpenState.clear();
         cardOpenState.clear();
         swipingCard = false;
@@ -1208,10 +1216,29 @@ final class UnifiedShade {
                     return true;
                 }
             });
-            LinearLayout.LayoutParams widgetLp = new LinearLayout.LayoutParams(
+            FrameLayout stage = new FrameLayout(svc);
+            stage.addView(hosted, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE));
-            card.addView(hosted, widgetLp);
+                    svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE)));
+
+            LinearLayout actions = new LinearLayout(svc);
+            actions.setGravity(Gravity.CENTER_VERTICAL);
+            actions.addView(homeIconButton(R.drawable.qs_settings, "Configure Home shelf",
+                    new View.OnClickListener() { public void onClick(View v) { configureHomeWidget(); }}));
+            LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(svc.px(28), svc.px(28));
+            openLp.setMarginStart(svc.px(4));
+            ImageView open = homeIconButton(R.drawable.qs_open, "Open Google Home",
+                    new View.OnClickListener() { public void onClick(View v) { openHomeControls(); }});
+            actions.addView(open, openLp);
+            FrameLayout.LayoutParams actionsLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, svc.px(28), Gravity.TOP | Gravity.END);
+            actionsLp.topMargin = svc.px(4);
+            actionsLp.setMarginEnd(svc.px(5));
+            stage.addView(actions, actionsLp);
+
+            card.addView(stage, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE)));
         } else {
             LinearLayout titleRow = new LinearLayout(svc);
             titleRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -1247,6 +1274,18 @@ final class UnifiedShade {
             card.addView(empty, emptyLp);
         }
         return card;
+    }
+
+    private ImageView homeIconButton(int icon, String description, View.OnClickListener click) {
+        ImageView button = new ImageView(svc);
+        button.setImageResource(icon);
+        button.setImageTintList(ColorStateList.valueOf(pal.onSurfaceVariant));
+        button.setPadding(svc.px(6), svc.px(6), svc.px(6), svc.px(6));
+        button.setBackground(ripple(round(Palette.alpha(pal.surface, 0xE6), svc.px(14))));
+        button.setContentDescription(description);
+        button.setOnClickListener(click);
+        button.setLayoutParams(new LinearLayout.LayoutParams(svc.px(28), svc.px(28)));
+        return button;
     }
 
     private View createHomeWidget() {
@@ -1319,6 +1358,18 @@ final class UnifiedShade {
             viewport.setClipToPadding(true);
             viewport.addView(homeWidgetView, new FrameLayout.LayoutParams(
                     logicalWidth, svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP)));
+            viewport.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                           int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                    if (homeWidgetView == null || right <= left) return;
+                    int wanted = Math.round((right - left) / HOME_WIDGET_SCALE);
+                    ViewGroup.LayoutParams lp = homeWidgetView.getLayoutParams();
+                    if (lp.width != wanted) {
+                        lp.width = wanted;
+                        homeWidgetView.setLayoutParams(lp);
+                    }
+                }
+            });
             return viewport;
         } catch (Exception unavailable) {
             android.util.Log.w("TickerBarHome", "Could not inflate Google Home widget", unavailable);
@@ -1358,11 +1409,28 @@ final class UnifiedShade {
         collectViews(widget, views);
 
         final float density = svc.getResources().getDisplayMetrics().density;
+        ArrayList<ViewGroup> tiles = new ArrayList<ViewGroup>();
+        for (View view : views) {
+            if (view instanceof GridView) {
+                GridView grid = (GridView) view;
+                grid.setGravity(Gravity.CENTER_HORIZONTAL);
+                grid.setStretchMode(GridView.STRETCH_SPACING_UNIFORM);
+                grid.setSelector(android.R.color.transparent);
+            }
+            if (view != widget && view instanceof ViewGroup && !view.hasOnClickListeners()
+                    && view.getWidth() > widget.getWidth() * .78f
+                    && view.getHeight() > widget.getHeight() * .72f) {
+                view.setBackground(round(Palette.alpha(pal.surfaceHigh, panelA), svc.px(24)));
+            }
+        }
         for (final View tile : views) {
             if (!(tile instanceof ViewGroup) || !tile.hasOnClickListeners()) continue;
             int widthDp = Math.round(tile.getWidth() / density);
             int heightDp = Math.round(tile.getHeight() / density);
             if (widthDp < 52 || widthDp > 140 || heightDp < 42 || heightDp > 125) continue;
+            final boolean active = homeTileActive((ViewGroup) tile);
+            tile.setBackground(ripple(round(active ? pal.primaryContainer : pal.surfaceHigh,
+                    Math.round(Math.min(tile.getHeight() / 2f, svc.px(28))))));
             tile.setClipToOutline(true);
             tile.setOutlineProvider(new ViewOutlineProvider() {
                 @Override public void getOutline(View view, Outline outline) {
@@ -1370,8 +1438,75 @@ final class UnifiedShade {
                             Math.min(view.getHeight() / 2f, svc.px(28)));
                 }
             });
+            tintHomeControl((ViewGroup) tile, active);
             hideTrailingHomeChevron((ViewGroup) tile);
+            tiles.add((ViewGroup) tile);
         }
+
+        HashMap<ViewGroup, Integer> rows = new HashMap<ViewGroup, Integer>();
+        for (ViewGroup tile : tiles) {
+            if (!(tile.getParent() instanceof ViewGroup)) continue;
+            ViewGroup row = (ViewGroup) tile.getParent();
+            Integer count = rows.get(row);
+            rows.put(row, count == null ? 1 : count + 1);
+        }
+        for (java.util.Map.Entry<ViewGroup, Integer> entry : rows.entrySet()) {
+            if (entry.getValue() < 2) continue;
+            ViewGroup row = entry.getKey();
+            if (row instanceof LinearLayout) {
+                LinearLayout linear = (LinearLayout) row;
+                linear.setGravity(linear.getGravity() | Gravity.CENTER_HORIZONTAL);
+            } else if (row instanceof GridView) {
+                ((GridView) row).setGravity(Gravity.CENTER_HORIZONTAL);
+            }
+        }
+
+        // Header text/icon and any provider-created empty state should use the same palette too.
+        for (View view : views) {
+            boolean insideTile = false;
+            for (ViewGroup tile : tiles) {
+                if (isDescendantOf(view, tile)) { insideTile = true; break; }
+            }
+            if (insideTile) continue;
+            if (view instanceof TextView) ((TextView) view).setTextColor(pal.onSurface);
+            else if (view instanceof ImageView)
+                ((ImageView) view).setImageTintList(ColorStateList.valueOf(pal.primary));
+        }
+    }
+
+    private boolean homeTileActive(ViewGroup tile) {
+        ArrayList<View> children = new ArrayList<View>();
+        collectViews(tile, children);
+        for (View child : children) if (child instanceof TextView) {
+            String state = ((TextView) child).getText().toString().trim();
+            if ("On".equalsIgnoreCase(state) || "Active".equalsIgnoreCase(state)) return true;
+        }
+        return false;
+    }
+
+    private void tintHomeControl(ViewGroup tile, boolean active) {
+        int primary = active ? pal.onPrimaryContainer : pal.onSurface;
+        int secondary = active ? Palette.alpha(pal.onPrimaryContainer, 0xCC) : pal.onSurfaceVariant;
+        ArrayList<View> children = new ArrayList<View>();
+        collectViews(tile, children);
+        int textIndex = 0;
+        for (View child : children) {
+            if (child instanceof TextView) {
+                ((TextView) child).setTextColor(textIndex++ == 0 ? primary : secondary);
+            } else if (child instanceof ImageView) {
+                ((ImageView) child).setImageTintList(ColorStateList.valueOf(primary));
+            }
+        }
+    }
+
+    private boolean isDescendantOf(View view, ViewGroup ancestor) {
+        if (view == ancestor) return true;
+        android.view.ViewParent parent = view.getParent();
+        while (parent instanceof View) {
+            if (parent == ancestor) return true;
+            parent = parent.getParent();
+        }
+        return false;
     }
 
     private void collectViews(View view, List<View> out) {
@@ -1547,7 +1682,7 @@ final class UnifiedShade {
         // These views travel with the sheet and must be present on its very first revealed
         // pixel, especially during direct pull-down. Hiding them here and animating them only
         // after settle made the real circles/pills visibly pop in after the panel.
-        for (View v : new View[]{headerView, tileStage, homeShelfView}) {
+        for (View v : new View[]{headerView, tileStage}) {
             if (v == null) continue;
             v.animate().cancel();
             v.setAlpha(1f);
@@ -1555,6 +1690,26 @@ final class UnifiedShade {
             v.setScaleX(1f);
             v.setScaleY(1f);
         }
+        applyAccessoryReveal(homeShelfView, 0f, svc.px(18));
+        for (View media : mediaIntroViews) applyAccessoryReveal(media, 0f, svc.px(22));
+    }
+
+    private void applyAccessoryReveal(View view, float progress, float distance) {
+        if (view == null) return;
+        float p = Math.max(0f, Math.min(1f, progress));
+        view.animate().cancel();
+        view.setAlpha(p);
+        view.setTranslationY((1f - p) * distance);
+    }
+
+    private void finishAccessoryIntro(final View view, long delay) {
+        if (view == null || view.getParent() == null) return;
+        view.animate().cancel();
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        view.animate().alpha(1f).translationY(0f).setStartDelay(delay).setDuration(330)
+                .setInterpolator(OPEN_EASE).withEndAction(new Runnable() { public void run() {
+                    view.setLayerType(View.LAYER_TYPE_NONE, null);
+                }}).start();
     }
 
     /** The panel lands first; its chrome then settles in as one short, tactile sequence. */
@@ -1576,6 +1731,12 @@ final class UnifiedShade {
             }
         });
         tint.start();
+        finishAccessoryIntro(homeShelfView, 25);
+        long mediaDelay = 65;
+        for (View media : mediaIntroViews) {
+            finishAccessoryIntro(media, mediaDelay);
+            mediaDelay += 35;
+        }
         sheet.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
     }
 
@@ -2134,6 +2295,7 @@ final class UnifiedShade {
         expanders.clear();
         collapsers.clear();
         entryViews.clear();
+        mediaIntroViews.clear();
         rankMap = TickerListener.ranking();
         StatusBarNotification[] all = TickerListener.active();
 
@@ -2149,6 +2311,7 @@ final class UnifiedShade {
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.bottomMargin = svc.px(10);
             notifBox.addView(m, lp);
+            mediaIntroViews.add(m);
         }
         java.util.Iterator<java.util.Map.Entry<Object, Player>> pi = players.entrySet().iterator();
         while (pi.hasNext()) {
@@ -2396,27 +2559,51 @@ final class UnifiedShade {
 
             LinearLayout col = new LinearLayout(svc);
             col.setOrientation(LinearLayout.VERTICAL);
-            col.setPadding(svc.px(20), svc.px(16), svc.px(20), svc.px(14));
+            col.setPadding(svc.px(16), svc.px(10), svc.px(16), svc.px(8));
             card.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT));
 
             app = tv(appLabel(mc.getPackageName()).toString(), 12, 0xB3FFFFFF);
             app.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             col.addView(app);
-            title = tv("", 20, 0xFFFFFFFF);
+            title = tv("", 17, 0xFFFFFFFF);
             title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             title.setSingleLine(true);
             title.setEllipsize(TextUtils.TruncateAt.END);
-            title.setPadding(0, svc.px(22), 0, 0);
-            col.addView(title);
-            artist = tv("", 14, 0xCCFFFFFF);
+            title.setPadding(0, svc.px(2), 0, 0);
+            artist = tv("", 12, 0xCCFFFFFF);
             artist.setSingleLine(true);
             artist.setEllipsize(TextUtils.TruncateAt.END);
-            col.addView(artist);
+
+            LinearLayout meta = new LinearLayout(svc);
+            meta.setOrientation(LinearLayout.VERTICAL);
+            meta.addView(title);
+            meta.addView(artist);
+
+            LinearLayout ctl = new LinearLayout(svc);
+            ctl.setGravity(Gravity.CENTER);
+            ctl.addView(button(R.drawable.qs_prev, "Previous", false, new Runnable() { public void run() {
+                mc.getTransportControls().skipToPrevious(); }}));
+            play = button(R.drawable.qs_play, "Play", true, new Runnable() { public void run() {
+                if (playing) mc.getTransportControls().pause(); else mc.getTransportControls().play();
+                playing = !playing;   // answer the tap at once; the session confirms a moment later
+                showPlaying();
+            }});
+            ctl.addView(play);
+            ctl.addView(button(R.drawable.qs_next, "Next", false, new Runnable() { public void run() {
+                mc.getTransportControls().skipToNext(); }}));
+
+            LinearLayout middle = new LinearLayout(svc);
+            middle.setGravity(Gravity.CENTER_VERTICAL);
+            middle.setPadding(0, svc.px(3), 0, 0);
+            middle.addView(meta, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            middle.addView(ctl);
+            col.addView(middle);
 
             LinearLayout prog = new LinearLayout(svc);
             prog.setGravity(Gravity.CENTER_VERTICAL);
-            prog.setPadding(0, svc.px(10), 0, 0);
+            prog.setPadding(0, svc.px(2), 0, 0);
             pos = tv("0:00", 11, 0xB3FFFFFF);
             dur = tv("", 11, 0xB3FFFFFF);
             seek = new SeekBar(svc);
@@ -2431,23 +2618,9 @@ final class UnifiedShade {
                 public void onStopTrackingTouch(SeekBar s) { mc.getTransportControls().seekTo(s.getProgress()); }
             });
             prog.addView(pos);
-            prog.addView(seek, new LinearLayout.LayoutParams(0, svc.px(34), 1));
+            prog.addView(seek, new LinearLayout.LayoutParams(0, svc.px(28), 1));
             prog.addView(dur);
             col.addView(prog);
-
-            LinearLayout ctl = new LinearLayout(svc);
-            ctl.setGravity(Gravity.CENTER);
-            ctl.addView(button(R.drawable.qs_prev, "Previous", false, new Runnable() { public void run() {
-                mc.getTransportControls().skipToPrevious(); }}));
-            play = button(R.drawable.qs_play, "Play", true, new Runnable() { public void run() {
-                if (playing) mc.getTransportControls().pause(); else mc.getTransportControls().play();
-                playing = !playing;   // answer the tap at once; the session confirms a moment later
-                showPlaying();
-            }});
-            ctl.addView(play);
-            ctl.addView(button(R.drawable.qs_next, "Next", false, new Runnable() { public void run() {
-                mc.getTransportControls().skipToNext(); }}));
-            col.addView(ctl);
 
             mc.registerCallback(cb, root.getHandler());
             update();
@@ -2457,15 +2630,15 @@ final class UnifiedShade {
             ImageView b = new ImageView(svc);
             b.setImageResource(icon);
             b.setContentDescription(desc);
-            int size = svc.px(main ? 58 : 48);
-            int pad = svc.px(main ? 16 : 12);
+            int size = svc.px(main ? 44 : 38);
+            int pad = svc.px(main ? 12 : 10);
             b.setPadding(pad, pad, pad, pad);
             b.setImageTintList(ColorStateList.valueOf(main ? 0xFF111111 : 0xFFFFFFFF));
             b.setBackground(ripple(main ? round(0xFFFFFFFF, size / 2) : null));
             b.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { press(v); r.run(); } });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
-            lp.setMarginStart(svc.px(14));
-            lp.setMarginEnd(svc.px(14));
+            lp.setMarginStart(svc.px(4));
+            lp.setMarginEnd(svc.px(4));
             b.setLayoutParams(lp);
             return b;
         }
@@ -2535,6 +2708,7 @@ final class UnifiedShade {
     }
 
     private final java.util.LinkedHashMap<Object, Player> players = new java.util.LinkedHashMap<Object, Player>();
+    private final List<View> mediaIntroViews = new ArrayList<View>();
     /** Sessions swiped away; they come back when they start playing again. */
     private static final HashSet<Object> dismissedMedia = new HashSet<Object>();
     private final Runnable mediaTick = new Runnable() { public void run() {
@@ -3154,7 +3328,8 @@ final class UnifiedShade {
         }});
         card.setOnLongClickListener(toggleMenu(menu));
         if (s.isClearable() && !child) clearable.add(card);
-        if (s.isClearable()) swipeToDismiss(card, new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } });
+        if (s.isClearable()) swipeToDismiss(card,
+                new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } }, child);
         return card;
     }
 
@@ -3187,6 +3362,11 @@ final class UnifiedShade {
      * flick of a couple of centimetres is enough to dismiss, and so is dragging past ~35%.
      */
     private void swipeToDismiss(final View card, final Runnable dismiss) {
+        swipeToDismiss(card, dismiss, false);
+    }
+
+    /** Child cards capture DOWN so the enclosing app group cannot steal their swipe. */
+    private void swipeToDismiss(final View card, final Runnable dismiss, final boolean captureDown) {
         card.setOnTouchListener(new View.OnTouchListener() {
             float x0, y0; boolean swiping, moved; VelocityTracker vt;
             public boolean onTouch(View v, MotionEvent e) {
@@ -3198,7 +3378,8 @@ final class UnifiedShade {
                         v.animate().cancel();
                         if (vt != null) vt.recycle();
                         vt = VelocityTracker.obtain(); track(vt, e);
-                        return false;   // let the click / scroll machinery see it too
+                        if (captureDown) v.onTouchEvent(e); // preserve click/long-press while owning the stream
+                        return captureDown; // grouped children must remain the gesture target
                     case MotionEvent.ACTION_MOVE: {
                         float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
                         if (Math.abs(dx) > slop / 2f) moved = true;   // sideways at all: not a tap
@@ -3206,6 +3387,12 @@ final class UnifiedShade {
                             swiping = true;
                             swipingCard = true;
                             v.getParent().requestDisallowInterceptTouchEvent(true);
+                            if (captureDown) {
+                                MotionEvent cancel = MotionEvent.obtain(e);
+                                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                                v.onTouchEvent(cancel);
+                                cancel.recycle();
+                            }
                             v.cancelLongPress();   // holding it while you swipe must not open the menu
                             v.setPressed(false);
                         }
@@ -3217,7 +3404,8 @@ final class UnifiedShade {
                             return true;
                         }
                         if (moved) { v.cancelLongPress(); v.setPressed(false); }
-                        return false;
+                        if (captureDown && !moved) v.onTouchEvent(e);
+                        return captureDown;
                     }
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL: {
@@ -3232,6 +3420,7 @@ final class UnifiedShade {
                             // a flick so quick it never registered as a drag: still a dismiss, never a tap
                             if (up && fling) { fly(v, dx, vx, dismiss); return true; }
                             if (moved) { v.setPressed(false); return true; }   // swallow: no accidental open
+                            if (captureDown) { v.onTouchEvent(e); return true; }
                             return false;
                         }
                         swiping = false;

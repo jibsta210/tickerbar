@@ -43,7 +43,9 @@ and HyperOS between them wouldn't do these things.
   open or closed. Its compact Home shelf hosts Google Home's authenticated Favorites widget
   directly, uses Google's own structure header without a duplicate TickerBar toolbar, and keeps
   Google's live device state/actions after a one-time home/device selection. Non-expandable notifications omit
-  empty expand affordances.
+  empty expand affordances. Home and media cards share the shade's configured palette and
+  opening motion; the compact media player is roughly 40% shorter, and individual notifications
+  inside an expanded app group can be swiped away without dismissing the entire group.
   The shade battery meter follows the same Number, Graphic or Top bar style selected for
   HyperOS's real status bar, so the two surfaces stay consistent.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
