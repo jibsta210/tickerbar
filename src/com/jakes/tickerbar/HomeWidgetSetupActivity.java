@@ -1,13 +1,28 @@
 package com.jakes.tickerbar;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.appwidget.AppWidgetHost;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProviderInfo;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
+import android.text.TextUtils;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.List;
@@ -29,6 +44,9 @@ public final class HomeWidgetSetupActivity extends Activity {
             "com.google.android.apps.chromecast.app.appwidget.favorites.FavoritesWidgetReceiver");
     private int configuringId;
     private String mappingNetwork;
+    private Dialog sheet;
+
+    private interface Choice { void selected(int which); }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -54,18 +72,13 @@ public final class HomeWidgetSetupActivity extends Activity {
                 : "Use current home automatically on “" + network + "”";
         String add = network.isEmpty() ? "Set up another Wi-Fi home (connect first)"
                 : "Set up another home for “" + network + "”";
-        new AlertDialog.Builder(this)
-                .setTitle("Google Home shelf")
-                .setItems(new String[]{"Edit current home and controls", remember, add,
-                                "Switch home now"},
-                        (dialog, which) -> {
-                            if (which == 0) configure(current, null);
-                            else if (which == 1) rememberCurrent(network, current);
-                            else if (which == 2) addForNetwork(network);
-                            else showSwitcher();
-                        })
-                .setOnCancelListener(dialog -> finish())
-                .show();
+        showSheet("Google Home", new String[]{"Edit controls", remember, add, "Switch home"},
+                new Choice() { public void selected(int which) {
+                    if (which == 0) configure(current, null);
+                    else if (which == 1) rememberCurrent(network, current);
+                    else if (which == 2) addForNetwork(network);
+                    else showSwitcher();
+                }});
     }
 
     private void rememberCurrent(String network, int current) {
@@ -96,13 +109,11 @@ public final class HomeWidgetSetupActivity extends Activity {
                     ? (profile.network.isEmpty() ? "Home" : profile.network) : profile.label;
             if (!profile.network.isEmpty()) names[i] += "  ·  " + profile.network;
         }
-        new AlertDialog.Builder(this).setTitle("Show controls for")
-                .setItems(names, (dialog, which) -> {
-                    HomeWidgetProfiles.useUntilNetworkChanges(this, choices.get(which).widgetId);
+        showSheet("Show controls for", names, new Choice() { public void selected(int which) {
+                    HomeWidgetProfiles.useUntilNetworkChanges(HomeWidgetSetupActivity.this,
+                            choices.get(which).widgetId);
                     finish();
-                })
-                .setOnCancelListener(dialog -> finish())
-                .show();
+                }});
     }
 
     private void addForNetwork(String network) {
@@ -164,5 +175,93 @@ public final class HomeWidgetSetupActivity extends Activity {
     private void failed(String message) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         finish();
+    }
+
+    /** A small Material-style sheet; platform AlertDialog looked like an Android 2.x relic. */
+    private void showSheet(String title, final String[] options, final Choice choice) {
+        if (sheet != null) sheet.dismiss();
+        Palette themed = Palette.of(this, Prefs.n(this, Prefs.SHADE_THEME));
+        int accent = Prefs.n(this, Prefs.SHADE_ACCENT);
+        if (accent > 0 && accent < UnifiedShade.ACCENTS.length)
+            themed = themed.withAccent(UnifiedShade.ACCENTS[accent]);
+        final Palette palette = themed.withShadeColors(Prefs.n(this, Prefs.SHADE_BG_COLOR),
+                        Prefs.n(this, Prefs.SHADE_PANEL_COLOR),
+                        Prefs.n(this, Prefs.SHADE_INACTIVE_COLOR),
+                        Prefs.n(this, Prefs.SHADE_ACTIVE_COLOR),
+                        Prefs.n(this, Prefs.SHADE_TEXT_COLOR),
+                        Prefs.n(this, Prefs.SHADE_SECONDARY_COLOR));
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(14), dp(14), dp(14), dp(14));
+        panel.setBackground(round(Palette.alpha(palette.surface, 0xFA), dp(28)));
+
+        TextView heading = text(title, 20, palette.onSurface);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(10), dp(4), dp(10), dp(12));
+        panel.addView(heading);
+
+        for (int i = 0; i < options.length; i++) {
+            final int index = i;
+            TextView row = text(options[i], 15, palette.onSurface);
+            row.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setSingleLine(true);
+            row.setEllipsize(TextUtils.TruncateAt.END);
+            row.setPadding(dp(16), 0, dp(16), 0);
+            row.setBackground(ripple(round(palette.surfaceHigh, dp(18)), palette.onSurface));
+            row.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                if (sheet != null) sheet.dismiss();
+                choice.selected(index);
+            }});
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
+            if (i > 0) lp.topMargin = dp(8);
+            panel.addView(row, lp);
+        }
+
+        sheet = new Dialog(this);
+        sheet.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        sheet.setContentView(panel);
+        sheet.setCanceledOnTouchOutside(true);
+        sheet.setOnCancelListener(dialog -> finish());
+        sheet.show();
+        Window window = sheet.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            attrs.width = Math.min(getResources().getDisplayMetrics().widthPixels - dp(32), dp(400));
+            attrs.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            attrs.gravity = Gravity.CENTER;
+            attrs.dimAmount = 0.58f;
+            window.setAttributes(attrs);
+            window.getDecorView().setElevation(dp(24));
+        }
+    }
+
+    private TextView text(String value, int sp, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        view.setTextColor(color);
+        return view;
+    }
+
+    private GradientDrawable round(int color, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radius);
+        return drawable;
+    }
+
+    private RippleDrawable ripple(Drawable content, int foreground) {
+        GradientDrawable mask = round(Color.WHITE, dp(18));
+        return new RippleDrawable(ColorStateList.valueOf(Palette.alpha(foreground, 0x22)),
+                content, mask);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
