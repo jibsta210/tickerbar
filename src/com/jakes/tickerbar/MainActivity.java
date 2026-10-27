@@ -355,7 +355,7 @@ public class MainActivity extends Activity {
         note(c, "The first row shows up to six tiles. Wi-Fi, Bluetooth, mobile data, airplane mode and "
                 + "location are switched by Android itself, so those tiles open its panel for them. "
                 + "Choose the Google Home shelf once to select its home and favorite devices. "
-                + "The lock screen and landscape keep the system shade.");
+                + "The custom shade also runs on the lock screen and follows Android's notification privacy settings; landscape keeps the system shade.");
 
         c = card("Hidden apps");
         note(c, "Apps switched on here never appear on the ticker. With root they are also removed from "

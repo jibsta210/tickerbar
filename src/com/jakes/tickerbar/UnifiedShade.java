@@ -292,6 +292,7 @@ final class UnifiedShade {
         // Leave focus with the app underneath so HyperOS keeps drawing its real navigation
         // buttons. Inline reply temporarily makes this window focusable for the keyboard.
         lp.flags = lp.flags | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | flags;
+        if (svc.locked()) lp.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
         // Blur is hosted by the application-overlay backdrop below SystemUI. Putting
         // FLAG_BLUR_BEHIND on this accessibility window makes SurfaceFlinger create a
         // full-display blur layer above NavigationBar0 even though our bounds stop above it,
@@ -2359,10 +2360,15 @@ final class UnifiedShade {
         entryViews.clear();
         mediaIntroViews.clear();
         rankMap = TickerListener.ranking();
-        StatusBarNotification[] all = TickerListener.active();
+        StatusBarNotification[] all = svc.lockNotificationsAllowed()
+                ? TickerListener.active() : new StatusBarNotification[0];
 
         // one player per media app, the one playing first; a swiped-away one stays gone until it plays again
-        List<MediaController> sessions = playerSessions();
+        // Media metadata is notification content too. Respect the global lock-screen switch;
+        // individual private/public redaction cannot be mapped reliably from a media session,
+        // so the global setting is the safe boundary here.
+        List<MediaController> sessions = svc.lockNotificationsAllowed()
+                ? playerSessions() : new ArrayList<MediaController>();
         HashSet<String> mediaPkgs = new HashSet<String>();
         HashSet<Object> live = new HashSet<Object>();
         for (MediaController mc : sessions) {
@@ -2551,6 +2557,11 @@ final class UnifiedShade {
             if (svc.getPackageName().equals(s.getPackageName()) && !s.isClearable()) continue;
             if (Prefs.hidden(svc, s.getPackageName())) continue;
             if (Prefs.typeHidden(svc, s.getPackageName(), s.getNotification().getChannelId())) continue;
+            if (svc.locked()) {
+                int visibility = s.getNotification().visibility;
+                if (visibility == Notification.VISIBILITY_SECRET) continue;
+                if (!svc.lockPrivateAllowed() && visibility != Notification.VISIBILITY_PUBLIC) continue;
+            }
             // media notifications live only as players, like stock: a stopped session (YouTube
             // leaves its notification behind) would otherwise sit here as an ongoing card that
             // can't be swiped away

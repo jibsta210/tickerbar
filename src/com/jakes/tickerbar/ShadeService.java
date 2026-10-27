@@ -104,15 +104,22 @@ public class ShadeService extends AccessibilityService {
     private boolean onHome = true;
     private String frontPkg;   // the app on screen, from window changes
 
-    // lock state: nothing of ours appears on the lock screen
+    // lock state: ticker text stays hidden; UnifiedShade may replace the lock-screen shade
     private KeyguardManager keyguard;
     private boolean receiverOn;
     private boolean lastLocked;
     /** A lock-screen gesture queues its target; it opens on unlock if that happens in time. */
     private Intent pendingTarget;
+    private android.app.PendingIntent pendingAction;
+    private Intent pendingActionFill;
     private long pendingUntil;
     private static final long PENDING_MS = 15000;
     private final Runnable openPendingR = new Runnable() { public void run() {
+        android.app.PendingIntent action = pendingAction;
+        Intent fill = pendingActionFill;
+        pendingAction = null;
+        pendingActionFill = null;
+        if (action != null) { sendPending(action, fill); return; }
         Intent t = pendingTarget;
         pendingTarget = null;
         if (t != null) openOrQueue(t);
@@ -123,6 +130,8 @@ public class ShadeService extends AccessibilityService {
         @Override public void onReceive(Context c, Intent i) {
             if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) {
                 pendingTarget = null;
+                pendingAction = null;
+                pendingActionFill = null;
                 hideTickerNow();   // never carry notification text onto the lock screen
                 if (shade != null) shade.closeNow();
             }
@@ -137,19 +146,44 @@ public class ShadeService extends AccessibilityService {
     };
 
     private boolean isLocked() { return keyguard != null && keyguard.isKeyguardLocked(); }
+    boolean locked() { return isLocked(); }
+
+    boolean lockNotificationsAllowed() {
+        if (!isLocked()) return true;
+        try {
+            return Settings.Secure.getInt(getContentResolver(),
+                    "lock_screen_show_notifications", 1) != 0;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    boolean lockPrivateAllowed() {
+        if (!isLocked() || keyguard == null || !keyguard.isDeviceSecure()) return true;
+        try {
+            return Settings.Secure.getInt(getContentResolver(),
+                    "lock_screen_allow_private_notifications", 1) != 0;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
 
     /** Re-evaluates lock state; hides everything on lock and restores the button on unlock. */
     private void syncLock() {
         boolean l = isLocked();
         if (l == lastLocked) return;
         lastLocked = l;
-        Log.d("TickerBar", "lock changed locked=" + l + " pending=" + (pendingTarget != null));
+        Log.d("TickerBar", "lock changed locked=" + l + " pending="
+                + (pendingTarget != null || pendingAction != null));
         if (l) {
             hideTickerNow();
-        } else if (pendingTarget != null && pendingUntil > SystemClock.uptimeMillis()) {
+        } else if ((pendingTarget != null || pendingAction != null)
+                && pendingUntil > SystemClock.uptimeMillis()) {
             ui.postDelayed(openPendingR, 150);   // let the keyguard finish going away
         } else {
             pendingTarget = null;
+            pendingAction = null;
+            pendingActionFill = null;
         }
         updateButton();
     }
@@ -500,7 +534,7 @@ public class ShadeService extends AccessibilityService {
     /** Opens UnifiedShade for visual/interaction testing without changing the user's mode. */
     public static boolean previewUnifiedShade() {
         final ShadeService s = self;
-        if (s == null || s.wm == null || s.isLocked()) return false;
+        if (s == null || s.wm == null) return false;
         s.ui.post(new Runnable() { public void run() { s.openShade(); }});
         return true;
     }
@@ -1095,15 +1129,21 @@ public class ShadeService extends AccessibilityService {
             // The system only sometimes treats our gesture as an unlock, so always ask;
             // a request alongside its own prompt is harmless.
             pendingTarget = target;
+            pendingAction = null;
+            pendingActionFill = null;
             pendingUntil = SystemClock.uptimeMillis() + PENDING_MS;
             Log.d("TickerBar", "locked: queued target, requesting unlock");
-            Intent t = new Intent(this, WalletLaunchActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
-            try { startActivity(t); } catch (Exception ignored) {}
+            requestUnlock();
             return;
         }
         try { startActivity(target); }
         catch (Exception ex) { Toast.makeText(this, "Couldn't open that", Toast.LENGTH_LONG).show(); }
+    }
+
+    private void requestUnlock() {
+        Intent unlock = new Intent(this, WalletLaunchActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        try { startActivity(unlock); } catch (Exception ignored) {}
     }
 
     // ------------------------------------------------------------ pass-through
@@ -1194,6 +1234,14 @@ public class ShadeService extends AccessibilityService {
 
     /** With fill-in extras: how an inline reply reaches the app. */
     boolean sendPending(android.app.PendingIntent pi, Intent fill) {
+        if (isLocked()) {
+            pendingTarget = null;
+            pendingAction = pi;
+            pendingActionFill = fill;
+            pendingUntil = SystemClock.uptimeMillis() + PENDING_MS;
+            requestUnlock();
+            return true;
+        }
         try {
             android.os.Bundle opts = null;
             if (Build.VERSION.SDK_INT >= 34) {
@@ -1220,7 +1268,7 @@ public class ShadeService extends AccessibilityService {
     }
 
     void openShade() {
-        if (wm == null || isLocked()) { performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS); return; }
+        if (wm == null) { performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS); return; }
         if (Build.VERSION.SDK_INT >= 30) try {
             WindowInsets in = wm.getCurrentWindowMetrics().getWindowInsets();
             if (in.isVisible(WindowInsets.Type.ime()))
@@ -1237,9 +1285,7 @@ public class ShadeService extends AccessibilityService {
     }
 
     void startFromShade(Intent i) {
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        try { startActivity(i); }
-        catch (Exception e) { Toast.makeText(this, "Couldn't open that", Toast.LENGTH_SHORT).show(); }
+        openOrQueue(i);
     }
 
     /** Inline replies need the system shade's text box. */
@@ -1284,16 +1330,16 @@ public class ShadeService extends AccessibilityService {
     }
 
     /**
-     * Pulls from the status bar come to us instead of HyperOS's split panels. Not on the lock
-     * screen (the keyguard has its own shade) and not in landscape, where fullscreen apps
-     * draw under the top edge.
+     * Pulls from the status bar come to us instead of HyperOS's split panels, including on
+     * the lock screen. Landscape keeps the native panel because fullscreen apps draw under
+     * the top edge.
      */
     private void updateCatcher() {
         if (wm == null) return;
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         // orientation from the configuration: the display size lags behind a rotation
         boolean portrait = getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE;
-        boolean protect = oneShade() && (pm == null || pm.isInteractive()) && !isLocked() && portrait;
+        boolean protect = oneShade() && (pm == null || pm.isInteractive()) && portrait;
         // HyperOS folds Back/Home/Recents into its "disable expansion" flag. The catcher is
         // sufficient to own top-edge pulls; keeping the root lease would hide the real navbar.
         setShadeLease(false);
@@ -1308,6 +1354,7 @@ public class ShadeService extends AccessibilityService {
         if (catcher == null) catcher = new CatcherView();
         WindowManager.LayoutParams lp = overlayParams(WindowManager.LayoutParams.MATCH_PARENT, statusBar(),
                 passing || tickerTakesTouch ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
+        if (isLocked()) lp.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.setTitle("TickerBar shade catcher");
         try {
