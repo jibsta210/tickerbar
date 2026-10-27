@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="89"
-    android:versionName="1.14.35">
+    android:versionCode="92"
+    android:versionName="1.14.38">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -174,7 +174,8 @@
         </service>
 
         <receiver android:name=".InstallReceiver" android:exported="false"/>
-        <receiver android:name=".RootBootReceiver" android:exported="true">
+        <receiver android:name=".RootBootReceiver" android:exported="true"
+            android:enabled="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
@@ -182,7 +183,7 @@
         </receiver>
         <!-- receives Shizuku's binder when it's running -->
         <provider
-            android:name="rikka.shizuku.ShizukuProvider"
+            android:name=".SafeShizukuProvider"
             android:authorities="com.jakes.tickerbar.shizuku"
             android:multiprocess="false"
             android:enabled="true"

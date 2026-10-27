@@ -32,13 +32,6 @@ final class RootFeatures {
     }
 
     private static boolean apply(Context c) {
-        RootPowerGestures.stop();
-        // v1.14.33 routed this helper flag into the exploit. Clear every tagged
-        // orphan before doing slower integration work; the fixed observer starts below.
-        RootShell.Result powerCleanup = RootShell.exec("pkill -9 -f '[p]ower-helper' 2>/dev/null || true");
-        if (!powerCleanup.connected)
-            Log.w("TickerBarRoot", "Could not clean old power-helper processes");
-
         File resetprop = new File(c.getApplicationInfo().nativeLibraryDir, "libresetprop.so");
         if (!resetprop.isFile()) {
             Log.e("TickerBarRoot", "Bundled resetprop helper is missing");

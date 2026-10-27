@@ -22,6 +22,9 @@ final class RootBootstrap {
     // right-child credential write, and an explicit post-route ghost disarm.
     // Shizuku remains available as the bootstrap/fallback transport.
     private static final boolean ROOT_ATTEMPTS_ENABLED = true;
+    // Recovery line: a root attempt must be an explicit tap. Shizuku appearing or
+    // opening settings must never arm the kernel route after the v1.14.33 storm.
+    private static final boolean AUTO_ROOT_ENABLED = false;
     private static final String PREF = "tickerbar_root";
     private static final String KEY_STATE = "state";
     private static final String KEY_DETAIL = "detail";
@@ -43,7 +46,7 @@ final class RootBootstrap {
         int boot = Settings.Global.getInt(app.getContentResolver(),
                 Settings.Global.BOOT_COUNT, -1);
         checkAutoGuard(app, boot);
-        autoRequested = Prefs.on(app, Prefs.AUTO_ROOT);
+        autoRequested = AUTO_ROOT_ENABLED && Prefs.on(app, Prefs.AUTO_ROOT);
         if (initialized.compareAndSet(false, true)) {
             try {
                 Shizuku.addBinderReceivedListenerSticky(
@@ -88,7 +91,7 @@ final class RootBootstrap {
     /** Re-evaluate the opt-in switch immediately without requiring an app restart. */
     static void settingsChanged(Context context) {
         app = context.getApplicationContext();
-        autoRequested = Prefs.on(app, Prefs.AUTO_ROOT);
+        autoRequested = AUTO_ROOT_ENABLED && Prefs.on(app, Prefs.AUTO_ROOT);
         if (!autoRequested && !busy.get())
             prefs(app).edit().remove(KEY_AUTO_PENDING_BOOT).apply();
         start(app);
@@ -230,6 +233,8 @@ final class RootBootstrap {
 
     static boolean isBusy() { return busy.get(); }
     static boolean attemptsEnabled() { return ROOT_ATTEMPTS_ENABLED; }
+
+    static boolean autoEnabled() { return ROOT_ATTEMPTS_ENABLED && AUTO_ROOT_ENABLED; }
 
     private static synchronized void checkAutoGuard(Context c, int boot) {
         if (guardCheckedBoot == boot) return;

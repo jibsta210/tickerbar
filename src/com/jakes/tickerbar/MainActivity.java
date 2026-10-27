@@ -198,9 +198,14 @@ public class MainActivity extends Activity {
         rootLine.setLineSpacing(0, 1.15f);
         c.addView(rootLine);
         if (RootBootstrap.attemptsEnabled()) {
-            autoRootSwitchRow(c, "Automatically root after Shizuku starts",
-                    "One guarded attempt per boot; disables itself if an attempt reboots the phone",
-                    Prefs.AUTO_ROOT);
+            if (RootBootstrap.autoEnabled()) {
+                autoRootSwitchRow(c, "Automatically root after Shizuku starts",
+                        "One guarded attempt per boot; disables itself if an attempt reboots the phone",
+                        Prefs.AUTO_ROOT);
+            } else {
+                note(c, "Automatic root is safety-paused in this recovery build. Root starts only "
+                        + "when you explicitly tap Start root attempt below.");
+            }
             actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
                     new Runnable() { public void run() { startRootAttempt(); }});
             actionRow(c, "Apply root system integration",
