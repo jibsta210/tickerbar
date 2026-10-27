@@ -128,7 +128,7 @@ final class RootFeatures {
                 // The stock 150-level stream handles keys, calls, casting and its own panel.
                 // Retire the old EVIOCGRAB helper if an earlier build left it running.
                 + "for f in /proc/[0-9]*/comm; do name=$(cat \"$f\" 2>/dev/null); "
-                + "case \"$name\" in tickerbar-vol2|tickerbar-input*|tb-input) "
+                + "case \"$name\" in tickerbar-vol2|tickerbar-input*|tb-input*) "
                 + "p=${f#/proc/}; p=${p%/comm}; kill -TERM \"$p\";; esac; done";
         RootShell.Result result = RootShell.exec(command);
         if (!result.connected || result.code != 0) {

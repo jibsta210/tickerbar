@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Bundle;
+import android.os.Build;
 import android.util.Log;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
@@ -70,15 +71,31 @@ public class TickerListener extends NotificationListenerService {
         if (listener != null && key != null) {
             PendingIntent pending = listener.intents.get(key);
             if (pending != null) try {
-                pending.send();
+                Bundle options = null;
+                if (Build.VERSION.SDK_INT >= 34) {
+                    android.app.ActivityOptions activity = android.app.ActivityOptions.makeBasic();
+                    activity.setPendingIntentBackgroundActivityStartMode(
+                            android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                    options = activity.toBundle();
+                }
+                pending.send(listener, 0, null, null, null, null, options);
                 opened = true;
-            } catch (PendingIntent.CanceledException ignored) {}
+            } catch (Exception ignored) {}
         }
         if (!opened && pkg != null && !pkg.isEmpty()) {
             Intent launch = context.getPackageManager().getLaunchIntentForPackage(pkg);
             if (launch != null) {
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                try { context.startActivity(launch); } catch (Exception ignored) {}
+                try {
+                    Bundle options = null;
+                    if (Build.VERSION.SDK_INT >= 34) {
+                        android.app.ActivityOptions activity = android.app.ActivityOptions.makeBasic();
+                        activity.setPendingIntentBackgroundActivityStartMode(
+                                android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                        options = activity.toBundle();
+                    }
+                    context.startActivity(launch, options);
+                } catch (Exception ignored) {}
             }
         }
         if (autoCancel) cancel(key);

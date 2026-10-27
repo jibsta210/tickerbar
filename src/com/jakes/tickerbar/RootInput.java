@@ -23,7 +23,7 @@ import java.nio.ByteOrder;
 
 /** Passive root touchscreen observer for the two inert stock navigation-bar keys. */
 final class RootInput {
-    private static final String SOCKET = "tickerbar-input-v1";
+    private static final String SOCKET = "tickerbar-input-v2";
     private static volatile RootInput active;
 
     private final Context context;
@@ -85,7 +85,7 @@ final class RootInput {
             if (!payload.isFile()) throw new IllegalStateException("root payload missing");
             LocalSocket connected = tryConnect();
             if (connected == null) {
-                String command = "pidof tb-input >/dev/null 2>&1 || ("
+                String command = "pidof tb-input2 >/dev/null 2>&1 || ("
                         + quote(payload.getAbsolutePath()) + " --input-helper " + Process.myUid()
                         + " >/dev/null 2>&1 &)";
                 RootShell.Result launch = RootShell.exec(command);

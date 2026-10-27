@@ -105,7 +105,7 @@ final class UnifiedShade {
             "com.google.android.apps.chromecast.app",
             "com.google.android.apps.chromecast.app.appwidget.favorites.FavoritesWidgetReceiver");
     private static final float HOME_WIDGET_SCALE = 0.90f;
-    private static final int HOME_WIDGET_LOGICAL_HEIGHT_DP = 132;
+    private static final int HOME_WIDGET_LOGICAL_HEIGHT_DP = 108;
 
     static int defaultPlace(int index) { return index < ROW_MAX ? PLACE_BOTH : PLACE_GRID; }
 
@@ -1458,19 +1458,17 @@ final class UnifiedShade {
             // A RemoteViews provider owns its control-state colors. Replacing the clicked
             // container's background also replaces Google's state-list drawable; on some
             // Home revisions that leaves an opaque white layer over the icon and labels.
-            // Preserve that hierarchy, but restyle the background of a confirmed active
-            // control so "On" uses the shade's configured primary accent instead of Home's
-            // unrelated dynamic brown/green palette. Inactive controls remain provider-owned.
+            // Preserve the PendingIntent hierarchy, but give every device the same permanent
+            // pill geometry. State changes now alter only colour, never shape.
             final boolean active = homeTileActive((ViewGroup) tile);
-            if (active) {
-                // Do not call setTint on Home's state-list RippleDrawable. Its nested blend
-                // modes resolve to black on this Google Home/HyperOS combination. A normal
-                // background still sits behind every RemoteViews child and keeps its click.
-                int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
-                clearHomeTileBackgroundLayers((ViewGroup) tile);
-                tile.setBackground(ripple(round(pal.primary, radius)));
-                tintHomeControl((ViewGroup) tile, true);
-            }
+            // Do not call setTint on Home's state-list RippleDrawable. Its nested blend modes
+            // resolve to black on this Google Home/HyperOS combination.
+            int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
+            clearHomeTileBackgroundLayers((ViewGroup) tile);
+            tile.setBackground(ripple(round(active ? pal.primary : pal.surfaceHigh, radius)));
+            tile.setClipToOutline(true);
+            tile.setOutlineProvider(roundOutline(radius));
+            tintHomeControl((ViewGroup) tile, active);
             tiles.add((ViewGroup) tile);
         }
 

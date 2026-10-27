@@ -26,7 +26,7 @@
 
 #define SOCK_NAME "tickerbar-root"
 #define VOLUME_SOCK_NAME "tickerbar-volume-v2"
-#define INPUT_SOCK_NAME "tickerbar-input-v1"
+#define INPUT_SOCK_NAME "tickerbar-input-v2"
 #define POWER_SOCK_NAME "tickerbar-power-v1"
 
 static uid_t allowed_uid = (uid_t)-1;
@@ -756,7 +756,7 @@ static void serve_input_client(int conn) {
     goto done;
 
   int raw_x = 0, raw_y = 0, x = 0, y = 0;
-  int down_x = 0, down_y = 0;
+  int down_x = 0, down_y = 0, max_dx = 0, max_dy = 0;
   int active = 0, pending_down = 0, pending_up = 0, moved = 0, fired = 0;
   int64_t down_at = 0, first_tap_at = 0;
   int first_x = 0, first_y = 0;
@@ -805,9 +805,13 @@ static void serve_input_client(int conn) {
         y = raw_y * config.screen_h / max_y;
         if (pending_down) {
           pending_down = 0; down_x = x; down_y = y; down_at = monotonic_ms();
+          max_dx = max_dy = 0;
           moved = fired = 0;
         } else if (active && !pending_up) {
           int slop = config.slop > 0 ? config.slop : 30;
+          int dx = abs(x - down_x), dy = abs(y - down_y);
+          if (dx > max_dx) max_dx = dx;
+          if (dy > max_dy) max_dy = dy;
           if (abs(x - down_x) > slop || abs(y - down_y) > slop) moved = 1;
         }
         if (pending_up) {
@@ -815,7 +819,12 @@ static void serve_input_client(int conn) {
           int slop = config.slop > 0 ? config.slop : 30;
           int tap = !moved && now - down_at < 500;
           if (!fired && in_ticker(&config, down_x, down_y)) {
-            char out = tap ? 'T' : y - down_y > slop ? 'N' : 'D';
+            /* A status-bar tap has little leverage and naturally drifts more than Android's
+             * normal click slop. Keep real pulls/flicks distinct, but don't turn a 1 cm
+             * thumb tap into a random dismiss. */
+            int ticker_tap = now - down_at < 700
+                && max_dx <= slop * 2 && max_dy <= slop * 2;
+            char out = ticker_tap ? 'T' : y - down_y > slop ? 'N' : 'D';
             if (!write_full(conn, &out, 1)) goto done;
             fired = 1;
           }
@@ -854,7 +863,7 @@ done:
 static int input_helper_main(uid_t app_uid) {
   if (geteuid() != 0 || app_uid < 10000)
     return 126;
-  (void)prctl(PR_SET_NAME, "tb-input", 0, 0, 0);
+  (void)prctl(PR_SET_NAME, "tb-input2", 0, 0, 0);
   signal(SIGPIPE, SIG_IGN);
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0)
