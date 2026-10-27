@@ -64,12 +64,17 @@ final class RootBootstrap {
                     "Root attempts paused after kernel panic — normal TickerBar is safe");
             RootFeatures.restoreAccessibilityFallback(app);
         } else if (!userRequested) {
-            state(app, "idle", "Idle — tap Start root attempt");
+            int boot = Settings.Global.getInt(app.getContentResolver(),
+                    Settings.Global.BOOT_COUNT, -1);
+            if (boot >= 0 && prefs(app).getInt(KEY_ATTEMPT_BOOT, -2) == boot)
+                state(app, "reboot_required",
+                        "Root did not start this boot — reboot before the next attempt");
+            else state(app, "idle", "Idle — tap Start root attempt");
             RootFeatures.restoreAccessibilityFallback(app);
         }
     }
 
-    /** Arms exactly one bootstrap attempt, either from the root menu or boot receiver. */
+    /** Arms exactly one bootstrap attempt from the root menu. */
     static void request(Context context) {
         if (!ROOT_ATTEMPTS_ENABLED) {
             app = context.getApplicationContext();
@@ -147,7 +152,8 @@ final class RootBootstrap {
             // songyuan runs a 6.12 kernel. Its reliable page capture is the
             // v6/Oppo reclaim teardown; the v5.10 hold-all profile misses the
             // first KASLR write on this build.
-            String command = "export OPPO_RECLAIM_TEARDOWN=1 TICKERBAR_ROOT_ARMED=1 TICKERBAR_DAEMON=1 TICKERBAR_ALLOWED_UID="
+            String command = "export OPPO_RECLAIM_TEARDOWN=1 TICKERBAR_ROOT_ARMED=1 TICKERBAR_DAEMON=1 TICKERBAR_STAGE_LOG=/data/local/tmp/tickerbar-root-stage-"
+                    + bootCount + ".log TICKERBAR_ALLOWED_UID="
                     + Process.myUid() + "; exec " + quote(payload.getAbsolutePath());
             if (bootCount >= 0)
                 prefs(c).edit().putInt(KEY_ATTEMPT_BOOT, bootCount).apply();

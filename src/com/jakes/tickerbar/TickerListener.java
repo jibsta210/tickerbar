@@ -1,12 +1,15 @@
 package com.jakes.tickerbar;
 
 import android.app.Notification;
+import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.os.Bundle;
+import android.util.Log;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 
@@ -20,21 +23,37 @@ public class TickerListener extends NotificationListenerService {
 
     @Override public void onListenerConnected() {
         self = this;
+        Shortcuts.publish(this);
         RootBootstrap.start(this);
-        RootVolume.start(this);
+        NativeTicker.start(this);
+        RootInput.stop();
         RootOverlayClient.start(this);
+        try {
+            StatusBarNotification[] current = getActiveNotifications();
+            if (current != null) for (StatusBarNotification sbn : current) {
+                if (sbn == null || getPackageName().equals(sbn.getPackageName())) continue;
+                remember(sbn.getPackageName());
+                rememberType(sbn);
+                hideFromStockShadeIfSelected(sbn);
+            }
+        } catch (Exception ignored) {}
     }
     @Override public void onListenerDisconnected() {
-        RootVolume.stop();
+        NativeTicker.stop();
         RootOverlayClient.stop();
         if (self == this) self = null;
     }
 
     @Override public void onDestroy() {
-        RootVolume.stop();
+        NativeTicker.stop();
         RootOverlayClient.stop();
         if (self == this) self = null;
         super.onDestroy();
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        NativeTicker.refresh(this);
     }
 
     /** Dismiss a notification the user opened from the ticker, as the shade would. */
@@ -78,6 +97,17 @@ public class TickerListener extends NotificationListenerService {
         try { return l.getCurrentRanking(); } catch (Exception e) { return null; }
     }
 
+    /** Apply the user's app/channel exclusions to HyperOS's real stock shade. */
+    static void filterActive() {
+        TickerListener listener = self;
+        if (listener == null || !RootFeatures.applied()) return;
+        StatusBarNotification[] active;
+        try { active = listener.getActiveNotifications(); }
+        catch (Exception e) { return; }
+        if (active == null) return;
+        for (StatusBarNotification sbn : active) listener.hideFromStockShadeIfSelected(sbn);
+    }
+
     /** Snooze from the shade's long-press menu; it comes back after ms. */
     static void snooze(String key, long ms) {
         TickerListener l = self;
@@ -105,9 +135,10 @@ public class TickerListener extends NotificationListenerService {
         String key = sbn.getKey();
 
         if (!getPackageName().equals(pkg)) remember(pkg);
+        rememberType(sbn);
+        if (hideFromStockShadeIfSelected(sbn)) return;
         if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
         if (getPackageName().equals(pkg)) return;
-        if (Prefs.hidden(this, pkg) || Prefs.typeHidden(this, pkg, n.getChannelId())) return;
         if (Prefs.on(this, Prefs.SKIP_ONGOING)
                 && (sbn.isOngoing() || (n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0)) return;
         if (isIgnored(pkg)) return;
@@ -133,7 +164,7 @@ public class TickerListener extends NotificationListenerService {
         String app = label(pkg);
         Item item = new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon(),
                 n.contentIntent, key, (n.flags & Notification.FLAG_AUTO_CANCEL) != 0);
-        if (!RootOverlayClient.post(item)) ShadeService.post(item);
+        if (!NativeTicker.post(item) && !RootOverlayClient.post(item)) ShadeService.post(item);
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {
@@ -141,9 +172,26 @@ public class TickerListener extends NotificationListenerService {
         last.remove(sbn.getKey());
         intents.remove(sbn.getKey());
         RootOverlayClient.recall(sbn.getKey());
+        NativeTicker.recall(sbn.getKey());
         ShadeService.notificationsChanged();
         // read in the app, swiped away, or replaced: the ticker shouldn't keep showing it
         ShadeService.recall(sbn.getKey());
+    }
+
+    private boolean hideFromStockShadeIfSelected(StatusBarNotification sbn) {
+        if (sbn == null || sbn.getNotification() == null || !RootFeatures.applied()) return false;
+        String pkg = sbn.getPackageName();
+        if (getPackageName().equals(pkg)) return false;
+        Notification n = sbn.getNotification();
+        if (!Prefs.hidden(this, pkg) && !Prefs.typeHidden(this, pkg, n.getChannelId())) return false;
+        try {
+            cancelNotification(sbn.getKey());
+            Log.i("TickerBarFilter", "Removed from stock shade: " + pkg
+                    + " channel=" + n.getChannelId());
+        } catch (Exception failure) {
+            Log.w("TickerBarFilter", "Could not remove " + pkg, failure);
+        }
+        return true;
     }
 
     private boolean isSilent(String key) {
@@ -154,6 +202,7 @@ public class TickerListener extends NotificationListenerService {
     }
 
     private final java.util.HashSet<String> remembered = new java.util.HashSet<String>();
+    private final java.util.HashSet<String> rememberedTypes = new java.util.HashSet<String>();
 
     /** Keep a list of apps that notify, so settings can offer them for hiding. */
     private void remember(String pkg) {
@@ -163,6 +212,24 @@ public class TickerListener extends NotificationListenerService {
             while (seen.size() > 300) seen.remove(seen.iterator().next());
             Prefs.putSet(this, Prefs.SEEN_APPS, seen);
         }
+    }
+
+    private void rememberType(StatusBarNotification sbn) {
+        Notification n = sbn.getNotification();
+        String channelId = n == null ? null : n.getChannelId();
+        if (channelId == null) return;
+        String identity = sbn.getPackageName() + "\t" + channelId;
+        if (!rememberedTypes.add(identity)) return;
+        String name = channelId;
+        try {
+            Ranking ranking = new Ranking();
+            RankingMap map = getCurrentRanking();
+            if (map != null && map.getRanking(sbn.getKey(), ranking)) {
+                NotificationChannel channel = ranking.getChannel();
+                if (channel != null && channel.getName() != null) name = channel.getName().toString();
+            }
+        } catch (Throwable ignored) {}
+        Prefs.rememberType(this, sbn.getPackageName(), channelId, name);
     }
 
     private boolean isIgnored(String pkg) {

@@ -21,10 +21,12 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SOCK_NAME "tickerbar-root"
 #define VOLUME_SOCK_NAME "tickerbar-volume-v2"
+#define INPUT_SOCK_NAME "tickerbar-input-v1"
 
 static uid_t allowed_uid = (uid_t)-1;
 
@@ -647,6 +649,236 @@ static int volume_helper_main(uid_t app_uid) {
   return 1;
 }
 
+/* -------------------------------------------------------------------------
+ * Passive touchscreen gestures.
+ *
+ * Unlike the retired volume helper, this never EVIOCGRABs an input device and
+ * never injects events. Android and every app receive the original touch stream
+ * unchanged. TickerBar merely observes taps/swipes on the two inert custom keys
+ * rendered by SystemUI's stock navigation-bar inflater.
+ */
+
+struct input_config {
+  int32_t screen_w, screen_h, nav_h;
+  int32_t wallet_on, wallet_pos, wallet_trigger, wallet_dist;
+  int32_t corner_on, corner_side, corner_trigger, corner_hold;
+  int32_t corner_width, slop;
+  int32_t ticker_on, ticker_height;
+};
+
+static int64_t monotonic_ms(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0;
+  return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int open_touchscreen(int *max_x, int *max_y) {
+  DIR *dir = opendir("/dev/input");
+  if (!dir)
+    return -1;
+  int result = -1;
+  struct dirent *entry;
+  while ((entry = readdir(dir))) {
+    if (strncmp(entry->d_name, "event", 5) != 0)
+      continue;
+    char path[128];
+    snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0)
+      continue;
+    char name[128] = {0};
+    (void)ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+    if (strstr(name, "TickerBar") || strstr(name, "uinput")) {
+      close(fd);
+      continue;
+    }
+    unsigned long abs_bits[(ABS_MAX + 8U * sizeof(unsigned long)) /
+                           (8U * sizeof(unsigned long))];
+    memset(abs_bits, 0, sizeof(abs_bits));
+    if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) < 0 ||
+        !key_bit(abs_bits, ABS_MT_POSITION_X) ||
+        !key_bit(abs_bits, ABS_MT_POSITION_Y)) {
+      close(fd);
+      continue;
+    }
+    struct input_absinfo xinfo, yinfo;
+    if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &xinfo) != 0 ||
+        ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &yinfo) != 0) {
+      close(fd);
+      continue;
+    }
+    *max_x = xinfo.maximum > xinfo.minimum ? xinfo.maximum - xinfo.minimum : 1;
+    *max_y = yinfo.maximum > yinfo.minimum ? yinfo.maximum - yinfo.minimum : 1;
+    result = fd;
+    break;
+  }
+  closedir(dir);
+  return result;
+}
+
+static int in_corner(const struct input_config *c, int x, int y) {
+  int width = c->corner_width > 0 ? c->corner_width : c->screen_w * 15 / 100;
+  if (width < c->screen_w / 20)
+    width = c->screen_w / 20;
+  if (y < c->screen_h - c->nav_h)
+    return 0;
+  return c->corner_side == 0 ? x <= width : x >= c->screen_w - width;
+}
+
+static int in_wallet(const struct input_config *c, int x, int y) {
+  if (y < c->screen_h - c->nav_h)
+    return 0;
+  int width = c->screen_w / 5;
+  int center = c->wallet_pos == 0 ? width / 2
+             : c->wallet_pos == 2 ? c->screen_w - width / 2
+             : width / 2; /* The native nav layout keeps Wallet at the left edge. */
+  return x >= center - width / 2 && x <= center + width / 2;
+}
+
+static int in_ticker(const struct input_config *c, int x, int y) {
+  (void)x;
+  int height = c->ticker_height > 0 ? c->ticker_height : c->screen_h / 20;
+  return c->ticker_on && y >= 0 && y <= height;
+}
+
+static void serve_input_client(int conn) {
+  int max_x = 1, max_y = 1;
+  int input = open_touchscreen(&max_x, &max_y);
+  int status = input >= 0 ? 0 : 1;
+  if (!write_full(conn, &status, sizeof(status)) || status != 0)
+    goto done;
+
+  struct input_config config;
+  memset(&config, 0, sizeof(config));
+  if (!read_full(conn, &config, sizeof(config)))
+    goto done;
+
+  int raw_x = 0, raw_y = 0, x = 0, y = 0;
+  int down_x = 0, down_y = 0;
+  int active = 0, pending_down = 0, pending_up = 0, moved = 0, fired = 0;
+  int64_t down_at = 0, first_tap_at = 0;
+  int first_x = 0, first_y = 0;
+
+  for (;;) {
+    int timeout = -1;
+    if (active && !moved && !fired && config.corner_on &&
+        config.corner_trigger == 0 && in_corner(&config, down_x, down_y)) {
+      int hold = config.corner_hold < 150 ? 150 : config.corner_hold;
+      int64_t remaining = down_at + hold - monotonic_ms();
+      timeout = remaining <= 0 ? 0 : remaining > 2000 ? 2000 : (int)remaining;
+    }
+    struct pollfd polls[2] = {
+      {conn, POLLIN | POLLHUP | POLLERR, 0},
+      {input, POLLIN | POLLHUP | POLLERR, 0}
+    };
+    int ready;
+    do { ready = poll(polls, 2, timeout); } while (ready < 0 && errno == EINTR);
+    if (ready < 0 || (polls[0].revents & (POLLHUP | POLLERR | POLLNVAL)))
+      break;
+    if (ready == 0) {
+      if (active && !moved && !fired && in_corner(&config, down_x, down_y)) {
+        char event = 'C';
+        if (!write_full(conn, &event, 1)) break;
+        fired = 1;
+      }
+      continue;
+    }
+    if (polls[0].revents & POLLIN) {
+      if (!read_full(conn, &config, sizeof(config)))
+        break;
+    }
+    if (!(polls[1].revents & POLLIN))
+      continue;
+    struct input_event event;
+    while (read(input, &event, sizeof(event)) == sizeof(event)) {
+      if (event.type == EV_ABS && event.code == ABS_MT_POSITION_X)
+        raw_x = event.value;
+      else if (event.type == EV_ABS && event.code == ABS_MT_POSITION_Y)
+        raw_y = event.value;
+      else if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID) {
+        if (event.value >= 0) { active = 1; pending_down = 1; pending_up = 0; }
+        else if (active) pending_up = 1;
+      } else if (event.type == EV_SYN && event.code == SYN_REPORT) {
+        x = raw_x * config.screen_w / max_x;
+        y = raw_y * config.screen_h / max_y;
+        if (pending_down) {
+          pending_down = 0; down_x = x; down_y = y; down_at = monotonic_ms();
+          moved = fired = 0;
+        } else if (active && !pending_up) {
+          int slop = config.slop > 0 ? config.slop : 30;
+          if (abs(x - down_x) > slop || abs(y - down_y) > slop) moved = 1;
+        }
+        if (pending_up) {
+          int64_t now = monotonic_ms();
+          int slop = config.slop > 0 ? config.slop : 30;
+          int tap = !moved && now - down_at < 500;
+          if (!fired && in_ticker(&config, down_x, down_y)) {
+            char out = tap ? 'T' : y - down_y > slop ? 'N' : 'D';
+            if (!write_full(conn, &out, 1)) goto done;
+            fired = 1;
+          }
+          if (!fired && config.corner_on && config.corner_trigger == 1 && tap &&
+              in_corner(&config, down_x, down_y)) {
+            if (first_tap_at && now - first_tap_at <= 400 &&
+                abs(down_x - first_x) < slop * 4 && abs(down_y - first_y) < slop * 4) {
+              char out = 'C';
+              if (!write_full(conn, &out, 1)) goto done;
+              first_tap_at = 0;
+            } else {
+              first_tap_at = now; first_x = down_x; first_y = down_y;
+            }
+          }
+          if (!fired && config.wallet_on && in_wallet(&config, down_x, down_y) &&
+              !(config.corner_on && in_corner(&config, down_x, down_y))) {
+            int swipe = down_y - y >= (config.wallet_dist > 0 ? config.wallet_dist : 40);
+            int wanted = (config.wallet_trigger == 0 && (tap || swipe)) ||
+                         (config.wallet_trigger == 1 && tap) ||
+                         (config.wallet_trigger == 2 && swipe);
+            if (wanted) {
+              char out = 'W';
+              if (!write_full(conn, &out, 1)) goto done;
+            }
+          }
+          active = pending_up = 0;
+        }
+      }
+    }
+  }
+
+done:
+  if (input >= 0) close(input);
+}
+
+static int input_helper_main(uid_t app_uid) {
+  if (geteuid() != 0 || app_uid < 10000)
+    return 126;
+  (void)prctl(PR_SET_NAME, "tb-input", 0, 0, 0);
+  signal(SIGPIPE, SIG_IGN);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0)
+    return 1;
+  struct sockaddr_un sun;
+  socklen_t sun_len = named_address(&sun, INPUT_SOCK_NAME);
+  if (bind(fd, (struct sockaddr *)&sun, sun_len) != 0 || listen(fd, 2) != 0) {
+    close(fd);
+    return 1;
+  }
+  for (;;) {
+    int conn = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
+    if (conn < 0 && errno == EINTR) continue;
+    if (conn < 0) break;
+    struct ucred peer;
+    socklen_t peer_len = sizeof(peer);
+    if (getsockopt(conn, SOL_SOCKET, SO_PEERCRED, &peer, &peer_len) == 0 &&
+        (peer.uid == app_uid || peer.uid == 0))
+      serve_input_client(conn);
+    close(conn);
+  }
+  close(fd);
+  return 1;
+}
+
 static int umh_main(void) {
   if (geteuid() != 0) {
     return 126;
@@ -680,6 +912,13 @@ int tickerbar_su_main(int argc, char **argv) {
     if (!end || *end != '\0' || uid > UINT32_MAX)
       return 2;
     return volume_helper_main((uid_t)uid);
+  }
+  if (argc >= 3 && strcmp(argv[1], "--input-helper") == 0) {
+    char *end = NULL;
+    unsigned long uid = strtoul(argv[2], &end, 10);
+    if (!end || *end != '\0' || uid > UINT32_MAX)
+      return 2;
+    return input_helper_main((uid_t)uid);
   }
   return client_main(argc, argv);
 }

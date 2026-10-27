@@ -72,6 +72,7 @@ public final class Prefs {
     public static final String HIDDEN_APPS  = "hidden_apps";    // packages kept out of the shade and the ticker
     public static final String SEEN_APPS    = "seen_apps";      // packages that have notified, for the hide list
     public static final String HIDDEN_TYPES = "hidden_types";   // single channels hidden: "pkg\tchannel\tname" per line
+    public static final String SEEN_TYPES   = "seen_types";     // channels observed by the listener, same format
     public static final String ONE_SHADE    = "one_shade";
     public static final String SHADE_THEME  = "shade_theme";    // 0 match system, 1 dark, 2 light
     public static final String SHADE_ACCENT = "shade_accent";   // UnifiedShade.ACCENTS index, 0 system
@@ -90,6 +91,10 @@ public final class Prefs {
 
     // Google: 0 = the app's home feed (Discover cards), 1 = straight to the search box
     public static final String GOOGLE_MODE   = "google_mode";
+
+    // Root profile: keep standard Android process management but disable HyperOS's
+    // extra Smart Power Control/free-memory kill layer for this boot.
+    public static final String MEMORY_RELAXED = "memory_relaxed";
 
     // shade shortcuts
     public static final String SHADE_HOME   = "shade_home";
@@ -116,6 +121,7 @@ public final class Prefs {
         DEF.put(CORNER_ON, 1);   DEF.put(CORNER_SIDE, 2); DEF.put(CORNER_ACTION, 0);
         DEF.put(CORNER_MS, 450); DEF.put(CORNER_W, 0);    DEF.put(CORNER_HINT, 0);
         DEF.put(GOOGLE_MODE, 0);
+        DEF.put(MEMORY_RELAXED, 1);
         DEF.put(STYLE, 0);       DEF.put(CORNER_TRIGGER, 0); DEF.put(AUTO_UPDATE, 1);
         DEF.put(CORNER_HIDE_VIDEO, 1); DEF.put(FRONT_MODE, 1);
     }
@@ -162,12 +168,38 @@ public final class Prefs {
 
     /** Hidden notification types (one app's channel), each {package, channel id, channel name}. */
     public static java.util.List<String[]> hiddenTypes(Context c) {
+        return typeList(c, HIDDEN_TYPES);
+    }
+
+    public static java.util.List<String[]> seenTypes(Context c) {
+        return typeList(c, SEEN_TYPES);
+    }
+
+    private static java.util.List<String[]> typeList(Context c, String key) {
         java.util.List<String[]> out = new java.util.ArrayList<String[]>();
-        for (String line : str(c, HIDDEN_TYPES).split("\n")) {
+        for (String line : str(c, key).split("\n")) {
             String[] f = line.split("\t", -1);
             if (f.length >= 2 && !f[0].isEmpty()) out.add(new String[]{f[0], f[1], f.length > 2 ? f[2] : f[1]});
         }
         return out;
+    }
+
+    public static void rememberType(Context c, String pkg, String channel, String name) {
+        if (pkg == null || pkg.isEmpty() || channel == null || channel.isEmpty()) return;
+        java.util.List<String[]> seen = seenTypes(c);
+        StringBuilder out = new StringBuilder();
+        boolean found = false;
+        for (String[] type : seen) {
+            if (type[0].equals(pkg) && type[1].equals(channel)) {
+                found = true;
+                type[2] = name == null || name.isEmpty() ? type[2] : name;
+            }
+            out.append(type[0]).append('\t').append(type[1]).append('\t').append(type[2]).append('\n');
+        }
+        if (!found) out.append(pkg).append('\t').append(channel).append('\t')
+                .append(name == null || name.isEmpty() ? channel : name.replace('\t', ' ').replace('\n', ' '))
+                .append('\n');
+        put(c, SEEN_TYPES, out.toString());
     }
 
     public static boolean typeHidden(Context c, String pkg, String channel) {
@@ -185,12 +217,14 @@ public final class Prefs {
         if (hide) b.append(pkg).append('\t').append(channel).append('\t')
                 .append(name == null ? channel : name.replace('\t', ' ').replace('\n', ' ')).append('\n');
         put(c, HIDDEN_TYPES, b.toString());
+        TickerListener.filterActive();
     }
 
     public static void setHidden(Context c, String pkg, boolean hide) {
         java.util.Set<String> s = set(c, HIDDEN_APPS);
         if (hide) s.add(pkg); else s.remove(pkg);
         putSet(c, HIDDEN_APPS, s);
+        TickerListener.filterActive();
     }
 
     /** One-off resets when a default changes meaning. */

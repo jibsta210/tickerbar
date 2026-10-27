@@ -449,7 +449,7 @@ public class ShadeService extends AccessibilityService {
     public static boolean notifications() {
         ShadeService s = self;
         if (s != null && s.oneShade()) { s.openShade(); return true; }
-        if (RootShell.available()) {
+        if (Shell.privileged()) {
             Shell.run("cmd statusbar expand-notifications", null);
             return true;
         }
@@ -459,7 +459,7 @@ public class ShadeService extends AccessibilityService {
     public static boolean quickSettings() {
         ShadeService s = self;
         if (s != null && s.oneShade()) { s.openShade(); return true; }
-        if (RootShell.available()) {
+        if (Shell.privileged()) {
             Shell.run("cmd statusbar expand-settings", null);
             return true;
         }
@@ -1575,7 +1575,11 @@ public class ShadeService extends AccessibilityService {
     /** A small invisible zone in a nav-bar corner. Long-press runs its action, on any screen. */
     private void updateCorner() {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
-        boolean want = !RootFeatures.applied() && Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive())
+        // RootInput is deliberately disabled on this HyperOS build: its low-level event
+        // observer and the fabricated navbar overlay were the only changes correlated with
+        // SystemUI flicker/reboots. Keep the proven accessibility gesture active until a
+        // replacement is actually connected, even while the rest of root integration is live.
+        boolean want = !RootInput.connected() && Prefs.on(this, Prefs.CORNER_ON) && (pm == null || pm.isInteractive())
                 && !videoInFront();
         if (!want) {
             if (corner != null && cornerAttached) {

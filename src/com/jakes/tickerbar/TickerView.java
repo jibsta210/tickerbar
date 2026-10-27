@@ -49,6 +49,9 @@ public class TickerView extends View {
 
     private boolean autoPad = true, hop = true;
     private int pad = 120, gap = 14, mode = MODE_REVEAL, speed = 160, delay = 700;
+    // Space kept clear for SystemUI's clock and status icons when this view is an
+    // application overlay below the real status bar. Accessibility overlays set 0,0.
+    private int contentInsetLeft, contentInsetRight;
     private float textPx = 36;
     private int opacity = 100;
 
@@ -118,6 +121,13 @@ public class TickerView extends View {
     public void setCorners(int tlR, int tlCx, int tlCy, int trR, int trCx, int trCy) {
         this.tlR = tlR; this.tlCx = tlCx; this.tlCy = tlCy;
         this.trR = trR; this.trCx = trCx; this.trCy = trCy;
+        relayout();
+        invalidate();
+    }
+
+    public void setContentInsets(int left, int right) {
+        contentInsetLeft = Math.max(0, left);
+        contentInsetRight = Math.max(0, right);
         relayout();
         invalidate();
     }
@@ -284,7 +294,8 @@ public class TickerView extends View {
     private void segments(Line l, int w, float ox, float oy) {
         float left, right;
         if (look == LOOK_CARD) {
-            left = card.left + cardR * 0.6f + (icon != null ? iconSize() + 8 * density : 0);
+            left = Math.max(card.left + cardR * 0.6f, contentInsetLeft)
+                    + (icon != null ? iconSize() + 8 * density : 0);
             right = card.right - cardR * 0.6f;
         } else {
             left = pad;
@@ -299,6 +310,8 @@ public class TickerView extends View {
                 if (cr >= 0) right = cr - ox - margin;
             }
         }
+        left = Math.max(left, contentInsetLeft);
+        right = Math.min(right, w - contentInsetRight);
 
         List<float[]> segs = new ArrayList<float[]>();
         if (right - left > 1) segs.add(new float[]{left, right});
@@ -368,7 +381,7 @@ public class TickerView extends View {
             bg.clearShadowLayer();
             if (icon != null) {
                 int s = Math.round(iconSize());
-                int ix = Math.round(card.left + cardR * 0.6f);
+                int ix = Math.round(Math.max(card.left + cardR * 0.6f, contentInsetLeft));
                 int iy = Math.round(card.centerY() - s / 2f);
                 icon.setBounds(ix, iy, ix + s, iy + s);
                 icon.draw(c);

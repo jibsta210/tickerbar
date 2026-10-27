@@ -28,21 +28,28 @@ and HyperOS between them wouldn't do these things.
 - **Checks for updates** from this repo's GitHub releases when you open it, downloads
   automatically, then shows the system install confirmation. Waits until the app is
   visible and unlocked; avoids the silent-install path rejected by HyperOS.
-- **POCO F9 Ultra root bootstrap is safety-paused.** The exact target produced a verified
-  kernel panic at the task-tail redirect, so release builds do not arm the bundled module.
-  Shizuku and Accessibility remain the stable control path.
+- **POCO F9 Ultra root bootstrap** targets `songyuan` on
+  `OS3.0.309.0.WGNMIXM`, starts an app-authenticated root worker and retains Shizuku as the
+  reboot/failure fallback. One bounded attempt is allowed per boot.
+- **Root-native integration** enables HyperOS's real single-page shade, renders the ticker
+  without Accessibility, keeps the stable overlay fallback for wallet/corner gestures,
+  keeps the stock 150-level volume path, hides selected notification apps/channels from the
+  stock shade and can relax HyperOS's extra process-killing layer without disabling Android's
+  normal low-memory handling.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
   replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
-  opens its real floating control. The protected Security Center install interceptor still
-  requires root because its provider enforces a signature-only permission.
+  opens its real floating control. Pairing is remembered, but Android still requires the
+  Shizuku server to be started again after each reboot.
 
 ## Permissions
 
 | Permission | Why |
 |---|---|
-| Accessibility | draws the ticker and wallet card, handles the corner gesture and fine volume keys |
+| Accessibility | fallback ticker, wallet card, corner gesture and fine volume keys when root is unavailable |
 | Modify audio settings | sets media volume to the selected level |
 | Notification access | reading notifications for the ticker |
+| Display over other apps | root-native ticker (granted by TickerBar's root integration) |
+| Usage access | identifies the foreground/home app for native ticker and wallet behavior |
 
 On MIUI you may need **App info → ⋮ → Allow restricted settings** before notification
 access can be granted to a sideloaded app.

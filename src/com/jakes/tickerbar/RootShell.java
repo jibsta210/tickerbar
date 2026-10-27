@@ -51,7 +51,7 @@ final class RootShell {
         // output-only command mode. Keep root alive across an in-place app update;
         // the next boot starts the status-aware daemon bundled with this APK.
         if (!result.connected)
-            return transact(runnable, 'C', true);
+            return transact(runnable, 'C', false);
         return result;
     }
 

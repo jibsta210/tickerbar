@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Root-backed system integration that replaces HyperOS permission screens and hacks. */
 final class RootFeatures {
     private static final String PREFS = "root_features";
-    private static final String KEY_SHADE_RESTART_BOOT = "shade_restart_boot";
+    private static final String KEY_SHADE_RESTART_BOOT = "native_systemui_restart_boot_v11426";
     private static final AtomicBoolean APPLYING = new AtomicBoolean();
     private static final AtomicBoolean DETACHING = new AtomicBoolean();
     private static volatile boolean applied;
@@ -42,7 +42,8 @@ final class RootFeatures {
         // gives it the expected name without copying an executable out of the APK.
         String property = "ln -sf " + quote(resetprop.getAbsolutePath())
                 + " /data/local/tmp/resetprop"
-                + " && /data/local/tmp/resetprop -n debug.sysui.use_control_center -1";
+                + " && /data/local/tmp/resetprop -n debug.sysui.use_control_center -1"
+                + " && /data/local/tmp/resetprop -n ro.config.media_vol_steps 150";
         RootShell.Result prop = RootShell.exec(property);
         if (!prop.connected || prop.code != 0) {
             Log.e("TickerBarRoot", "Legacy shade override failed: " + prop.output);
@@ -52,17 +53,31 @@ final class RootFeatures {
         String listener = new ComponentName(c, TickerListener.class).flattenToString();
         String recorderTile = "custom(com.jakes.tickerbar/.RecorderTileService)";
         String stockRecorderTile = "custom(com.miui.screenrecorder/.service.QuickService)";
+        String powerTile = "custom(com.jakes.tickerbar/.PowerTileService)";
         String command =
                 // Trigger SystemUI's observed setting flow after installing the debug override.
                 "settings put system use_control_panel 0; "
-                // Native Home long-press replaces the accessibility corner search zone.
-                + "settings put system long_press_home_key_no_ui launch_google_search; "
+                + "settings delete secure sysui_nav_bar; "
+                // Root-native navbar injection is safety-disabled. Restore HyperOS's
+                // own long-press behavior and keep wallet/corner on the fallback UI.
+                + "settings delete system long_press_home_key_no_ui; "
                 // Grant TickerBar's own special access directly, without Security Center timers.
                 + "cmd notification allow_listener " + quote(listener) + " 0; "
                 + "cmd notification allow_dnd " + quote(c.getPackageName()) + " 0; "
                 + "appops set " + quote(c.getPackageName()) + " SYSTEM_ALERT_WINDOW allow; "
+                + "appops set " + quote(c.getPackageName()) + " GET_USAGE_STATS allow; "
                 + "appops set " + quote(c.getPackageName()) + " WRITE_SETTINGS allow; "
+                + "pm grant " + quote(c.getPackageName())
+                + " android.permission.WRITE_SECURE_SETTINGS; "
                 + "appops set " + quote(c.getPackageName()) + " REQUEST_INSTALL_PACKAGES allow; "
+                + "appops set " + quote(c.getPackageName()) + " ACCESS_RESTRICTED_SETTINGS allow; "
+                // Keep ADB authorization permanent and remove Xiaomi's separate install
+                // confirmation/scan screens. The normal package installer and Play Protect
+                // remain available; these keys only govern the vendor/ADB detours.
+                + "settings put global adb_allowed_connection_time 0; "
+                + "settings put global adb_install_need_confirm 0; "
+                + "settings put global verifier_verify_adb_installs 0; "
+                + "settings put system virus_scan_install 0; "
                 // Repair HyperOS Recorder's incomplete first-run permissions.
                 + "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
                 + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
@@ -72,32 +87,85 @@ final class RootFeatures {
                 + "case \"$tiles\" in *" + quote(stockRecorderTile) + "*) "
                 + "tiles=\"${tiles/" + stockRecorderTile + "/" + recorderTile + "}\"; "
                 + "settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                // Use Android's real Device Controls panel with Google Home as its provider.
+                // HyperOS only embeds an inline Home list in its split control center; the
+                // controls tile is the stable stock equivalent in the combined shade.
+                + "case \",$tiles,\" in *,controls,*) ;; *) "
+                + "tiles=\"controls,$tiles\"; settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                // The first pull shows five columns. Put Power in its top-right slot,
+                // but never override a position the user chooses later.
+                + "case \",$tiles,\" in *," + quote(powerTile) + ",*) ;; *) "
+                + "wrapped=\",$tiles,\"; case \"$wrapped\" in *,cell,*) "
+                + "wrapped=\"${wrapped/,cell,/,cell," + powerTile + ",}\";; *) "
+                + "wrapped=\"${wrapped%,}," + powerTile + ",\";; esac; "
+                + "tiles=\"${wrapped#,}\"; tiles=\"${tiles%,}\"; "
+                + "settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                + "settings put secure miui_control_center_device_controller"
+                + " com.google.android.apps.chromecast.app; "
+                + "settings put secure lockscreen_show_controls 1; "
+                + "settings put secure lockscreen_smart_device_control 1; "
+                // Keep Android's footer flag enabled too. HyperOS currently omits that footer,
+                // so PowerTileService provides the visible top-corner action.
+                + "settings put global sysui_pm_lite 1; "
                 // This is the separate Install-via-USB interceptor. Antivirus stays enabled.
                 + "content call --uri content://com.miui.securitycenter.remoteprovider"
                 + " --method callPreference --arg SET --extra type:i:1"
                 + " --extra key:s:permcenter_install_intercept_enabled"
-                + " --extra value:b:false >/dev/null";
+                + " --extra value:b:false >/dev/null; "
+                // The stock 150-level stream handles keys, calls, casting and its own panel.
+                // Retire the old EVIOCGRAB helper if an earlier build left it running.
+                + "for f in /proc/[0-9]*/comm; do name=$(cat \"$f\" 2>/dev/null); "
+                + "case \"$name\" in tickerbar-vol2|tickerbar-input*|tb-input) "
+                + "p=${f#/proc/}; p=${p%/comm}; kill -TERM \"$p\";; esac; done";
         RootShell.Result result = RootShell.exec(command);
         if (!result.connected || result.code != 0) {
             Log.e("TickerBarRoot", "Root feature setup failed (" + result.code + "): " + result.output);
             return false;
         }
-        restartSystemUiForShadeOncePerBoot(c);
+        installSystemUiForBoot(c);
+        MemoryProfile.apply(c);
         applied = true;
         Log.i("TickerBarRoot", "Root system integration ready");
+        TickerListener.filterActive();
         ShadeService.refresh();
-        RootVolume.start(c);
+        startNativeServices(c);
         RootOverlayClient.start(c);
         new Thread(new Runnable() { public void run() {
             for (int i = 0; i < 40; i++) {
-                if (RootVolume.connected() && RootOverlayClient.connected()) {
-                    detachAccessibilityIfReady(c);
-                    return;
-                }
+                if (NativeTicker.ready()) return;
                 try { Thread.sleep(250); } catch (InterruptedException ignored) { return; }
             }
         }}, "TickerBar-wait-native-ui").start();
         return true;
+    }
+
+    private static String removeNavOverlaysCommand() {
+        StringBuilder command = new StringBuilder();
+        for (int i = 0; i < 6; i++) {
+            String name = "TickerBarNav" + i;
+            if (command.length() > 0) command.append("; ");
+            command.append("cmd overlay disable --user 0 com.android.shell:")
+                    .append(name).append(" >/dev/null 2>&1 || true")
+                    .append("; cmd overlay delete com.android.shell:").append(name)
+                    .append(" >/dev/null 2>&1 || true");
+        }
+        return command.toString();
+    }
+
+    /** HyperOS may reset special app-ops for a moment after replacing the APK. */
+    private static void startNativeServices(final Context context) {
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() { public void run() {
+            for (int i = 0; i < 8; i++) {
+                RootShell.exec("appops set " + quote(app.getPackageName())
+                        + " SYSTEM_ALERT_WINDOW allow; appops set " + quote(app.getPackageName())
+                        + " GET_USAGE_STATS allow");
+                NativeTicker.start(app);
+                RootInput.stop();
+                if (NativeTicker.ready()) return;
+                try { Thread.sleep(500); } catch (InterruptedException ignored) { return; }
+            }
+        }}, "TickerBar-native-services").start();
     }
 
     /**
@@ -106,7 +174,7 @@ final class RootFeatures {
      * installing the override. The boot-count marker prevents repeated UI interruptions when
      * applyAsync is called again by tiles, services, or an app activity.
      */
-    private static void restartSystemUiForShadeOncePerBoot(Context context) {
+    private static void installSystemUiForBoot(Context context) {
         int boot;
         try {
             boot = Settings.Global.getInt(context.getContentResolver(), Settings.Global.BOOT_COUNT);
@@ -117,6 +185,10 @@ final class RootFeatures {
 
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         if (prefs.getInt(KEY_SHADE_RESTART_BOOT, -1) == boot) return;
+
+        RootShell.Result nav = RootShell.exec(removeNavOverlaysCommand());
+        if (!nav.connected || nav.code != 0)
+            Log.w("TickerBarRoot", "Navbar overlay cleanup failed (" + nav.code + "): " + nav.output);
 
         RootShell.Result restart = RootShell.exec(
                 "pid=\"$(pidof com.android.systemui)\"; "
@@ -144,8 +216,10 @@ final class RootFeatures {
             String command = "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
                     + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
                     + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
-                    + "am start-foreground-service --user 0"
-                    + " -a miui.intent.screenrecorder.RECORDER_SERVICE"
+                    // The vendor service deliberately does not call startForeground(). Launch
+                    // its translucent trampoline so it may start the service in the foreground.
+                    + "am start --user 0"
+                    + " -a miui.intent.screenrecorder.RECORDER_ACTIVITY"
                     + " -p com.miui.screenrecorder"
                     + " --ez is_start_immediately false"
                     + " --ez need_check_audio_permission false";
@@ -160,8 +234,8 @@ final class RootFeatures {
                 code = result.code;
                 output = result.output;
             }
-            boolean ok = code == 0 && (output.contains("Starting service")
-                    || output.contains("already running"));
+            boolean ok = code == 0 && (output.contains("Starting:")
+                    || output.contains("Warning: Activity not started"));
             if (callback != null) callback.done(ok, output.trim());
             if (ok) applyAsync(app);
         }}, "TickerBar-recorder").start();
@@ -171,7 +245,7 @@ final class RootFeatures {
 
     /** Retire only TickerBar's accessibility component after every replacement is live. */
     static void detachAccessibilityIfReady(final Context context) {
-        if (!applied() || !RootVolume.connected() || !RootOverlayClient.connected()) return;
+        if (!applied() || !NativeTicker.ready() || !RootInput.connected()) return;
         if (!DETACHING.compareAndSet(false, true)) return;
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { public void run() {

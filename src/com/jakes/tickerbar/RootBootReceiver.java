@@ -4,13 +4,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
-/** Starts the coordinator after updates and arms one automatic attempt after boot. */
+/** Starts the coordinator after boot/update. Kernel attempts are always user initiated. */
 public class RootBootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
-        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
-            RootBootstrap.request(context);
-        } else {
-            RootBootstrap.start(context);
-        }
+        Shortcuts.publish(context);
+        RootBootstrap.start(context);
     }
 }

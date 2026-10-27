@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle s) {
         super.onCreate(s);
         Prefs.migrate(this);
+        Shortcuts.publish(this);
         RootBootstrap.start(this);
         pal = Palette.of(this);
 
@@ -145,8 +146,9 @@ public class MainActivity extends Activity {
         numberRow(c, "Raise or lower  \u00b7 negative sinks it", Prefs.SWIPE_Y, "px");
         numberRow(c, "Swipe distance", Prefs.SWIPE_DIST, "px");
         textRow(c, "App to open", "Package name", Prefs.SWIPE_PKG);
-        note(c, "Lives inside the nav bar, never inside apps. Taps on it pass through to your nav buttons. "
-                + "Google Wallet doesn't share card art with other apps, so pick the closest look.");
+        note(c, "The card uses the proven Accessibility overlay at the navigation-bar edge. Root leaves "
+                + "HyperOS's actual navigation layout untouched, avoiding the SystemUI flicker/reboots caused "
+                + "by the experimental navbar resource replacement.");
 
         // ---------------------------------------------------------- corner
         c = card("Corner gesture");
@@ -160,8 +162,8 @@ public class MainActivity extends Activity {
         switchRow(c, "Show a dot where the zone is", null, Prefs.CORNER_HINT);
         switchRow(c, "Step aside for fullscreen video",
                 "Hidden while the app on screen plays video in landscape", Prefs.CORNER_HIDE_VIDEO);
-        note(c, "With root, HyperOS's native Home-button long-press opens Google and this overlay is retired. "
-                + "Accessibility fallback keeps the configurable corner gesture when root is unavailable.");
+        note(c, "The corner stays on the proven Accessibility overlay even while root is active. The low-level "
+                + "input observer is disabled on this firmware because it was part of the unstable navbar path.");
 
         // ---------------------------------------------------------- google
         c = card("Google");
@@ -182,10 +184,10 @@ public class MainActivity extends Activity {
             actionRow(c, "Start root attempt", "Requires Shizuku for the initial handoff",
                     new Runnable() { public void run() { startRootAttempt(); }});
             actionRow(c, "Apply root system integration",
-                    "Combined system shade, physical volume keys, ticker, wallet and direct permissions",
+                    "Combined system shade, stock volume, ticker, nav gestures and direct permissions",
                     new Runnable() { public void run() {
                         RootFeatures.applyAsync(MainActivity.this);
-                        RootVolume.start(MainActivity.this);
+                        RootInput.stop();
                         RootOverlayClient.start(MainActivity.this);
                         toast("Applying root integration");
                     }});
@@ -210,8 +212,47 @@ public class MainActivity extends Activity {
         actionRow(c, "Restore HyperOS install confirmation",
                 "Turns the stock Security Center install gate back on",
                 new Runnable() { public void run() { setInstallIntercept(true); }});
+        switchRow(c, "Relax HyperOS memory killing",
+                "Disables Smart Power Control's extra kill/free layer; Android's normal low-memory handling stays active",
+                Prefs.MEMORY_RELAXED);
         note(c, "The floating recorder and replacement tile work through either root or Shizuku. "
                 + "The HyperOS install countdown provider has a signature-only permission and still requires root.");
+
+        // ---------------------------------------------------------- status bar
+        c = card("Status bar");
+        statusSlotRow(c, "Clock", "Show the stock HyperOS status-bar clock", "clock");
+        statusIntRow(c, "Seconds", "Add seconds to the status-bar clock",
+                "secure", "clock_seconds", 0);
+        statusIntRow(c, "Notification icons", "Show app notification icons in the status bar",
+                "system", "status_bar_show_notification_icon", 1);
+        statusIntRow(c, "Network speed", "Live transfer speed beside the system icons",
+                "system", "status_bar_show_network_speed", 0);
+        statusIntRow(c, "Battery percentage", "Show the number in the battery area",
+                "system", "status_bar_show_battery_percent", 1);
+        statusChoiceRow(c, "Battery style", "system", "battery_indicator_style", 1,
+                new int[]{1, 0, 2}, new String[]{"Number", "Graphic", "Top bar"});
+        statusIntRow(c, "Carrier on lock screen", null,
+                "system", "status_bar_show_carrier_under_keyguard", 1);
+        statusSlotRow(c, "Wi-Fi icon", null, "wifi", "wimax");
+        statusSlotRow(c, "Mobile signal", null,
+                "phone_signal", "data_connection", "phone_evdo_signal", "cdma_eri");
+        statusSlotRow(c, "Bluetooth", null,
+                "bluetooth", "bluetooth_handsfree_battery", "ble_unlock_mode");
+        statusSlotRow(c, "NFC", null, "nfc");
+        statusSlotRow(c, "Location", null, "location", "gps");
+        statusSlotRow(c, "Do Not Disturb", null, "zen", "quiet");
+        statusSlotRow(c, "Silent / vibrate", null, "mute", "volume");
+        statusSlotRow(c, "Alarm", null, "alarm_clock");
+        statusSlotRow(c, "Headset", null, "headset", "mikey");
+        statusSlotRow(c, "Casting", null, "cast");
+        statusSlotRow(c, "Work profile", null, "managed_profile");
+        statusSlotRow(c, "Keyboard", null, "ime");
+        statusSlotRow(c, "Sync", null, "sync_active", "sync_failing");
+        statusSlotRow(c, "VPN / secure connection", null, "secure");
+        statusSlotRow(c, "Battery icon", null, "battery");
+        note(c, "Changes use HyperOS's live SystemUI settings—no restart or resource overlay. "
+                + "This build fixes the status-bar clock to the left; its position is not exposed because "
+                + "moving the actual SystemUI view would require the same risky layout injection we removed.");
 
         // ---------------------------------------------------------- shade
         c = card("One shade");
@@ -241,9 +282,10 @@ public class MainActivity extends Activity {
                 + "The lock screen and landscape keep the system shade.");
 
         c = card("Hidden apps");
-        note(c, "Apps switched on here never appear in the one shade or on the ticker. Tip: long-press a "
+        note(c, "Apps switched on here never appear on the ticker. With root they are also removed from "
+                + "HyperOS's stock shade; the fallback one-shade hides them locally. Tip: long-press a "
                 + "notification in the shade to hide just that type (like Messages' pairing notice) or the whole "
-                + "app. HyperOS's own shade and lock screen still show them.");
+                + "app.");
         hiddenAppRows(c);
         hiddenTypeRows(c);
 
@@ -270,9 +312,9 @@ public class MainActivity extends Activity {
                 new Runnable() { public void run() {
                     try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)); }
                     catch (Exception e) { toast("Open Settings \u2192 Notifications \u2192 Do Not Disturb access"); } }});
-        note(c, "Root owns the physical key devices with a crash-safe lease and changes the phone's real "
-                + "150-level media stream. Calls and casting pass through unchanged; closing the lease "
-                + "instantly restores stock keys.");
+        note(c, "Root leaves the physical keys, call volume, casting and HyperOS volume panel completely stock. "
+                + "This phone's real media stream already exposes 150 levels. Fine-step and ringer-cycle settings "
+                + "are retained for the Accessibility fallback only.");
 
         // ---------------------------------------------------------- updates
         c = card("Updates");
@@ -298,7 +340,7 @@ public class MainActivity extends Activity {
         boolean nl = l != null && l.contains(getPackageName() + "/");
         String a = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         boolean ac = a != null && a.contains(getPackageName() + "/");
-        boolean rootUi = RootFeatures.applied() && RootOverlayClient.connected() && RootVolume.connected();
+        boolean rootUi = RootFeatures.applied() && NativeTicker.ready();
         chip(chipAcc, rootUi ? "Root UI on" : ac && ShadeService.isReady() ? "Accessibility fallback"
                         : ac ? "Accessibility: restart it" : "UI service off",
                 rootUi || ac && ShadeService.isReady() ? 1 : ac ? 0 : -1);
@@ -336,8 +378,9 @@ public class MainActivity extends Activity {
         boolean ready = RootBootstrap.attemptsEnabled() && RootShell.available();
         String integration = ready ? "\n"
                 + (RootFeatures.applied() ? "✓ combined SystemUI" : "… SystemUI setup") + "  ·  "
-                + (RootOverlayClient.connected() ? "✓ root overlays" : "… overlays") + "  ·  "
-                + (RootVolume.connected() ? "✓ root volume" : "… volume") : "";
+                + (NativeTicker.ready() ? "✓ native ticker" : "… ticker") + "  ·  "
+                + "navbar stock  ·  "
+                + "✓ stock volume" : "";
         rootLine.setText((ready ? "●  " : RootBootstrap.isBusy() ? "◐  " : "○  ")
                 + RootBootstrap.status(this) + integration);
         rootLine.setTextColor(ready ? pal.good
@@ -514,8 +557,8 @@ public class MainActivity extends Activity {
         LinearLayout chips = new LinearLayout(this);
         chips.setOrientation(LinearLayout.HORIZONTAL);
         chipAcc = chipView(new Runnable() { public void run() {
-            if (RootFeatures.applied() && RootOverlayClient.connected() && RootVolume.connected())
-                toast("Root UI is active; Accessibility is only the automatic fallback");
+            if (RootFeatures.applied() && NativeTicker.ready())
+                toast("Root ticker and native shade are active; navbar remains stock");
             else startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }});
         chipNotif = chipView(new Runnable() { public void run() {
             startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")); }});
@@ -579,6 +622,10 @@ public class MainActivity extends Activity {
     private void changed() {
         ShadeService.refresh();
         RootOverlayClient.refresh(this);
+        NativeTicker.refresh(this);
+        RootInput.stop();
+        TickerListener.filterActive();
+        MemoryProfile.applyAsync(this);
         if (cardPreview != null) cardPreview.invalidate();
     }
 
@@ -664,16 +711,25 @@ public class MainActivity extends Activity {
 
     /** Single notification types hidden from the shade's long-press menu; switch off to show again. */
     private void hiddenTypeRows(LinearLayout card) {
-        java.util.List<String[]> types = Prefs.hiddenTypes(this);
+        java.util.LinkedHashMap<String, String[]> byId = new java.util.LinkedHashMap<String, String[]>();
+        for (String[] type : Prefs.seenTypes(this)) byId.put(type[0] + "\t" + type[1], type);
+        for (String[] type : Prefs.hiddenTypes(this)) byId.put(type[0] + "\t" + type[1], type);
+        java.util.List<String[]> types = new java.util.ArrayList<String[]>(byId.values());
         if (types.isEmpty()) return;
-        note(card, "Hidden notification types");
+        java.util.Collections.sort(types, new java.util.Comparator<String[]>() {
+            public int compare(String[] a, String[] b) {
+                int app = a[0].compareToIgnoreCase(b[0]);
+                return app != 0 ? app : a[2].compareToIgnoreCase(b[2]);
+            }
+        });
+        note(card, "Notification types · switch on to hide");
         final android.content.pm.PackageManager pm = getPackageManager();
         int[][] states = {new int[]{android.R.attr.state_checked}, new int[]{}};
         for (final String[] t : types) {
             String app = t[0];
             try { app = pm.getApplicationLabel(pm.getApplicationInfo(t[0], 0)).toString(); } catch (Exception ignored) {}
             final Switch sw = new Switch(this);
-            sw.setChecked(true);
+            sw.setChecked(Prefs.typeHidden(this, t[0], t[1]));
             sw.setThumbTintList(new ColorStateList(states, new int[]{pal.onPrimary, pal.outline}));
             sw.setTrackTintList(new ColorStateList(states, new int[]{pal.primary, pal.surfaceHigh}));
             sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
@@ -733,6 +789,82 @@ public class MainActivity extends Activity {
             }});
         LinearLayout r = row(card, title, subtitle, sw);
         r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+    }
+
+    /** A SystemUI icon slot controlled by Android's native icon_blacklist tuner. */
+    private void statusSlotRow(LinearLayout card, String title, String subtitle,
+                               final String... slots) {
+        final Switch sw = styledSwitch(SystemBarSettings.slotsVisible(this, slots));
+        final boolean[] internal = new boolean[1];
+        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, final boolean on) {
+                if (internal[0]) return;
+                SystemBarSettings.setSlotsVisible(MainActivity.this, slots, on,
+                        new SystemBarSettings.Callback() { public void done(boolean ok) {
+                            if (ok) return;
+                            internal[0] = true;
+                            sw.setChecked(!on);
+                            internal[0] = false;
+                            toast("Root, Shizuku, or secure-settings access is required");
+                        }});
+            }});
+        LinearLayout r = row(card, title, subtitle, sw);
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+    }
+
+    /** A boolean in HyperOS's own secure/system settings tables. */
+    private void statusIntRow(LinearLayout card, String title, String subtitle,
+                              final String table, final String key, int defaultValue) {
+        final Switch sw = styledSwitch(SystemBarSettings.getInt(this, table, key, defaultValue) != 0);
+        final boolean[] internal = new boolean[1];
+        sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, final boolean on) {
+                if (internal[0]) return;
+                SystemBarSettings.putInt(MainActivity.this, table, key, on ? 1 : 0,
+                        new SystemBarSettings.Callback() { public void done(boolean ok) {
+                            if (ok) return;
+                            internal[0] = true;
+                            sw.setChecked(!on);
+                            internal[0] = false;
+                            toast("Root, Shizuku, or system-settings access is required");
+                        }});
+            }});
+        LinearLayout r = row(card, title, subtitle, sw);
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { sw.toggle(); } });
+    }
+
+    private void statusChoiceRow(LinearLayout card, String title, final String table,
+                                 final String key, int defaultValue,
+                                 final int[] values, final String[] names) {
+        final TextView val = tv(SystemBarSettings.nameFor(this, table, key, defaultValue,
+                values, names), 14, pal.primary);
+        val.setTypeface(MEDIUM);
+        final LinearLayout r = row(card, title, null, val);
+        r.addView(tv("  ▾", 14, pal.primary));
+        r.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            PopupMenu menu = new PopupMenu(MainActivity.this, val, Gravity.END);
+            for (int i = 0; i < names.length; i++) menu.getMenu().add(Menu.NONE, i, i, names[i]);
+            menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+                public boolean onMenuItemClick(final android.view.MenuItem item) {
+                    SystemBarSettings.putInt(MainActivity.this, table, key,
+                            values[item.getItemId()], new SystemBarSettings.Callback() {
+                                public void done(boolean ok) {
+                                    if (ok) val.setText(names[item.getItemId()]);
+                                    else toast("Root, Shizuku, or system-settings access is required");
+                                }});
+                    return true;
+                }});
+            menu.show();
+        }});
+    }
+
+    private Switch styledSwitch(boolean checked) {
+        Switch sw = new Switch(this);
+        sw.setChecked(checked);
+        int[][] states = {new int[]{android.R.attr.state_checked}, new int[]{}};
+        sw.setThumbTintList(new ColorStateList(states, new int[]{pal.onPrimary, pal.outline}));
+        sw.setTrackTintList(new ColorStateList(states, new int[]{pal.primary, pal.surfaceHigh}));
+        return sw;
     }
 
     /** A value on the right; tapping the row opens a menu of choices. */

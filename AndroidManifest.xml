@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="79"
-    android:versionName="1.14.25">
+    android:versionCode="84"
+    android:versionName="1.14.30">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -25,6 +25,10 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Root grants this app-op; the native ticker no longer needs Accessibility. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <!-- Used only to preserve the ticker's "quiet in the foreground app" behaviour. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
 
     <application
         android:label="TickerBar"
@@ -94,6 +98,16 @@
             android:exported="true"
             android:label="Screen recorder"
             android:icon="@drawable/qs_recorder"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+
+        <service android:name=".PowerTileService"
+            android:exported="true"
+            android:label="Power menu"
+            android:icon="@drawable/qs_power"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE"/>
