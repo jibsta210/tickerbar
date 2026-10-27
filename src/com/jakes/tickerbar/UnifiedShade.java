@@ -1204,8 +1204,10 @@ final class UnifiedShade {
     private View homeShelf() {
         LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(svc.px(10), svc.px(10), svc.px(10), svc.px(10));
-        card.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(30))));
+        // The hosted widget already owns the complete rounded Home surface. An additional
+        // TickerBar card behind it produced two differently coloured borders and dead space.
+        card.setPadding(0, 0, 0, 0);
+        card.setBackground(null);
 
         View hosted = createHomeWidget();
         if (hosted != null) {
@@ -1415,6 +1417,9 @@ final class UnifiedShade {
 
         final float density = svc.getResources().getDisplayMetrics().density;
         ArrayList<ViewGroup> tiles = new ArrayList<ViewGroup>();
+        ArrayList<View> largeLayers = new ArrayList<View>();
+        View homeSurface = null;
+        long homeSurfaceArea = -1;
         for (View view : views) {
             if (view instanceof GridView) {
                 GridView grid = (GridView) view;
@@ -1425,9 +1430,18 @@ final class UnifiedShade {
             if (view != widget && view instanceof ViewGroup && !view.hasOnClickListeners()
                     && view.getWidth() > widget.getWidth() * .78f
                     && view.getHeight() > widget.getHeight() * .72f) {
-                view.setBackground(round(Palette.alpha(pal.surfaceHigh, panelA), svc.px(24)));
+                largeLayers.add(view);
+                long area = (long) view.getWidth() * view.getHeight();
+                if (area > homeSurfaceArea) {
+                    homeSurfaceArea = area;
+                    homeSurface = view;
+                }
             }
         }
+        // RemoteViews nests several full-size containers. Styling all of them caused the
+        // green inner outline plus dark outer frame seen in the screenshot. Keep one surface.
+        for (View layer : largeLayers) layer.setBackground(layer == homeSurface
+                ? round(Palette.alpha(pal.surfaceHigh, panelA), svc.px(26)) : null);
         for (final View tile : views) {
             if (!(tile instanceof ViewGroup) || !tile.hasOnClickListeners()) continue;
             int widthDp = Math.round(tile.getWidth() / density);
@@ -1445,6 +1459,7 @@ final class UnifiedShade {
                 // modes resolve to black on this Google Home/HyperOS combination. A normal
                 // background still sits behind every RemoteViews child and keeps its click.
                 int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
+                clearHomeTileBackgroundLayers((ViewGroup) tile);
                 tile.setBackground(ripple(round(pal.primary, radius)));
                 tintHomeControl((ViewGroup) tile, true);
             }
@@ -1508,6 +1523,18 @@ final class UnifiedShade {
             if ("On".equalsIgnoreCase(state) || "Active".equalsIgnoreCase(state)) return true;
         }
         return false;
+    }
+
+    /** Reveal our active background by removing Google's nested, opaque state layer. */
+    private void clearHomeTileBackgroundLayers(ViewGroup tile) {
+        ArrayList<View> children = new ArrayList<View>();
+        collectViews(tile, children);
+        for (View child : children) {
+            if (child == tile || child.getBackground() == null) continue;
+            if (child.getWidth() >= tile.getWidth() * .65f
+                    && child.getHeight() >= tile.getHeight() * .65f)
+                child.setBackground(null);
+        }
     }
 
     private void tintHomeControl(ViewGroup tile, boolean active) {
