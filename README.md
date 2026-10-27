@@ -38,10 +38,12 @@ and HyperOS between them wouldn't do these things.
   normal low-memory handling.
 - **Unified Shade** is an optional single-page replacement with animated compact-to-expanded
   controls, grouped and individually expandable notifications, inline actions/replies, a live
-  automatic-brightness bias slider, the real SystemUI navigation bar, and full colour-wheel
+  adaptive-brightness slider, the real SystemUI navigation bar, and full colour-wheel
   control over its backdrop, panels, controls and text. Notification expansion can default
   open or closed. Its Home shelf hosts Google Home's authenticated Favorites widget directly,
   so device state and actions come from Google Home after a one-time home/device selection.
+  The shade header includes five compact battery-meter styles; HyperOS's three native status-bar
+  battery styles remain selectable separately.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
   replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
   opens its real floating control. Pairing is remembered; Shizuku 13.6+ can restart its

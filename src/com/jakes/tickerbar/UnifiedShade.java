@@ -101,6 +101,8 @@ final class UnifiedShade {
     private static final ComponentName HOME_WIDGET_PROVIDER = new ComponentName(
             "com.google.android.apps.chromecast.app",
             "com.google.android.apps.chromecast.app.appwidget.favorites.FavoritesWidgetReceiver");
+    private static final float HOME_WIDGET_SCALE = 0.82f;
+    private static final int HOME_WIDGET_LOGICAL_HEIGHT_DP = 220;
 
     static int defaultPlace(int index) { return index < ROW_MAX ? PLACE_BOTH : PLACE_GRID; }
 
@@ -124,20 +126,18 @@ final class UnifiedShade {
     private ScrollView scroll;
     private ImageView chevron;
     private SeekBar brightness;
-    /** Absolute display level used only while an automatic-brightness drag is in progress. */
-    private float brightnessPreviewBase = Float.NaN;
-    private float brightnessPreviewMin;
-    private float brightnessPreviewMax = 1f;
-    private float brightnessPreviewStartBias;
+    /** Live range reported by DisplayPowerController; normal-mode max is below the HBM max. */
+    private float brightnessRangeMin = 0.0004f;
+    private float brightnessRangeMax = 0.412f;
     private boolean brightnessPreviewActive;
-    /** Coalesces root Binder calls so a fast finger never starts one shell process per pixel. */
+    private boolean brightnessLevelQueried;
+    /** Coalesces Binder calls so a fast finger never starts one root process per pixel. */
     private final Object brightnessPreviewLock = new Object();
     private float pendingBrightnessPreview;
+    private int pendingBrightnessTransaction;
     private boolean pendingBrightnessPreviewSet;
     private boolean brightnessPreviewWorkerRunning;
     private boolean brightnessPreviewUnavailable;
-    /** HyperOS's stock linear -1..1 adjustment is almost imperceptible near neutral. */
-    private static final float AUTO_BIAS_GAIN = 10f;
     private boolean attached, expanded, closing;
     private boolean chromeIntroPending;
     /** One opening choreography per shade attachment; live refreshes never replay it. */
@@ -466,6 +466,7 @@ final class UnifiedShade {
         refreshers.clear();
         fixed.clear();
         headerStatusIcons.clear();
+        brightnessLevelQueried = false;
         root = new FrameLayout(svc) {
             private float y0, x0;
             private boolean dragging, pulledOpen;
@@ -801,7 +802,10 @@ final class UnifiedShade {
         LinearLayout utilityButtons = new LinearLayout(svc);
         utilityButtons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         final BatteryMeter batt = new BatteryMeter();
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(svc.px(20), svc.px(10));
+        int batteryStyle = Prefs.n(svc, Prefs.SHADE_BATTERY_STYLE);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                svc.px(batteryStyle >= 3 ? 26 : batteryStyle == 2 ? 24 : 20),
+                svc.px(batteryStyle >= 3 ? 14 : 10));
         blp.setMarginStart(svc.px(4));
         indicators.addView(batt, blp);
         utilities.addView(indicators, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -878,6 +882,8 @@ final class UnifiedShade {
     private final class BatteryMeter extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF body = new RectF();
+        private final int style = Math.max(0, Math.min(4,
+                Prefs.n(svc, Prefs.SHADE_BATTERY_STYLE)));
         private int level = 0;
         private boolean charging;
 
@@ -895,16 +901,38 @@ final class UnifiedShade {
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
+            int color = charging ? pal.primary : level <= 20 ? pal.bad : pal.onSurfaceVariant;
+            if (style == 2) { drawSegments(c, color); return; }
+            if (style == 3) { drawRing(c, color); return; }
+            if (style == 4) { drawTextOnly(c, color); return; }
+
             float cap = svc.px(1.5f);
             body.set(0, 0, getWidth() - cap - svc.px(1), getHeight());
+            float radius = svc.px(2.5f);
+            if (style == 0) {
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(svc.px(1f));
+                p.setColor(color);
+                c.drawRoundRect(body, radius, radius, p);
+                p.setStyle(Paint.Style.FILL);
+                RectF fill = new RectF(body.left + svc.px(1.5f), body.top + svc.px(1.5f),
+                        body.left + svc.px(1.5f) + Math.max(0f,
+                                (body.width() - svc.px(3f)) * level / 100f),
+                        body.bottom - svc.px(1.5f));
+                c.drawRoundRect(fill, svc.px(1.3f), svc.px(1.3f), p);
+            } else {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(color);
+                c.drawRoundRect(body, radius, radius, p);
+            }
             p.setStyle(Paint.Style.FILL);
-            p.setColor(charging ? pal.primary : level <= 20 ? pal.bad : pal.onSurfaceVariant);
-            c.drawRoundRect(body, svc.px(2.5f), svc.px(2.5f), p);
+            p.setColor(color);
             c.drawRoundRect(new RectF(body.right + svc.px(.7f), getHeight() * .33f,
                     getWidth(), getHeight() * .67f), svc.px(.7f), svc.px(.7f), p);
 
-            int bodyColor = charging ? pal.primary : level <= 20 ? pal.bad : pal.onSurfaceVariant;
-            p.setColor(Palette.luminance(bodyColor) > 0.48 ? 0xFF111111 : 0xFFFFFFFF);
+            // Outline needs a high-contrast number independent of its partially filled area.
+            p.setColor(style == 0 ? pal.onSurface
+                    : Palette.luminance(color) > 0.48 ? 0xFF111111 : 0xFFFFFFFF);
             p.setTextAlign(Paint.Align.CENTER);
             p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 5.5f,
@@ -912,6 +940,54 @@ final class UnifiedShade {
             Paint.FontMetrics fm = p.getFontMetrics();
             float y = body.centerY() - (fm.ascent + fm.descent) / 2f;
             c.drawText(String.valueOf(level), body.centerX(), y, p);
+        }
+
+        private void drawSegments(Canvas c, int color) {
+            p.setStyle(Paint.Style.FILL);
+            int count = 5;
+            float gap = svc.px(1f);
+            float width = (getWidth() - gap * (count - 1)) / count;
+            int filled = Math.max(level > 0 ? 1 : 0, Math.round(level / 100f * count));
+            for (int i = 0; i < count; i++) {
+                p.setColor(i < filled ? color : Palette.alpha(color, 0x35));
+                float left = i * (width + gap);
+                c.drawRoundRect(new RectF(left, 0, left + width, getHeight()),
+                        svc.px(1.2f), svc.px(1.2f), p);
+            }
+        }
+
+        private void drawRing(Canvas c, int color) {
+            float d = Math.min(getHeight(), svc.px(13));
+            float stroke = svc.px(1.5f);
+            RectF ring = new RectF(stroke / 2f, stroke / 2f, d - stroke / 2f, d - stroke / 2f);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeWidth(stroke);
+            p.setColor(Palette.alpha(color, 0x35));
+            c.drawArc(ring, -90, 360, false, p);
+            p.setColor(color);
+            c.drawArc(ring, -90, 360f * level / 100f, false, p);
+            p.setStrokeCap(Paint.Cap.BUTT);
+            p.setStyle(Paint.Style.FILL);
+            p.setTextAlign(Paint.Align.RIGHT);
+            p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 6.5f,
+                    svc.getResources().getDisplayMetrics()));
+            Paint.FontMetrics fm = p.getFontMetrics();
+            c.drawText(String.valueOf(level), getWidth(), getHeight() / 2f
+                    - (fm.ascent + fm.descent) / 2f, p);
+        }
+
+        private void drawTextOnly(Canvas c, int color) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(color);
+            p.setTextAlign(Paint.Align.RIGHT);
+            p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 8f,
+                    svc.getResources().getDisplayMetrics()));
+            Paint.FontMetrics fm = p.getFontMetrics();
+            c.drawText(level + "%", getWidth(), getHeight() / 2f
+                    - (fm.ascent + fm.descent) / 2f, p);
         }
     }
 
@@ -959,7 +1035,7 @@ final class UnifiedShade {
         });
         // HyperOS's accessibility-overlay dispatch never marks this SeekBar's drag as a
         // from-user progress change. Own the horizontal gesture explicitly so the thumb and
-        // adaptive-bias setting follow the finger on every build.
+        // native adaptive-brightness level follow the finger on every build.
         brightness.setOnTouchListener(new View.OnTouchListener() {
             public boolean onTouch(View view, MotionEvent event) {
                 int action = event.getActionMasked();
@@ -992,11 +1068,12 @@ final class UnifiedShade {
         fixed.add(new Runnable() { public void run() {
             try {
                 if (autoBrightness()) {
-                    float bias = Settings.System.getFloat(svc.getContentResolver(),
-                            "screen_auto_brightness_adj", 0f);
-                    brightness.setProgress(autoSliderForBias(bias));
-                    brightness.setContentDescription("Automatic brightness adjustment "
-                            + Math.round(bias * 100) + " percent");
+                    int p = Math.max(0, Math.min(1000,
+                            Prefs.n(svc, Prefs.AUTO_BRIGHTNESS_LEVEL)));
+                    if (!brightnessPreviewActive) brightness.setProgress(p);
+                    brightness.setContentDescription("Adaptive brightness "
+                            + Math.round(p / 10f) + " percent");
+                    queryNativeBrightnessRange();
                 } else {
                     int p = toSlider(Settings.System.getInt(svc.getContentResolver(),
                             Settings.System.SCREEN_BRIGHTNESS));
@@ -1008,26 +1085,32 @@ final class UnifiedShade {
         return r;
     }
 
-    /** In auto mode this is a bias (-1..1); root commits the final value on HyperOS. */
+    /**
+     * HyperOS does not drive its brightness slider from screen_auto_brightness_adj. Its own
+     * SystemUI sends absolute display levels through IDisplayManager while leaving automatic
+     * mode enabled; the permanent call becomes the automatic controller's new user anchor.
+     */
     private void applyBrightness(int progress, boolean commit) {
         if (!Settings.System.canWrite(svc) && !RootShell.available()) {
             if (commit) askWriteSettings();
             return;
         }
         if (autoBrightness()) {
-            float bias = autoBiasForSlider(progress);
-            try { Settings.System.putFloat(svc.getContentResolver(),
-                    "screen_auto_brightness_adj", bias); } catch (Exception ignored) {}
-            brightness.setContentDescription("Automatic brightness adjustment "
-                    + Math.round(bias * 100) + " percent");
-            // HyperOS persists this setting but does not drive the panel from it while the
-            // finger is moving. Use DisplayManager's temporary-brightness Binder path for a
-            // live preview; releasing it leaves automatic mode enabled with the bias above.
-            if (brightnessPreviewActive) queueBrightnessPreview(previewLevelForBias(bias));
-            if (commit && RootShell.available()) {
-                Shell.run("settings put system screen_auto_brightness_adj " + Float.toString(bias),
-                        new Runnable() { public void run() { endBrightnessPreview(true); }});
-            } else if (commit) endBrightnessPreview(true);
+            int p = Math.max(0, Math.min(1000, progress));
+            float level = autoLevelForSlider(p);
+            brightness.setContentDescription("Adaptive brightness "
+                    + Math.round(p / 10f) + " percent");
+            if (commit) {
+                Prefs.put(svc, Prefs.AUTO_BRIGHTNESS_LEVEL, p);
+                brightnessPreviewActive = false;
+                if (RootShell.available()) queueBrightnessCall(level, 41);
+                else try {
+                    Settings.System.putInt(svc.getContentResolver(),
+                            Settings.System.SCREEN_BRIGHTNESS, Math.round(level * 255));
+                } catch (Exception ignored) {}
+            } else if (brightnessPreviewActive) {
+                queueBrightnessCall(level, 40);
+            }
         } else {
             int level = fromSlider(progress);
             try { Settings.System.putInt(svc.getContentResolver(),
@@ -1038,63 +1121,66 @@ final class UnifiedShade {
         }
     }
 
-    /** Capture the automatic controller's current output, not the stale manual setting. */
     private void beginBrightnessPreview() {
         brightnessPreviewActive = autoBrightness();
-        if (!brightnessPreviewActive) return;
-        brightnessPreviewStartBias = Settings.System.getFloat(svc.getContentResolver(),
-                "screen_auto_brightness_adj", 0f);
-        // BrightnessInfo is a blocked framework API for ordinary apps. The setting is the
-        // controller's last user level and is a stable starting point for this short preview.
-        int current = Settings.System.getInt(svc.getContentResolver(),
-                Settings.System.SCREEN_BRIGHTNESS, fromSlider(brightness.getProgress()));
-        brightnessPreviewBase = Math.max(1, Math.min(255, current)) / 255f;
-        brightnessPreviewMin = 1f / 255f;
-        brightnessPreviewMax = 1f;
-        brightnessPreviewBase = Math.max(brightnessPreviewMin,
-                Math.min(brightnessPreviewMax, brightnessPreviewBase));
+    }
+
+    /** Match SystemUI's perceptual slider while using the live normal-mode display bounds. */
+    private float autoLevelForSlider(int progress) {
+        float gamma = Math.max(0f, Math.min(1f, progress / 1000f));
+        float linear = (float) Math.pow(gamma, 2.2);
+        return brightnessRangeMin + (brightnessRangeMax - brightnessRangeMin) * linear;
+    }
+
+    private int autoSliderForLevel(float level) {
+        float span = Math.max(0.0001f, brightnessRangeMax - brightnessRangeMin);
+        float linear = Math.max(0f, Math.min(1f, (level - brightnessRangeMin) / span));
+        return Math.max(0, Math.min(1000,
+                Math.round((float) Math.pow(linear, 1f / 2.2f) * 1000f)));
+    }
+
+    /** Read the values SystemUI itself uses, without relying on the stale manual setting. */
+    private void queryNativeBrightnessRange() {
+        if (brightnessLevelQueried || !RootShell.available()) return;
+        brightnessLevelQueried = true;
+        Shell.runResult("dumpsys display | awk -F= '"
+                + "/mCachedBrightnessInfo.brightnessMin=/{if(!a){print $2;a=1}} "
+                + "/mCachedBrightnessInfo.brightnessMax=/{if(!b){print $2;b=1}} "
+                + "/mCurrentScreenBrightness=/{if(!c){print $2;c=1}}'",
+                new Shell.ResultCallback() { public void done(Shell.Result result) {
+            if (result.code != 0) return;
+            String[] lines = result.output.trim().split("\\s+");
+            if (lines.length < 3) return;
+            try {
+                float min = Float.parseFloat(lines[0]);
+                float max = Float.parseFloat(lines[1]);
+                float current = Float.parseFloat(lines[2]);
+                if (min >= 0f && max > min) {
+                    brightnessRangeMin = min;
+                    brightnessRangeMax = max;
+                    int p = autoSliderForLevel(current);
+                    Prefs.put(svc, Prefs.AUTO_BRIGHTNESS_LEVEL, p);
+                    if (attached && autoBrightness() && !brightnessPreviewActive) {
+                        brightness.setProgress(p);
+                        brightness.setContentDescription("Adaptive brightness "
+                                + Math.round(p / 10f) + " percent");
+                    }
+                }
+            } catch (Exception ignored) {}
+        }});
     }
 
     /**
-     * Give automatic brightness a useful control surface on HyperOS. Its native adjustment is
-     * linear and so weak around zero that most of the slider appears inert. This exposure-style
-     * curve has exactly 10x the stock slope at neutral, remains continuous/monotonic, and still
-     * maps the physical endpoints to Android's supported -1..1 range.
+     * Transaction 40 is setTemporaryBrightness; 41 is setBrightness. The latter is exactly
+     * what stock SystemUI commits even in automatic mode, updating the adaptive user model
+     * without switching auto off. Calls share one coalescing worker so release always lands
+     * after the last preview and a fast finger cannot pile up root processes.
      */
-    private static float autoBiasForSlider(int progress) {
-        float x = Math.max(-1f, Math.min(1f, (progress - 500f) / 500f));
-        float magnitude = 1f - (float) Math.pow(1f - Math.abs(x), AUTO_BIAS_GAIN);
-        return Math.copySign(magnitude, x);
-    }
-
-    /** Inverse of autoBiasForSlider, so reopening the shade never makes the thumb jump. */
-    private static int autoSliderForBias(float bias) {
-        float y = Math.max(-1f, Math.min(1f, bias));
-        float x = 1f - (float) Math.pow(1f - Math.abs(y), 1f / AUTO_BIAS_GAIN);
-        return Math.max(0, Math.min(1000, Math.round(500f + Math.copySign(x, y) * 500f)));
-    }
-
-    /** Map both ends of the bias scale onto the currently available brightness range. */
-    private float previewLevelForBias(float bias) {
-        if (bias >= brightnessPreviewStartBias) {
-            float room = Math.max(0.0001f, 1f - brightnessPreviewStartBias);
-            float t = Math.max(0f, Math.min(1f, (bias - brightnessPreviewStartBias) / room));
-            return brightnessPreviewBase + (brightnessPreviewMax - brightnessPreviewBase) * t;
-        }
-        float room = Math.max(0.0001f, brightnessPreviewStartBias + 1f);
-        float t = Math.max(0f, Math.min(1f, (bias + 1f) / room));
-        return brightnessPreviewMin + (brightnessPreviewBase - brightnessPreviewMin) * t;
-    }
-
-    /**
-     * Transaction 40 is IDisplayManager.setTemporaryBrightness(displayId, value). Passing NaN
-     * releases the preview back to the automatic controller. Calls are serialized/coalesced on
-     * one worker so a fast drag remains smooth and cannot pile up root processes.
-     */
-    private void queueBrightnessPreview(float value) {
+    private void queueBrightnessCall(float value, int transaction) {
         if (brightnessPreviewUnavailable) return;
         synchronized (brightnessPreviewLock) {
             pendingBrightnessPreview = value;
+            pendingBrightnessTransaction = transaction;
             pendingBrightnessPreviewSet = true;
             if (brightnessPreviewWorkerRunning) return;
             brightnessPreviewWorkerRunning = true;
@@ -1102,17 +1188,19 @@ final class UnifiedShade {
         new Thread(new Runnable() { public void run() {
             for (;;) {
                 final float next;
+                final int transaction;
                 synchronized (brightnessPreviewLock) {
                     if (!pendingBrightnessPreviewSet) {
                         brightnessPreviewWorkerRunning = false;
                         return;
                     }
                     next = pendingBrightnessPreview;
+                    transaction = pendingBrightnessTransaction;
                     pendingBrightnessPreviewSet = false;
                 }
                 String value = Float.isNaN(next) ? "nan" : Float.toString(next);
                 RootShell.Result result = RootShell.exec(
-                        "service call display 40 i32 0 f " + value + " >/dev/null");
+                        "service call display " + transaction + " i32 0 f " + value + " >/dev/null");
                 if (!result.connected || result.code != 0) {
                     brightnessPreviewUnavailable = true;
                     synchronized (brightnessPreviewLock) {
@@ -1126,15 +1214,10 @@ final class UnifiedShade {
         }}, "TickerBar-brightness-preview").start();
     }
 
-    private void endBrightnessPreview(boolean afterCommit) {
+    private void endBrightnessPreview(boolean ignored) {
         if (!brightnessPreviewActive) return;
         brightnessPreviewActive = false;
-        // Let DisplayPowerController consume the persisted bias before handing control back.
-        Runnable clear = new Runnable() { public void run() {
-            queueBrightnessPreview(Float.NaN);
-            brightnessPreviewBase = Float.NaN;
-        }};
-        if (afterCommit && root != null) root.postDelayed(clear, 220); else clear.run();
+        queueBrightnessCall(Float.NaN, 40);
     }
 
     /** Google Home's authenticated Favorites widget, hosted directly inside the shade. */
@@ -1168,7 +1251,8 @@ final class UnifiedShade {
         View hosted = createHomeWidget();
         if (hosted != null) {
             LinearLayout.LayoutParams widgetLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, svc.px(132));
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP * HOME_WIDGET_SCALE));
             widgetLp.topMargin = svc.px(8);
             card.addView(hosted, widgetLp);
         } else {
@@ -1241,7 +1325,22 @@ final class UnifiedShade {
             homeWidgetView = homeWidgetHost.createView(svc, id, info);
             homeWidgetView.setAppWidget(id, info);
             homeWidgetView.setPadding(0, 0, 0, 0);
-            return homeWidgetView;
+            // Google switches to an icon-only square layout when given our compact physical
+            // height. Let it render its labeled 220dp layout (including the selected home
+            // name), then scale the whole RemoteViews surface into a shorter shelf. This keeps
+            // Google's real state/actions while making its rounded controls smaller and denser.
+            int physicalWidth = Math.max(1, svc.screenW() - svc.px(52));
+            int logicalWidth = Math.round(physicalWidth / HOME_WIDGET_SCALE);
+            homeWidgetView.setPivotX(0f);
+            homeWidgetView.setPivotY(0f);
+            homeWidgetView.setScaleX(HOME_WIDGET_SCALE);
+            homeWidgetView.setScaleY(HOME_WIDGET_SCALE);
+            FrameLayout viewport = new FrameLayout(svc);
+            viewport.setClipChildren(true);
+            viewport.setClipToPadding(true);
+            viewport.addView(homeWidgetView, new FrameLayout.LayoutParams(
+                    logicalWidth, svc.px(HOME_WIDGET_LOGICAL_HEIGHT_DP)));
+            return viewport;
         } catch (Exception unavailable) {
             android.util.Log.w("TickerBarHome", "Could not inflate Google Home widget", unavailable);
             stopHomeWidgetHost();
@@ -1258,13 +1357,11 @@ final class UnifiedShade {
     private Bundle homeWidgetOptions() {
         Bundle options = new Bundle();
         int widthDp = Math.max(220, Math.round((svc.screenW() - svc.px(52))
-                / svc.getResources().getDisplayMetrics().density));
+                / svc.getResources().getDisplayMetrics().density / HOME_WIDGET_SCALE));
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp);
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp);
-        // Google Home advertises a 56dp minimum resize height. A compact one-row host keeps
-        // the shelf useful without pushing the first notification halfway off the screen.
-        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 112);
-        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 132);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, HOME_WIDGET_LOGICAL_HEIGHT_DP);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, HOME_WIDGET_LOGICAL_HEIGHT_DP);
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
                 AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN);
         return options;

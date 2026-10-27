@@ -87,8 +87,10 @@ public final class Prefs {
     public static final String SHADE_SECONDARY_COLOR = "shade_secondary_color";
     public static final String SHADE_NOTIFICATION_TEXT_COLOR = "shade_notification_text_color";
     public static final String SHADE_NOTIFICATIONS_EXPANDED = "shade_notifications_expanded";
+    public static final String SHADE_BATTERY_STYLE = "shade_battery_style";
     public static final String HOME_SHELF   = "home_shelf";     // location-aware Home row in UnifiedShade
     public static final String HOME_WIDGET_ID = "home_widget_id"; // Google Home Favorites AppWidget id
+    public static final String AUTO_BRIGHTNESS_LEVEL = "auto_brightness_level"; // 0..1000 native slider position
     public static final String SHADE_NAV_ORDER = "shade_nav_order"; // 0 follow HyperOS, 1 back-home-recents, 2 recents-home-back      // stock-Android single shade instead of HyperOS's split
     public static final String RINGER_CYCLE = "ringer_cycle";   // stock-Android ring/vibrate/silent on the buttons
     public static final String VOL_HOLD_MS   = "volume_hold_ms";   // hold before repeating starts
@@ -128,7 +130,9 @@ public final class Prefs {
         DEF.put(SHADE_ACTIVE_COLOR, 0); DEF.put(SHADE_TEXT_COLOR, 0); DEF.put(SHADE_SECONDARY_COLOR, 0);
         DEF.put(SHADE_NOTIFICATION_TEXT_COLOR, 0);
         DEF.put(SHADE_NOTIFICATIONS_EXPANDED, 0);
+        DEF.put(SHADE_BATTERY_STYLE, 0);
         DEF.put(HOME_SHELF, 1);
+        DEF.put(AUTO_BRIGHTNESS_LEVEL, 500);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
         DEF.put(TICKER_ON, 1);   DEF.put(LINES, 1);       DEF.put(HEIGHT, 0);
         DEF.put(HOP, 1);         DEF.put(HOP_GAP, 14);    DEF.put(AUTO_PAD, 1);

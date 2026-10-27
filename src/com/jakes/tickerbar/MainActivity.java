@@ -327,6 +327,9 @@ public class MainActivity extends Activity {
         choiceRow(c, "Shade colours", Prefs.SHADE_THEME, new int[]{0, 1, 2},
                 new String[]{"Match system theme", "Always dark", "Always light"});
         choiceRow(c, "Accent", Prefs.SHADE_ACCENT, accentIds, UnifiedShade.ACCENT_NAMES);
+        choiceRow(c, "Shade battery icon", Prefs.SHADE_BATTERY_STYLE,
+                new int[]{0, 1, 2, 3, 4},
+                new String[]{"Outline + %", "Solid + %", "Segments", "Ring", "Text only"});
         colorRow(c, "Shade backdrop", "Tint behind the panels", Prefs.SHADE_BG_COLOR);
         colorRow(c, "Panel background", "Quick settings and Home cards", Prefs.SHADE_PANEL_COLOR);
         colorRow(c, "Inactive controls", "Tiles, buttons and notification cards", Prefs.SHADE_INACTIVE_COLOR);
