@@ -1436,7 +1436,19 @@ final class UnifiedShade {
             // A RemoteViews provider owns its control-state colors. Replacing the clicked
             // container's background also replaces Google's state-list drawable; on some
             // Home revisions that leaves an opaque white layer over the icon and labels.
-            // Preserve the provider's live on/off styling and PendingIntent hierarchy.
+            // Preserve that hierarchy, but tint the existing drawable of a confirmed active
+            // control so "On" uses the shade's configured primary accent instead of Home's
+            // unrelated dynamic brown/green palette. Inactive controls remain provider-owned.
+            final boolean active = homeTileActive((ViewGroup) tile);
+            if (active) {
+                Drawable background = tile.getBackground();
+                if (background != null) {
+                    background = background.mutate();
+                    background.setTint(pal.primary);
+                    tile.setBackground(background);
+                }
+                tintHomeControl((ViewGroup) tile, true);
+            }
             tiles.add((ViewGroup) tile);
         }
 
@@ -1500,8 +1512,8 @@ final class UnifiedShade {
     }
 
     private void tintHomeControl(ViewGroup tile, boolean active) {
-        int primary = active ? pal.onPrimaryContainer : pal.onSurface;
-        int secondary = active ? Palette.alpha(pal.onPrimaryContainer, 0xCC) : pal.onSurfaceVariant;
+        int primary = active ? pal.onPrimary : pal.onSurface;
+        int secondary = active ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant;
         ArrayList<View> children = new ArrayList<View>();
         collectViews(tile, children);
         int textIndex = 0;
