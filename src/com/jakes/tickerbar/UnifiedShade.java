@@ -3377,22 +3377,39 @@ final class UnifiedShade {
     /** Child cards capture DOWN so the enclosing app group cannot steal their swipe. */
     private void swipeToDismiss(final View card, final Runnable dismiss, final boolean captureDown) {
         card.setOnTouchListener(new View.OnTouchListener() {
-            float x0, y0; boolean swiping, moved; VelocityTracker vt;
+            float x0, y0; boolean swiping, moved, vertical; VelocityTracker vt;
             public boolean onTouch(View v, MotionEvent e) {
                 int slop = ViewConfiguration.get(svc).getScaledTouchSlop();
                 if (vt != null && e.getActionMasked() != MotionEvent.ACTION_DOWN) track(vt, e);
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        x0 = e.getRawX(); y0 = e.getRawY(); swiping = false; moved = false;
+                        x0 = e.getRawX(); y0 = e.getRawY();
+                        swiping = false; moved = false; vertical = false;
                         v.animate().cancel();
                         if (vt != null) vt.recycle();
                         vt = VelocityTracker.obtain(); track(vt, e);
-                        if (captureDown) v.onTouchEvent(e); // preserve click/long-press while owning the stream
+                        if (captureDown) {
+                            // Reserve an expanded child's stream before the enclosing shade's
+                            // ScrollView gets a chance to steal a slightly diagonal swipe.
+                            v.getParent().requestDisallowInterceptTouchEvent(true);
+                            v.onTouchEvent(e); // preserve click/long-press while owning the stream
+                        }
                         return captureDown; // grouped children must remain the gesture target
                     case MotionEvent.ACTION_MOVE: {
                         float dx = e.getRawX() - x0, dy = e.getRawY() - y0;
-                        if (Math.abs(dx) > slop / 2f) moved = true;   // sideways at all: not a tap
-                        if (!swiping && Math.abs(dx) > slop * 0.5f && Math.abs(dx) > Math.abs(dy) * 0.8f) {
+                        if (Math.abs(dx) > slop / 3f || Math.abs(dy) > slop) moved = true;
+                        if (captureDown && !swiping && !vertical && Math.abs(dy) > slop
+                                && Math.abs(dy) > Math.abs(dx) * 1.35f) {
+                            // It is genuinely a list scroll. Give interception back to the
+                            // ScrollView; short diagonal motion remains owned by this subcard.
+                            vertical = true;
+                            v.cancelLongPress();
+                            v.setPressed(false);
+                            v.getParent().requestDisallowInterceptTouchEvent(false);
+                            return true;
+                        }
+                        if (!vertical && !swiping && Math.abs(dx) > Math.max(2f, slop * 0.30f)
+                                && Math.abs(dx) > Math.abs(dy) * 0.65f) {
                             swiping = true;
                             swipingCard = true;
                             v.getParent().requestDisallowInterceptTouchEvent(true);
@@ -3412,6 +3429,7 @@ final class UnifiedShade {
                             v.setAlpha(1f - f * f * 0.85f - f * 0.1f);
                             return true;
                         }
+                        if (vertical) return true;
                         if (moved) { v.cancelLongPress(); v.setPressed(false); }
                         if (captureDown && !moved) v.onTouchEvent(e);
                         return captureDown;
@@ -3423,8 +3441,14 @@ final class UnifiedShade {
                         float dx = swiping ? v.getTranslationX() : e.getRawX() - x0;
                         float w = Math.max(1, v.getWidth());
                         boolean up = e.getActionMasked() == MotionEvent.ACTION_UP;
-                        boolean fling = Math.abs(vx) > 455 && Math.signum(vx) == Math.signum(dx)
-                                && Math.abs(dx) > svc.px(8);
+                        boolean fling = Math.abs(vx) > 320 && Math.signum(vx) == Math.signum(dx)
+                                && Math.abs(dx) > svc.px(4);
+                        if (vertical) {
+                            vertical = false;
+                            v.getParent().requestDisallowInterceptTouchEvent(false);
+                            v.setPressed(false);
+                            return true;
+                        }
                         if (!swiping) {
                             // a flick so quick it never registered as a drag: still a dismiss, never a tap
                             if (up && fling) { fly(v, dx, vx, dismiss); return true; }
@@ -3433,7 +3457,7 @@ final class UnifiedShade {
                             return false;
                         }
                         swiping = false;
-                        if (up && (Math.abs(dx) > w * 0.25f || fling)) {
+                        if (up && (Math.abs(dx) > w * 0.20f || fling)) {
                             fly(v, dx, vx, dismiss);
                         } else {
                             v.animate().translationX(0).alpha(1f).setDuration(280)
