@@ -2,6 +2,8 @@ package com.jakes.tickerbar;
 
 import android.accessibilityservice.AccessibilityService;
 import android.app.KeyguardManager;
+import android.app.usage.UsageEvents;
+import android.app.usage.UsageStatsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -972,6 +974,17 @@ public class ShadeService extends AccessibilityService {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         boolean screenOn = pm == null || pm.isInteractive();
         boolean locked = isLocked();
+        // After an APK replacement or unlock, HyperOS may report only a SystemUI window
+        // event and never replay the activity underneath it. Reconcile against usage events
+        // before deciding that the launcher is still in front; this prevents the wallet card
+        // remaining over an app merely because onHome was seeded while the screen was locked.
+        if (screenOn && !locked) {
+            String foreground = foregroundPackage();
+            if (!foreground.isEmpty()) {
+                frontPkg = foreground;
+                onHome = foreground.equals(launcherPkg);
+            }
+        }
         boolean want = !RootOverlayClient.connected() && Prefs.on(this, Prefs.SWIPE_ON) && screenOn
                 && (locked ? Prefs.on(this, Prefs.CARD_LOCK)
                            : Prefs.on(this, Prefs.CARD_HOME) && onHome);
@@ -1842,6 +1855,29 @@ public class ShadeService extends AccessibilityService {
         if (id == null) return "";
         int slash = id.indexOf('/');
         return slash > 0 ? id.substring(0, slash) : id;
+    }
+
+    /** Last real activity in front, ignoring SystemUI windows layered over it. */
+    private String foregroundPackage() {
+        UsageStatsManager manager = (UsageStatsManager)getSystemService(USAGE_STATS_SERVICE);
+        if (manager == null) return "";
+        long end = System.currentTimeMillis();
+        try {
+            UsageEvents events = manager.queryEvents(end - 24L * 60L * 60L * 1000L, end);
+            UsageEvents.Event event = new UsageEvents.Event();
+            String foreground = "";
+            String ime = imePackage();
+            while (events != null && events.hasNextEvent()) {
+                events.getNextEvent(event);
+                if (event.getEventType() != UsageEvents.Event.ACTIVITY_RESUMED) continue;
+                String pkg = event.getPackageName();
+                if (pkg == null || pkg.equals("com.android.systemui")
+                        || pkg.equals("miui.systemui.plugin") || pkg.equals("android")
+                        || pkg.equals(ime)) continue;
+                foreground = pkg;
+            }
+            return foreground;
+        } catch (Throwable ignored) { return ""; }
     }
 
     private Display display() {
