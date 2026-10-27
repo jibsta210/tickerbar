@@ -17,6 +17,7 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -47,6 +48,7 @@ import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewOutlineProvider;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
@@ -101,8 +103,8 @@ final class UnifiedShade {
     private static final ComponentName HOME_WIDGET_PROVIDER = new ComponentName(
             "com.google.android.apps.chromecast.app",
             "com.google.android.apps.chromecast.app.appwidget.favorites.FavoritesWidgetReceiver");
-    private static final float HOME_WIDGET_SCALE = 0.82f;
-    private static final int HOME_WIDGET_LOGICAL_HEIGHT_DP = 220;
+    private static final float HOME_WIDGET_SCALE = 0.90f;
+    private static final int HOME_WIDGET_LOGICAL_HEIGHT_DP = 132;
 
     static int defaultPlace(int index) { return index < ROW_MAX ? PLACE_BOTH : PLACE_GRID; }
 
@@ -153,6 +155,7 @@ final class UnifiedShade {
     private final List<MorphTile> morphTiles = new ArrayList<MorphTile>();
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
+    private TextView homeShelfTitle;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -802,10 +805,11 @@ final class UnifiedShade {
         LinearLayout utilityButtons = new LinearLayout(svc);
         utilityButtons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         final BatteryMeter batt = new BatteryMeter();
-        int batteryStyle = Prefs.n(svc, Prefs.SHADE_BATTERY_STYLE);
+        int batteryStyle = SystemBarSettings.getInt(svc, "system",
+                "battery_indicator_style", 1);
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                svc.px(batteryStyle >= 3 ? 26 : batteryStyle == 2 ? 24 : 20),
-                svc.px(batteryStyle >= 3 ? 14 : 10));
+                svc.px(batteryStyle == 0 ? 28 : batteryStyle == 2 ? 24 : 20),
+                svc.px(10));
         blp.setMarginStart(svc.px(4));
         indicators.addView(batt, blp);
         utilities.addView(indicators, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -878,12 +882,14 @@ final class UnifiedShade {
         }
     }
 
-    /** HyperOS-style status icon: a tiny filled capsule, terminal, and level inside. */
+    /** Mirrors the battery style selected for HyperOS's real status bar. */
     private final class BatteryMeter extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF body = new RectF();
-        private final int style = Math.max(0, Math.min(4,
-                Prefs.n(svc, Prefs.SHADE_BATTERY_STYLE)));
+        private final int style = SystemBarSettings.getInt(svc, "system",
+                "battery_indicator_style", 1);
+        private final boolean showPercent = SystemBarSettings.getInt(svc, "system",
+                "status_bar_show_battery_percent", 1) != 0;
         private int level = 0;
         private boolean charging;
 
@@ -902,12 +908,11 @@ final class UnifiedShade {
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
             int color = charging ? pal.primary : level <= 20 ? pal.bad : pal.onSurfaceVariant;
-            if (style == 2) { drawSegments(c, color); return; }
-            if (style == 3) { drawRing(c, color); return; }
-            if (style == 4) { drawTextOnly(c, color); return; }
+            if (style == 2) { drawTopBar(c, color); return; }
 
             float cap = svc.px(1.5f);
-            body.set(0, 0, getWidth() - cap - svc.px(1), getHeight());
+            float iconWidth = style == 0 && showPercent ? svc.px(16) : getWidth();
+            body.set(0, 0, iconWidth - cap - svc.px(1), getHeight());
             float radius = svc.px(2.5f);
             if (style == 0) {
                 p.setStyle(Paint.Style.STROKE);
@@ -928,66 +933,33 @@ final class UnifiedShade {
             p.setStyle(Paint.Style.FILL);
             p.setColor(color);
             c.drawRoundRect(new RectF(body.right + svc.px(.7f), getHeight() * .33f,
-                    getWidth(), getHeight() * .67f), svc.px(.7f), svc.px(.7f), p);
+                    body.right + cap + svc.px(1), getHeight() * .67f),
+                    svc.px(.7f), svc.px(.7f), p);
 
-            // Outline needs a high-contrast number independent of its partially filled area.
-            p.setColor(style == 0 ? pal.onSurface
+            if (style == 0 && !showPercent) return;
+            p.setColor(style == 0 ? color
                     : Palette.luminance(color) > 0.48 ? 0xFF111111 : 0xFFFFFFFF);
-            p.setTextAlign(Paint.Align.CENTER);
+            p.setTextAlign(style == 0 ? Paint.Align.RIGHT : Paint.Align.CENTER);
             p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 5.5f,
+            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
+                    style == 0 ? 6.5f : 5.5f,
                     svc.getResources().getDisplayMetrics()));
             Paint.FontMetrics fm = p.getFontMetrics();
             float y = body.centerY() - (fm.ascent + fm.descent) / 2f;
-            c.drawText(String.valueOf(level), body.centerX(), y, p);
+            c.drawText(style == 0 ? level + "%" : String.valueOf(level),
+                    style == 0 ? getWidth() : body.centerX(), y, p);
         }
 
-        private void drawSegments(Canvas c, int color) {
+        private void drawTopBar(Canvas c, int color) {
+            float barHeight = svc.px(2f);
+            float top = (getHeight() - barHeight) / 2f;
+            body.set(0, top, getWidth(), top + barHeight);
             p.setStyle(Paint.Style.FILL);
-            int count = 5;
-            float gap = svc.px(1f);
-            float width = (getWidth() - gap * (count - 1)) / count;
-            int filled = Math.max(level > 0 ? 1 : 0, Math.round(level / 100f * count));
-            for (int i = 0; i < count; i++) {
-                p.setColor(i < filled ? color : Palette.alpha(color, 0x35));
-                float left = i * (width + gap);
-                c.drawRoundRect(new RectF(left, 0, left + width, getHeight()),
-                        svc.px(1.2f), svc.px(1.2f), p);
-            }
-        }
-
-        private void drawRing(Canvas c, int color) {
-            float d = Math.min(getHeight(), svc.px(13));
-            float stroke = svc.px(1.5f);
-            RectF ring = new RectF(stroke / 2f, stroke / 2f, d - stroke / 2f, d - stroke / 2f);
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeWidth(stroke);
             p.setColor(Palette.alpha(color, 0x35));
-            c.drawArc(ring, -90, 360, false, p);
+            c.drawRoundRect(body, barHeight / 2f, barHeight / 2f, p);
             p.setColor(color);
-            c.drawArc(ring, -90, 360f * level / 100f, false, p);
-            p.setStrokeCap(Paint.Cap.BUTT);
-            p.setStyle(Paint.Style.FILL);
-            p.setTextAlign(Paint.Align.RIGHT);
-            p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 6.5f,
-                    svc.getResources().getDisplayMetrics()));
-            Paint.FontMetrics fm = p.getFontMetrics();
-            c.drawText(String.valueOf(level), getWidth(), getHeight() / 2f
-                    - (fm.ascent + fm.descent) / 2f, p);
-        }
-
-        private void drawTextOnly(Canvas c, int color) {
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(color);
-            p.setTextAlign(Paint.Align.RIGHT);
-            p.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            p.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 8f,
-                    svc.getResources().getDisplayMetrics()));
-            Paint.FontMetrics fm = p.getFontMetrics();
-            c.drawText(level + "%", getWidth(), getHeight() / 2f
-                    - (fm.ascent + fm.descent) / 2f, p);
+            body.right = body.left + body.width() * level / 100f;
+            c.drawRoundRect(body, barHeight / 2f, barHeight / 2f, p);
         }
     }
 
@@ -1232,6 +1204,7 @@ final class UnifiedShade {
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = tv("Google Home", 16, pal.onSurface);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        homeShelfTitle = title;
         titleRow.addView(title);
         titleRow.addView(new View(svc), new LinearLayout.LayoutParams(0, 1, 1));
         TextView choose = pill("Choose", new View.OnClickListener() { public void onClick(View v) {
@@ -1325,16 +1298,27 @@ final class UnifiedShade {
             homeWidgetView = homeWidgetHost.createView(svc, id, info);
             homeWidgetView.setAppWidget(id, info);
             homeWidgetView.setPadding(0, 0, 0, 0);
-            // Google switches to an icon-only square layout when given our compact physical
-            // height. Let it render its labeled 220dp layout (including the selected home
-            // name), then scale the whole RemoteViews surface into a shorter shelf. This keeps
-            // Google's real state/actions while making its rounded controls smaller and denser.
+            // Give Google enough logical height to retain labels, but use its resize path
+            // instead of shrinking the tall 3x2 launcher template. The live RemoteViews and
+            // PendingIntents remain Google's; polishHomeWidget only adapts their presentation.
             int physicalWidth = Math.max(1, svc.screenW() - svc.px(52));
             int logicalWidth = Math.round(physicalWidth / HOME_WIDGET_SCALE);
             homeWidgetView.setPivotX(0f);
             homeWidgetView.setPivotY(0f);
             homeWidgetView.setScaleX(HOME_WIDGET_SCALE);
             homeWidgetView.setScaleY(HOME_WIDGET_SCALE);
+            homeWidgetView.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                           int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                    if (right > left && bottom > top) polishHomeWidget(v);
+                }
+            });
+            homeWidgetView.postDelayed(new Runnable() { public void run() {
+                if (homeWidgetView != null) polishHomeWidget(homeWidgetView);
+            }}, 350);
+            homeWidgetView.postDelayed(new Runnable() { public void run() {
+                if (homeWidgetView != null) polishHomeWidget(homeWidgetView);
+            }}, 1200);
             FrameLayout viewport = new FrameLayout(svc);
             viewport.setClipChildren(true);
             viewport.setClipToPadding(true);
@@ -1352,6 +1336,7 @@ final class UnifiedShade {
         if (homeWidgetHost != null) try { homeWidgetHost.stopListening(); } catch (Exception ignored) {}
         homeWidgetHost = null;
         homeWidgetView = null;
+        homeShelfTitle = null;
     }
 
     private Bundle homeWidgetOptions() {
@@ -1365,6 +1350,73 @@ final class UnifiedShade {
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY,
                 AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN);
         return options;
+    }
+
+    /**
+     * Google Home supplies the live state and PendingIntents, but its generic 3x2 widget
+     * defaults to tall launcher cards. Keep those real controls while adapting their
+     * presentation to a one-shade shelf: rounded compact pills, no misleading trailing
+     * detail arrow, and the provider's selected structure name in our header.
+     */
+    private void polishHomeWidget(View widget) {
+        if (widget == null || widget.getWidth() <= 0) return;
+        ArrayList<View> views = new ArrayList<View>();
+        collectViews(widget, views);
+
+        TextView structure = null;
+        int structureTop = Integer.MAX_VALUE;
+        for (View view : views) {
+            if (!(view instanceof TextView) || view.getVisibility() != View.VISIBLE) continue;
+            CharSequence text = ((TextView) view).getText();
+            if (TextUtils.isEmpty(text) || text.length() > 48) continue;
+            int[] location = new int[2];
+            view.getLocationOnScreen(location);
+            if (location[1] < structureTop) {
+                structure = (TextView) view;
+                structureTop = location[1];
+            }
+        }
+        if (structure != null && homeShelfTitle != null) {
+            String name = structure.getText().toString().trim();
+            if (!name.isEmpty()) homeShelfTitle.setText("Google Home  ·  " + name);
+        }
+
+        final float density = svc.getResources().getDisplayMetrics().density;
+        for (final View tile : views) {
+            if (!(tile instanceof ViewGroup) || !tile.hasOnClickListeners()) continue;
+            int widthDp = Math.round(tile.getWidth() / density);
+            int heightDp = Math.round(tile.getHeight() / density);
+            if (widthDp < 52 || widthDp > 140 || heightDp < 42 || heightDp > 125) continue;
+            tile.setClipToOutline(true);
+            tile.setOutlineProvider(new ViewOutlineProvider() {
+                @Override public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(),
+                            Math.min(view.getHeight() / 2f, svc.px(28)));
+                }
+            });
+            hideTrailingHomeChevron((ViewGroup) tile);
+        }
+    }
+
+    private void collectViews(View view, List<View> out) {
+        out.add(view);
+        if (!(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) collectViews(group.getChildAt(i), out);
+    }
+
+    private void hideTrailingHomeChevron(ViewGroup tile) {
+        int[] tileLocation = new int[2];
+        tile.getLocationOnScreen(tileLocation);
+        ArrayList<View> children = new ArrayList<View>();
+        collectViews(tile, children);
+        for (View child : children) {
+            if (!(child instanceof ImageView) || child.getVisibility() != View.VISIBLE) continue;
+            int[] location = new int[2];
+            child.getLocationOnScreen(location);
+            float center = location[0] + child.getWidth() / 2f;
+            if (center > tileLocation[0] + tile.getWidth() * 0.68f) child.setVisibility(View.GONE);
+        }
     }
 
     private void configureHomeWidget() {
@@ -2943,8 +2995,11 @@ final class UnifiedShade {
         Drawable picture = picture(n);
         // The collapsed body is one line. At this card width text begins wrapping around
         // 32 characters, so a higher threshold can ellipsize a message without an expand affordance.
-        boolean expandable = picture != null || (body != null
-                && (body.length() > 32 || body.toString().contains("\n")));
+        // Decide from the text we actually render. Messaging notifications often repeat
+        // "Sender: " in EXTRA_TEXT; counting that discarded prefix produced an expand
+        // button whose open state revealed nothing new.
+        final boolean expandable = picture != null || (!TextUtils.isEmpty(shownBody)
+                && (shownBody.length() > 32 || shownBody.toString().contains("\n")));
         final ImageView[] pics = new ImageView[1];
         if (expandable && top != null) {
             final ImageView[] chev = new ImageView[1];
@@ -3065,6 +3120,9 @@ final class UnifiedShade {
             int shown = 0;
             for (final Notification.Action a : n.actions) {
                 if (a == null || TextUtils.isEmpty(a.title) || a.actionIntent == null || shown >= 3) continue;
+                // Some apps publish an "Expand" action of their own. Do not render an
+                // action chip when this card has no second visual state to reveal.
+                if (!expandable && isExpansionAction(a.title)) continue;
                 final boolean isReply = a == replyA;
                 TextView b = pill(a.title.toString(), new View.OnClickListener() { public void onClick(View v) {
                     if (isReply) {
@@ -3122,6 +3180,14 @@ final class UnifiedShade {
         if (s.isClearable() && !child) clearable.add(card);
         if (s.isClearable()) swipeToDismiss(card, new Runnable() { public void run() { TickerListener.cancel(s.getKey()); } });
         return card;
+    }
+
+    private static boolean isExpansionAction(CharSequence title) {
+        if (title == null) return false;
+        String value = title.toString().trim().toLowerCase(java.util.Locale.ROOT);
+        return "expand".equals(value) || "collapse".equals(value)
+                || "show more".equals(value) || "show less".equals(value)
+                || "more".equals(value);
     }
 
     /** A picture notification's image, if it has one. */

@@ -278,7 +278,7 @@ public class MainActivity extends Activity {
                 "system", "status_bar_show_network_speed", 0);
         statusIntRow(c, "Battery percentage", "Show the number in the battery area",
                 "system", "status_bar_show_battery_percent", 1);
-        statusChoiceRow(c, "Battery style", "system", "battery_indicator_style", 1,
+        statusChoiceRow(c, "Battery style · status + shade", "system", "battery_indicator_style", 1,
                 new int[]{1, 0, 2}, new String[]{"Number", "Graphic", "Top bar"});
         statusIntRow(c, "Carrier on lock screen", null,
                 "system", "status_bar_show_carrier_under_keyguard", 1);
@@ -327,9 +327,6 @@ public class MainActivity extends Activity {
         choiceRow(c, "Shade colours", Prefs.SHADE_THEME, new int[]{0, 1, 2},
                 new String[]{"Match system theme", "Always dark", "Always light"});
         choiceRow(c, "Accent", Prefs.SHADE_ACCENT, accentIds, UnifiedShade.ACCENT_NAMES);
-        choiceRow(c, "Shade battery icon", Prefs.SHADE_BATTERY_STYLE,
-                new int[]{0, 1, 2, 3, 4},
-                new String[]{"Outline + %", "Solid + %", "Segments", "Ring", "Text only"});
         colorRow(c, "Shade backdrop", "Tint behind the panels", Prefs.SHADE_BG_COLOR);
         colorRow(c, "Panel background", "Quick settings and Home cards", Prefs.SHADE_PANEL_COLOR);
         colorRow(c, "Inactive controls", "Tiles, buttons and notification cards", Prefs.SHADE_INACTIVE_COLOR);

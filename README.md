@@ -40,10 +40,12 @@ and HyperOS between them wouldn't do these things.
   controls, grouped and individually expandable notifications, inline actions/replies, a live
   adaptive-brightness slider, the real SystemUI navigation bar, and full colour-wheel
   control over its backdrop, panels, controls and text. Notification expansion can default
-  open or closed. Its Home shelf hosts Google Home's authenticated Favorites widget directly,
-  so device state and actions come from Google Home after a one-time home/device selection.
-  The shade header includes five compact battery-meter styles; HyperOS's three native status-bar
-  battery styles remain selectable separately.
+  open or closed. Its compact Home shelf hosts Google Home's authenticated Favorites widget
+  directly, promotes the selected structure name into the shelf header and keeps Google's live
+  device state/actions after a one-time home/device selection. Non-expandable notifications omit
+  empty expand affordances.
+  The shade battery meter follows the same Number, Graphic or Top bar style selected for
+  HyperOS's real status bar, so the two surfaces stay consistent.
 - **Working Shizuku integration** restores TickerBar's fallback access after reboot,
   replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
   opens its real floating control. Pairing is remembered; Shizuku 13.6+ can restart its

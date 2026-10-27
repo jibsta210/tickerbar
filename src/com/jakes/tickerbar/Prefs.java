@@ -87,7 +87,6 @@ public final class Prefs {
     public static final String SHADE_SECONDARY_COLOR = "shade_secondary_color";
     public static final String SHADE_NOTIFICATION_TEXT_COLOR = "shade_notification_text_color";
     public static final String SHADE_NOTIFICATIONS_EXPANDED = "shade_notifications_expanded";
-    public static final String SHADE_BATTERY_STYLE = "shade_battery_style";
     public static final String HOME_SHELF   = "home_shelf";     // location-aware Home row in UnifiedShade
     public static final String HOME_WIDGET_ID = "home_widget_id"; // Google Home Favorites AppWidget id
     public static final String AUTO_BRIGHTNESS_LEVEL = "auto_brightness_level"; // 0..1000 native slider position
@@ -130,7 +129,6 @@ public final class Prefs {
         DEF.put(SHADE_ACTIVE_COLOR, 0); DEF.put(SHADE_TEXT_COLOR, 0); DEF.put(SHADE_SECONDARY_COLOR, 0);
         DEF.put(SHADE_NOTIFICATION_TEXT_COLOR, 0);
         DEF.put(SHADE_NOTIFICATIONS_EXPANDED, 0);
-        DEF.put(SHADE_BATTERY_STYLE, 0);
         DEF.put(HOME_SHELF, 1);
         DEF.put(AUTO_BRIGHTNESS_LEVEL, 500);
         DEF.put(VOL_HOLD_MS, 400); DEF.put(VOL_REPEAT_MS, 90); DEF.put(RINGER_PAUSE, 600);
