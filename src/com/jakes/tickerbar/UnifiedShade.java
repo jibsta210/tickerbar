@@ -157,7 +157,10 @@ final class UnifiedShade {
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
     private TextView homeLocationLabel;
-    private final HashMap<View, Boolean> homeTileStates = new HashMap<View, Boolean>();
+    /** State survives Google's repeated RemoteViews reinflations during one shade opening. */
+    private final HashMap<String, Boolean> homeTileStates = new HashMap<String, Boolean>();
+    private final HashMap<String, HomeStateTransition> homeTileTransitions =
+            new HashMap<String, HomeStateTransition>();
     private int homeWidgetId;
     /** One timeline owns sheet travel, scrim, navbar tint and compositor blur. */
     private android.animation.ValueAnimator revealAnimator;
@@ -597,6 +600,10 @@ final class UnifiedShade {
         fixed.clear();
         mediaIntroViews.clear();
         homeTileStates.clear();
+        for (HomeStateTransition transition
+                : new ArrayList<HomeStateTransition>(homeTileTransitions.values()))
+            transition.cancel();
+        homeTileTransitions.clear();
         groupOpenState.clear();
         cardOpenState.clear();
         swipingCard = false;
@@ -1598,27 +1605,40 @@ final class UnifiedShade {
             // Home first inflates the control hierarchy, then supplies live state in a later
             // RemoteViews update. Missing state is loading, not Off; treating it as Off made
             // the eventual On/Off label and active colour pop into an already-painted tile.
-            final Boolean resolvedState = homeTileState((ViewGroup) tile);
-            final boolean active = Boolean.TRUE.equals(resolvedState);
+            final ViewGroup control = (ViewGroup) tile;
+            final String stateKey = homeTileKey(control);
+            final Boolean resolvedState = homeTileState(control);
+            final Boolean previousState = homeTileStates.get(stateKey);
+            HomeStateTransition transition = homeTileTransitions.get(stateKey);
             // Do not call setTint on Home's state-list RippleDrawable. Its nested blend modes
             // resolve to black on this Google Home/HyperOS combination.
             final int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
-            final ViewGroup control = (ViewGroup) tile;
-            Runnable restyle = new Runnable() { public void run() {
-                clearHomeTileBackgroundLayers(control);
-                control.setBackground(ripple(round(active ? pal.primary : pal.surfaceHigh, radius)));
-                control.setClipToOutline(true);
-                control.setOutlineProvider(roundOutline(radius));
-                tintHomeControl(control, active);
-            }};
-            Boolean previousState = homeTileStates.get(tile);
-            if (resolvedState != null) homeTileStates.put(tile, active);
-            if (previousState != null && previousState != active) {
-                crossfadeMutation(tile, restyle);
-            } else if (resolvedState != null && previousState == null) {
-                animateHomeStateArrival(control, active, radius);
+
+            if (resolvedState == null) {
+                // Home briefly removes the state label during a refresh. Retain the last
+                // resolved visual instead of flashing back to Off between provider updates.
+                if (transition != null) transition.attach(control, radius);
+                else styleHomeControl(control, Boolean.TRUE.equals(previousState), radius);
             } else {
-                restyle.run();
+                final boolean active = resolvedState;
+                if (transition != null && transition.active == active) {
+                    // A second polish/layout callback must join, not finish, the running fade.
+                    transition.attach(control, radius);
+                } else if (previousState == null) {
+                    homeTileStates.put(stateKey, active);
+                    transition = new HomeStateTransition(stateKey, control, active, radius);
+                    homeTileTransitions.put(stateKey, transition);
+                    transition.start();
+                } else if (previousState != active) {
+                    if (transition != null) transition.cancel();
+                    homeTileStates.put(stateKey, active);
+                    final boolean next = active;
+                    crossfadeMutation(control, new Runnable() { public void run() {
+                        styleHomeControl(control, next, radius);
+                    }});
+                } else {
+                    styleHomeControl(control, active, radius);
+                }
             }
             tiles.add((ViewGroup) tile);
         }
@@ -1686,86 +1706,125 @@ final class UnifiedShade {
         return null;
     }
 
-    /** The provider's delayed state arrives as a soft reveal instead of a RemoteViews pop. */
-    private void animateHomeStateArrival(final ViewGroup tile, final boolean active,
-                                         final int radius) {
-        tile.animate().cancel();
-        clearHomeTileBackgroundLayers(tile);
-        tile.setBackground(ripple(round(pal.surfaceHigh, radius)));
-        tile.setClipToOutline(true);
-        tile.setOutlineProvider(roundOutline(radius));
-        tintHomeControl(tile, false);
-
-        final ArrayList<TextView> stateLabels = new ArrayList<TextView>();
+    /** Stable across RemoteViews object replacement; the device label is the provider's key. */
+    private String homeTileKey(ViewGroup tile) {
+        String label = "";
         ArrayList<View> children = new ArrayList<View>();
         collectViews(tile, children);
         for (View child : children) if (child instanceof TextView) {
-            TextView label = (TextView) child;
-            String state = label.getText().toString().trim();
-            if ("On".equalsIgnoreCase(state) || "Off".equalsIgnoreCase(state)
-                    || "Active".equalsIgnoreCase(state) || "Inactive".equalsIgnoreCase(state)) {
-                label.animate().cancel();
-                label.setAlpha(0f);
-                label.setTranslationY(svc.px(3));
-                stateLabels.add(label);
-            }
+            String text = ((TextView) child).getText().toString().trim();
+            if (text.isEmpty() || "On".equalsIgnoreCase(text) || "Off".equalsIgnoreCase(text)
+                    || "Active".equalsIgnoreCase(text) || "Inactive".equalsIgnoreCase(text))
+                continue;
+            label = text;
+            break;
         }
-
-        // RemoteViews can deliver the resolved state during its own attach/layout pass. The
-        // old fallback applied the accent immediately in that case. Keep the neutral frame
-        // visible once, then begin on the following display frame whether the tile was already
-        // attached or only becomes attached after this callback.
-        final Runnable start = new Runnable() { public void run() {
-            startHomeStateArrival(tile, active, radius, stateLabels);
-        }};
-        if (tile.isAttachedToWindow()) {
-            tile.postOnAnimation(start);
-        } else {
-            tile.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-                public void onViewAttachedToWindow(View view) {
-                    view.removeOnAttachStateChangeListener(this);
-                    view.postOnAnimation(start);
-                }
-                public void onViewDetachedFromWindow(View view) {}
-            });
-        }
+        // Collection-item IDs are not stable: Home swaps layouts (and therefore IDs) while
+        // resolving state. The device label is stable across those RemoteViews replacements.
+        return homeWidgetId + ":" + label;
     }
 
-    private void startHomeStateArrival(final ViewGroup tile, final boolean active,
-                                       final int radius, final ArrayList<TextView> stateLabels) {
-        if (!tile.isAttachedToWindow()) return;
-        final int end = active ? pal.primary : pal.surfaceHigh;
-        final int startPrimary = pal.onSurface;
-        final int startSecondary = pal.onSurfaceVariant;
-        final int endPrimary = active ? pal.onPrimary : pal.onSurface;
-        final int endSecondary = active ? Palette.alpha(pal.onPrimary, 0xCC)
-                : pal.onSurfaceVariant;
-        final android.animation.ArgbEvaluator colours = new android.animation.ArgbEvaluator();
-        android.animation.ValueAnimator colour = android.animation.ValueAnimator.ofArgb(
-                pal.surfaceHigh, end);
-        colour.setStartDelay(70);
-        colour.setDuration(480);
-        colour.setInterpolator(OPEN_EASE);
-        colour.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
-            public void onAnimationUpdate(android.animation.ValueAnimator animation) {
-                tile.setBackground(round((Integer) animation.getAnimatedValue(), radius));
-                float fraction = animation.getAnimatedFraction();
-                tintHomeControl(tile,
-                        (Integer) colours.evaluate(fraction, startPrimary, endPrimary),
-                        (Integer) colours.evaluate(fraction, startSecondary, endSecondary));
-            }
-        });
-        colour.addListener(new AnimatorListenerAdapter() {
-            @Override public void onAnimationEnd(Animator animation) {
-                tile.setBackground(ripple(round(end, radius)));
-                tintHomeControl(tile, active);
-            }
-        });
-        colour.start();
+    private void styleHomeControl(ViewGroup tile, boolean active, int radius) {
+        clearHomeTileBackgroundLayers(tile);
+        tile.setBackground(ripple(round(active ? pal.primary : pal.surfaceHigh, radius)));
+        tile.setClipToOutline(true);
+        tile.setOutlineProvider(roundOutline(radius));
+        tintHomeControl(tile, active);
+    }
 
-        for (TextView label : stateLabels) {
-            label.animate().alpha(1f).translationY(0f).setStartDelay(110).setDuration(360)
-                    .setInterpolator(OPEN_EASE).start();
+    /** One uninterrupted fade which survives Home replacing the underlying RemoteViews. */
+    private final class HomeStateTransition {
+        final String key;
+        final boolean active;
+        ViewGroup tile;
+        int radius;
+        float progress;
+        android.animation.ValueAnimator animator;
+        boolean cancelled;
+        ArrayList<TextView> stateLabels = new ArrayList<TextView>();
+
+        HomeStateTransition(String key, ViewGroup tile, boolean active, int radius) {
+            this.key = key;
+            this.active = active;
+            attach(tile, radius);
+        }
+
+        void attach(ViewGroup next, int nextRadius) {
+            tile = next;
+            radius = nextRadius;
+            tile.animate().cancel();
+            clearHomeTileBackgroundLayers(tile);
+            tile.setClipToOutline(true);
+            tile.setOutlineProvider(roundOutline(radius));
+            stateLabels = new ArrayList<TextView>();
+            ArrayList<View> children = new ArrayList<View>();
+            collectViews(tile, children);
+            for (View child : children) if (child instanceof TextView) {
+                TextView label = (TextView) child;
+                String state = label.getText().toString().trim();
+                if ("On".equalsIgnoreCase(state) || "Off".equalsIgnoreCase(state)
+                        || "Active".equalsIgnoreCase(state)
+                        || "Inactive".equalsIgnoreCase(state)) {
+                    label.animate().cancel();
+                    stateLabels.add(label);
+                }
+            }
+            apply(false);
+        }
+
+        void start() {
+            progress = 0f;
+            apply(false);
+            root.postOnAnimation(new Runnable() { public void run() {
+                if (cancelled || homeTileTransitions.get(key) != HomeStateTransition.this) return;
+                animator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+                animator.setStartDelay(80);
+                // This phone runs Android animators at 0.5x. A 1200 ms linear colour ramp is
+                // therefore a gentle ~600 ms fade instead of OPEN_EASE jumping to 70% cyan
+                // in its first tenth of a second.
+                animator.setDuration(1200);
+                animator.setInterpolator(new android.view.animation.LinearInterpolator());
+                animator.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+                    public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                        progress = (Float) animation.getAnimatedValue();
+                        apply(false);
+                    }
+                });
+                animator.addListener(new AnimatorListenerAdapter() {
+                    @Override public void onAnimationEnd(Animator animation) {
+                        if (cancelled) return;
+                        progress = 1f;
+                        apply(true);
+                        if (homeTileTransitions.get(key) == HomeStateTransition.this)
+                            homeTileTransitions.remove(key);
+                    }
+                });
+                animator.start();
+            }});
+        }
+
+        void apply(boolean finished) {
+            if (tile == null) return;
+            int target = active ? pal.primary : pal.surfaceHigh;
+            android.animation.ArgbEvaluator evaluator = new android.animation.ArgbEvaluator();
+            int background = (Integer) evaluator.evaluate(progress, pal.surfaceHigh, target);
+            tile.setBackground(finished
+                    ? ripple(round(target, radius)) : round(background, radius));
+            int primary = (Integer) evaluator.evaluate(progress, pal.onSurface,
+                    active ? pal.onPrimary : pal.onSurface);
+            int secondary = (Integer) evaluator.evaluate(progress, pal.onSurfaceVariant,
+                    active ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant);
+            tintHomeControl(tile, primary, secondary);
+            for (TextView label : stateLabels) {
+                label.setAlpha(progress);
+                label.setTranslationY((1f - progress) * svc.px(3));
+            }
+        }
+
+        void cancel() {
+            cancelled = true;
+            if (animator != null) animator.cancel();
+            if (homeTileTransitions.get(key) == this) homeTileTransitions.remove(key);
         }
     }
 
