@@ -116,7 +116,7 @@ final class RootOverlayClient {
             sendConfig();
             Log.i("TickerBarOverlay", "Root system-window service ready");
             ShadeService.refresh();
-            RootFeatures.detachAccessibilityIfReady(context);
+            RootFeatures.ensureShadeHost(context);
         } catch (Throwable t) {
             if (!stopped) Log.w("TickerBarOverlay", "Root overlay unavailable", t);
             close();

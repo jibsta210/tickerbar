@@ -86,7 +86,7 @@ final class RootVolume {
             int status = ByteBuffer.wrap(readFully(in, 4)).order(ByteOrder.nativeOrder()).getInt();
             if (status != 0) throw new IllegalStateException("physical key grab failed");
             Log.i("TickerBarVolume", "Root physical-key lease ready");
-            RootFeatures.detachAccessibilityIfReady(context);
+            RootFeatures.ensureShadeHost(context);
 
             while (!stopped) {
                 ByteBuffer packet = ByteBuffer.wrap(readFully(in, 8)).order(ByteOrder.nativeOrder());

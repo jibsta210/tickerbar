@@ -75,6 +75,7 @@ public class MainActivity extends Activity {
         Prefs.migrate(this);
         Shortcuts.publish(this);
         RootBootstrap.start(this);
+        RootFeatures.ensureShadeHost(this);
         pal = Palette.of(this);
 
         sv = new ScrollView(this);
@@ -699,6 +700,7 @@ public class MainActivity extends Activity {
 
     /** A setting changed: apply it live. */
     private void changed() {
+        RootFeatures.ensureShadeHost(this);
         ShadeService.refresh();
         RootOverlayClient.refresh(this);
         NativeTicker.refresh(this);

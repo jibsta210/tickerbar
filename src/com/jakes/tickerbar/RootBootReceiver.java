@@ -16,6 +16,7 @@ public class RootBootReceiver extends BroadcastReceiver {
             notifications.cancel(0x47484f4d);
             notifications.deleteNotificationChannel("google_home_controls");
         }
+        RootFeatures.ensureShadeHost(context);
         RootBootstrap.start(context);
     }
 }

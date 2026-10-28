@@ -14,7 +14,7 @@ final class RootFeatures {
     private static final String PREFS = "root_features";
     private static final String KEY_SHADE_RESTART_BOOT = "native_systemui_restart_boot_v11426";
     private static final AtomicBoolean APPLYING = new AtomicBoolean();
-    private static final AtomicBoolean DETACHING = new AtomicBoolean();
+    private static final AtomicBoolean ACCESSIBILITY_SYNC = new AtomicBoolean();
     private static volatile boolean applied;
 
     private RootFeatures() {}
@@ -150,6 +150,7 @@ final class RootFeatures {
         MemoryProfile.apply(c);
         applied = true;
         Log.i("TickerBarRoot", "Root system integration ready");
+        ensureShadeHost(c);
         TickerListener.filterActive();
         ShadeService.refresh();
         startNativeServices(c);
@@ -267,26 +268,39 @@ final class RootFeatures {
 
     interface ResultCallback { void done(boolean ok, String detail); }
 
-    /** Retire only TickerBar's accessibility component after every replacement is live. */
-    static void detachAccessibilityIfReady(final Context context) {
-        if (!applied() || !NativeTicker.ready() || !RootInput.connected()) return;
-        if (!DETACHING.compareAndSet(false, true)) return;
+    /**
+     * UnifiedShade is still hosted by ShadeService even when every control behind it uses
+     * root. Keep that host registered across APK replacement and reboot; removing it while
+     * the process was alive made the next update silently fall back to HyperOS's stock shade.
+     */
+    static void ensureShadeHost(final Context context) {
+        if (!Prefs.on(context, Prefs.ONE_SHADE)
+                || !ACCESSIBILITY_SYNC.compareAndSet(false, true)) return;
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { public void run() {
             try {
                 String component = new ComponentName(app, ShadeService.class).flattenToString();
                 String command = "services=\"$(settings get secure enabled_accessibility_services)\"; "
-                        + "wrapped=\":$services:\"; "
-                        + "wrapped=\"${wrapped/:" + component + ":/:}\"; "
-                        + "new=\"${wrapped#:}\"; new=\"${new%:}\"; "
-                        + "settings put secure enabled_accessibility_services \"$new\"; "
-                        + "if [ -z \"$new\" ]; then settings put secure accessibility_enabled 0; fi";
-                RootShell.Result result = RootShell.exec(command);
-                if (result.connected && result.code == 0)
-                    Log.i("TickerBarRoot", "Accessibility fallback retired; root UI owns all features");
-                else Log.w("TickerBarRoot", "Could not retire accessibility: " + result.output);
-            } finally { DETACHING.set(false); }
-        }}, "TickerBar-retire-accessibility").start();
+                        + "[ \"$services\" = null ] && services=; "
+                        + "case \":$services:\" in *:" + component + ":*) ;; *) "
+                        + "services=\"${services:+$services:}" + component + "\"; "
+                        + "settings put secure enabled_accessibility_services \"$services\";; esac; "
+                        + "settings put secure accessibility_enabled 1";
+                int code;
+                String output;
+                if (RootShell.available()) {
+                    RootShell.Result result = RootShell.exec(command);
+                    code = result.connected ? result.code : -1;
+                    output = result.output;
+                } else if (Shell.running() && Shell.granted()) {
+                    Shell.Result result = Shell.runShizukuSync(command);
+                    code = result.code;
+                    output = result.output;
+                } else return;
+                if (code == 0) Log.i("TickerBarRoot", "Unified shade host is enabled");
+                else Log.w("TickerBarRoot", "Could not enable unified shade host: " + output);
+            } finally { ACCESSIBILITY_SYNC.set(false); }
+        }}, "TickerBar-enable-shade-host").start();
     }
 
     /** If root cannot return after a boot, Shizuku restores the old safe UI fallback. */
@@ -295,6 +309,7 @@ final class RootFeatures {
         Context app = context.getApplicationContext();
         String component = new ComponentName(app, ShadeService.class).flattenToString();
         String command = "services=\"$(settings get secure enabled_accessibility_services)\"; "
+                + "[ \"$services\" = null ] && services=; "
                 + "case \":$services:\" in *:" + component + ":*) ;; *) "
                 + "services=\"${services:+$services:}" + component + "\"; "
                 + "settings put secure enabled_accessibility_services \"$services\";; esac; "
