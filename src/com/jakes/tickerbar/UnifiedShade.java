@@ -422,6 +422,11 @@ final class UnifiedShade {
 
     /** Back dismisses an active reply first; otherwise it closes the shade in one press. */
     private void back() {
+        // Once this focusable overlay owns Back, SystemUI no longer supplies the navbar's
+        // usual click feedback. VIRTUAL_KEY restores it while still honoring the user's
+        // system-level touch-feedback setting.
+        if (root != null)
+            root.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
         if (replying && replyClose != null) { replyClose.run(); return; }
         close();
     }
