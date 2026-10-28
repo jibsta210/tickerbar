@@ -168,7 +168,6 @@ final class UnifiedShade {
     private boolean backdropBlurUpdatePosted;
     private int backdropGeneration;
     private float revealProgress;
-    private boolean revealDragActive;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -195,7 +194,6 @@ final class UnifiedShade {
 
     /** Opened from a shortcut: slide all the way down. */
     void openAnimated() {
-        revealDragActive = false;
         if (!attach()) return;
         setRevealProgress(0f);
         settle(true, 0);
@@ -203,7 +201,6 @@ final class UnifiedShade {
 
     /** A pull from the status bar starts: the sheet follows the finger from here. */
     void beginDrag() {
-        revealDragActive = true;
         if (attach()) setRevealProgress(0f);
     }
 
@@ -216,10 +213,7 @@ final class UnifiedShade {
     void endDrag(float velocityY) {
         if (!attached || closing) return;
         float shown = sheet.getTranslationY() + sheetH;
-        boolean open = velocityY > 800 || (velocityY > -800 && shown > sheetH * 0.18f);
-        revealDragActive = false;
-        if (open) setShadeWindowFocusable(true);
-        settle(open, velocityY);
+        settle(velocityY > 800 || (velocityY > -800 && shown > sheetH * 0.18f), velocityY);
     }
 
     void close() { if (attached && !closing) settle(false, 0); }
@@ -292,7 +286,6 @@ final class UnifiedShade {
                 revealAnimator.cancel();
                 revealAnimator = null;
             }
-            setShadeWindowFocusable(!revealDragActive);
             setRevealProgress(1f);
             return true;
         }
@@ -326,11 +319,7 @@ final class UnifiedShade {
         // This window must own focus while open so Back is dispatched here instead of to the
         // app underneath. Its bounds still stop above NavigationBar0, so HyperOS continues to
         // draw and operate the genuine Back/Home/Recents controls in their own window.
-        lp.flags |= flags;
-        if (revealDragActive) lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-        else lp.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;
         if (svc.locked()) lp.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
         // Blur is hosted by the application-overlay backdrop below SystemUI. Putting
         // FLAG_BLUR_BEHIND on this accessibility window makes SurfaceFlinger create a
@@ -353,7 +342,7 @@ final class UnifiedShade {
             }
             return false;
         }
-        if (!revealDragActive) root.requestFocus();
+        root.requestFocus();
 
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
@@ -390,8 +379,16 @@ final class UnifiedShade {
         backdrop.setBackgroundColor(Color.TRANSPARENT);
         backdrop.setAlpha(0f);
         View navTint = new View(svc);
+        int desiredTintAlpha = pal.dark ? 0x88 : 0x99;
+        // Android caps TYPE_APPLICATION_OVERLAY windows at 0.8 opacity. Without compensating
+        // the child tint, the navbar band receives only 80% of the scrim colour and is visibly
+        // lighter than the shade. The resulting on-screen alpha now matches the main scrim.
+        float overlayCap = Settings.Global.getFloat(svc.getContentResolver(),
+                "maximum_obscuring_opacity_for_touch", 0.8f);
+        overlayCap = Math.max(0.1f, Math.min(1f, overlayCap));
+        int compensatedTintAlpha = Math.min(255, Math.round(desiredTintAlpha / overlayCap));
         navTint.setBackgroundColor(Palette.alpha(
-                pal.dark ? Color.BLACK : pal.bg, pal.dark ? 0x88 : 0x99));
+                pal.dark ? Color.BLACK : pal.bg, compensatedTintAlpha));
         FrameLayout.LayoutParams tintLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, svc.navBar(), Gravity.BOTTOM);
         backdrop.addView(navTint, tintLp);
@@ -480,20 +477,6 @@ final class UnifiedShade {
         } catch (Exception ignored) {}
     }
 
-    /** Do not steal/cancel the catcher's in-flight pull; take input after ACTION_UP. */
-    private void setShadeWindowFocusable(boolean focusable) {
-        if (!attached || root == null) return;
-        try {
-            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) root.getLayoutParams();
-            if (focusable) lp.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
-            else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-            svc.windows().updateViewLayout(root, lp);
-            if (focusable) root.requestFocus();
-        } catch (Exception ignored) {}
-    }
-
     /**
      * Keep the field being typed in visible when the keyboard opens. SystemUI continues
      * to own and draw the real navigation bar below this window.
@@ -532,15 +515,8 @@ final class UnifiedShade {
         close();
     }
 
-    /** The focusable shade consumes Back, so explicitly reproduce SystemUI's navbar click. */
+    /** HyperOS reports View haptics as accepted without always driving the motor. */
     private void performBackHaptic() {
-        if (root == null) return;
-        boolean performed = root.performHapticFeedback(
-                android.view.HapticFeedbackConstants.VIRTUAL_KEY,
-                android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
-        if (performed) return;
-        // Some HyperOS builds reject haptics requested by an accessibility-overlay view.
-        // Fall back only when the user's global touch-feedback setting is enabled.
         if (Settings.System.getInt(svc.getContentResolver(),
                 Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) == 0) return;
         try {
@@ -552,12 +528,19 @@ final class UnifiedShade {
             } else {
                 vibrator = (android.os.Vibrator) svc.getSystemService(Context.VIBRATOR_SERVICE);
             }
-            if (vibrator != null && vibrator.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= 29)
-                    vibrator.vibrate(android.os.VibrationEffect.createPredefined(
-                            android.os.VibrationEffect.EFFECT_CLICK));
-                else vibrator.vibrate(18);
-            }
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            // HyperOS uses HEAVY_CLICK for the three-button navigation bar. Its ordinary
+            // CLICK preset is much softer on this device and can feel like no feedback at all.
+            android.os.VibrationEffect effect = Build.VERSION.SDK_INT >= 29
+                    ? android.os.VibrationEffect.createPredefined(
+                            android.os.VibrationEffect.EFFECT_HEAVY_CLICK)
+                    : android.os.VibrationEffect.createOneShot(22,
+                            android.os.VibrationEffect.DEFAULT_AMPLITUDE);
+            android.media.AudioAttributes attributes = new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            vibrator.vibrate(effect, attributes);
         } catch (Exception ignored) {}
     }
 
@@ -605,7 +588,6 @@ final class UnifiedShade {
         }
         attached = false;
         closing = false;
-        revealDragActive = false;
         revealProgress = 0f;
         targetBackdropBlur = 0;
         appliedBackdropBlur = -1;
@@ -1613,7 +1595,11 @@ final class UnifiedShade {
             // Home revisions that leaves an opaque white layer over the icon and labels.
             // Preserve the PendingIntent hierarchy, but give every device the same permanent
             // pill geometry. State changes now alter only colour, never shape.
-            final boolean active = homeTileActive((ViewGroup) tile);
+            // Home first inflates the control hierarchy, then supplies live state in a later
+            // RemoteViews update. Missing state is loading, not Off; treating it as Off made
+            // the eventual On/Off label and active colour pop into an already-painted tile.
+            final Boolean resolvedState = homeTileState((ViewGroup) tile);
+            final boolean active = Boolean.TRUE.equals(resolvedState);
             // Do not call setTint on Home's state-list RippleDrawable. Its nested blend modes
             // resolve to black on this Google Home/HyperOS combination.
             final int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
@@ -1625,9 +1611,15 @@ final class UnifiedShade {
                 control.setOutlineProvider(roundOutline(radius));
                 tintHomeControl(control, active);
             }};
-            Boolean previousState = homeTileStates.put(tile, active);
-            if (previousState != null && previousState != active) crossfadeMutation(tile, restyle);
-            else restyle.run();
+            Boolean previousState = homeTileStates.get(tile);
+            if (resolvedState != null) homeTileStates.put(tile, active);
+            if (previousState != null && previousState != active) {
+                crossfadeMutation(tile, restyle);
+            } else if (resolvedState != null && previousState == null) {
+                animateHomeStateArrival(control, active, radius);
+            } else {
+                restyle.run();
+            }
             tiles.add((ViewGroup) tile);
         }
 
@@ -1682,14 +1674,99 @@ final class UnifiedShade {
         }
     }
 
-    private boolean homeTileActive(ViewGroup tile) {
+    /** Null means Home has not returned this control's live state yet. */
+    private Boolean homeTileState(ViewGroup tile) {
         ArrayList<View> children = new ArrayList<View>();
         collectViews(tile, children);
         for (View child : children) if (child instanceof TextView) {
             String state = ((TextView) child).getText().toString().trim();
             if ("On".equalsIgnoreCase(state) || "Active".equalsIgnoreCase(state)) return true;
+            if ("Off".equalsIgnoreCase(state) || "Inactive".equalsIgnoreCase(state)) return false;
         }
-        return false;
+        return null;
+    }
+
+    /** The provider's delayed state arrives as a soft reveal instead of a RemoteViews pop. */
+    private void animateHomeStateArrival(final ViewGroup tile, final boolean active,
+                                         final int radius) {
+        tile.animate().cancel();
+        clearHomeTileBackgroundLayers(tile);
+        tile.setBackground(ripple(round(pal.surfaceHigh, radius)));
+        tile.setClipToOutline(true);
+        tile.setOutlineProvider(roundOutline(radius));
+        tintHomeControl(tile, false);
+
+        final ArrayList<TextView> stateLabels = new ArrayList<TextView>();
+        ArrayList<View> children = new ArrayList<View>();
+        collectViews(tile, children);
+        for (View child : children) if (child instanceof TextView) {
+            TextView label = (TextView) child;
+            String state = label.getText().toString().trim();
+            if ("On".equalsIgnoreCase(state) || "Off".equalsIgnoreCase(state)
+                    || "Active".equalsIgnoreCase(state) || "Inactive".equalsIgnoreCase(state)) {
+                label.animate().cancel();
+                label.setAlpha(0f);
+                label.setTranslationY(svc.px(3));
+                stateLabels.add(label);
+            }
+        }
+
+        // RemoteViews can deliver the resolved state during its own attach/layout pass. The
+        // old fallback applied the accent immediately in that case. Keep the neutral frame
+        // visible once, then begin on the following display frame whether the tile was already
+        // attached or only becomes attached after this callback.
+        final Runnable start = new Runnable() { public void run() {
+            startHomeStateArrival(tile, active, radius, stateLabels);
+        }};
+        if (tile.isAttachedToWindow()) {
+            tile.postOnAnimation(start);
+        } else {
+            tile.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                public void onViewAttachedToWindow(View view) {
+                    view.removeOnAttachStateChangeListener(this);
+                    view.postOnAnimation(start);
+                }
+                public void onViewDetachedFromWindow(View view) {}
+            });
+        }
+    }
+
+    private void startHomeStateArrival(final ViewGroup tile, final boolean active,
+                                       final int radius, final ArrayList<TextView> stateLabels) {
+        if (!tile.isAttachedToWindow()) return;
+        final int end = active ? pal.primary : pal.surfaceHigh;
+        final int startPrimary = pal.onSurface;
+        final int startSecondary = pal.onSurfaceVariant;
+        final int endPrimary = active ? pal.onPrimary : pal.onSurface;
+        final int endSecondary = active ? Palette.alpha(pal.onPrimary, 0xCC)
+                : pal.onSurfaceVariant;
+        final android.animation.ArgbEvaluator colours = new android.animation.ArgbEvaluator();
+        android.animation.ValueAnimator colour = android.animation.ValueAnimator.ofArgb(
+                pal.surfaceHigh, end);
+        colour.setStartDelay(70);
+        colour.setDuration(480);
+        colour.setInterpolator(OPEN_EASE);
+        colour.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                tile.setBackground(round((Integer) animation.getAnimatedValue(), radius));
+                float fraction = animation.getAnimatedFraction();
+                tintHomeControl(tile,
+                        (Integer) colours.evaluate(fraction, startPrimary, endPrimary),
+                        (Integer) colours.evaluate(fraction, startSecondary, endSecondary));
+            }
+        });
+        colour.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                tile.setBackground(ripple(round(end, radius)));
+                tintHomeControl(tile, active);
+            }
+        });
+        colour.start();
+
+        for (TextView label : stateLabels) {
+            label.animate().alpha(1f).translationY(0f).setStartDelay(110).setDuration(360)
+                    .setInterpolator(OPEN_EASE).start();
+        }
     }
 
     /** Reveal our active background by removing Google's nested, opaque state layer. */
@@ -1711,6 +1788,10 @@ final class UnifiedShade {
     private void tintHomeControl(ViewGroup tile, boolean active) {
         int primary = active ? pal.onPrimary : pal.onSurface;
         int secondary = active ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant;
+        tintHomeControl(tile, primary, secondary);
+    }
+
+    private void tintHomeControl(ViewGroup tile, int primary, int secondary) {
         ArrayList<View> children = new ArrayList<View>();
         collectViews(tile, children);
         int textIndex = 0;
