@@ -407,8 +407,13 @@ final class UnifiedShade {
         content.setPadding(content.getPaddingLeft(), content.getPaddingTop(), content.getPaddingRight(),
                 svc.px(28) + ime);
         if (ime > 0) scroll.postDelayed(new Runnable() { public void run() {
+            if (!attached || root == null || scroll == null || imeHeight <= 0) return;
             View f = root.findFocus();
-            if (f == null) return;
+            // Focus can return to the shade root while this delayed IME callback is queued,
+            // or the reply editor can be replaced during a notification refresh. ViewGroup
+            // throws (and kills the Accessibility service) if asked to offset a view outside
+            // this ScrollView, so validate the relationship before doing any geometry.
+            if (f == null || !isDescendantOf(f, scroll)) return;
             android.graphics.Rect r = new android.graphics.Rect();
             f.getDrawingRect(r);
             scroll.offsetDescendantRectToMyCoords(f, r);
