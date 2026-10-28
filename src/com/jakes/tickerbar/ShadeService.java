@@ -273,19 +273,39 @@ public class ShadeService extends AccessibilityService {
         if (audio.getMode() != AudioManager.MODE_NORMAL) return false;   // calls keep the system's handling
         // Casting: the system routes the buttons to the cast device, so it gets them untouched.
         if (castSession() != null) return false;
+        boolean exitedDnd = key == KeyEvent.KEYCODE_VOLUME_UP
+                && Prefs.on(this, Prefs.RINGER_CYCLE) && exitDnd(audio);
         // Something playing here: fine media steps. Nothing playing: the ringer, cycled the
         // stock Android way. Either only if switched on; otherwise the system has the press.
-        boolean media = audio.isMusicActive();
-        if (!Prefs.on(this, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
-        heldRinger = !media;
+        boolean media = !exitedDnd && audio.isMusicActive();
+        if (!exitedDnd && !Prefs.on(this, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
+        heldRinger = exitedDnd || !media;
         boundarySince = 0;
-        if (!stepVolume(key, false)) return false;
+        if (!exitedDnd && !stepVolume(key, false)) return false;
         volumeKeys.add(key);
         stopVolumeRepeat();
         heldKey = key;
         heldSince = SystemClock.uptimeMillis();
         ui.postDelayed(volumeRepeatR, ms(Prefs.VOL_HOLD_MS, 100, 2000));
         return true;
+    }
+
+    /** DND exit takes precedence over media/ringer stream selection. */
+    private boolean exitDnd(AudioManager audio) {
+        android.app.NotificationManager nm = (android.app.NotificationManager)
+                getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null || nm.getCurrentInterruptionFilter()
+                <= android.app.NotificationManager.INTERRUPTION_FILTER_ALL) return false;
+        try {
+            nm.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_ALL);
+            if (audio.getRingerMode() == AudioManager.RINGER_MODE_SILENT)
+                audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
+            showRinger(audio);
+            return true;
+        } catch (SecurityException e) {
+            Log.w("TickerBarVolume", "Could not exit DND", e);
+            return false;
+        }
     }
 
     private static final long VOLUME_HOLD_MAX_MS = 8000;

@@ -1,6 +1,7 @@
 package com.jakes.tickerbar;
 
 import android.app.KeyguardManager;
+import android.app.NotificationManager;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
@@ -21,9 +22,9 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-/** Passive root touchscreen observer for the two inert stock navigation-bar keys. */
+/** Passive root observer for ticker/nav gestures and non-consuming Volume Up DND exit. */
 final class RootInput {
-    private static final String SOCKET = "tickerbar-input-v2";
+    private static final String SOCKET = "tickerbar-input-v3";
     private static volatile RootInput active;
 
     private final Context context;
@@ -85,7 +86,7 @@ final class RootInput {
             if (!payload.isFile()) throw new IllegalStateException("root payload missing");
             LocalSocket connected = tryConnect();
             if (connected == null) {
-                String command = "pidof tb-input2 >/dev/null 2>&1 || ("
+                String command = "pidof tb-input3 >/dev/null 2>&1 || ("
                         + quote(payload.getAbsolutePath()) + " --input-helper " + Process.myUid()
                         + " >/dev/null 2>&1 &)";
                 RootShell.Result launch = RootShell.exec(command);
@@ -112,6 +113,7 @@ final class RootInput {
                 else if (event == 'T') NativeTicker.openCurrent();
                 else if (event == 'D') NativeTicker.dismissCurrent();
                 else if (event == 'N') NativeTicker.pullShade();
+                else if (event == 'U') exitManualDnd();
             }
         } catch (Throwable failure) {
             if (!stopped) Log.w("TickerBarInput", "Root gesture observer ended", failure);
@@ -123,6 +125,23 @@ final class RootInput {
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) { return; }
                 RootInput.start(context);
             }}, "TickerBar-root-input-retry").start();
+        }
+    }
+
+    /** Volume Up always leaves DND when the user's ringer-cycle feature is enabled. */
+    private void exitManualDnd() {
+        if (!Prefs.on(context, Prefs.RINGER_CYCLE)) return;
+        NotificationManager nm = (NotificationManager)
+                context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null || nm.getCurrentInterruptionFilter()
+                <= NotificationManager.INTERRUPTION_FILTER_ALL) return;
+        try {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+            Log.i("TickerBarVolume", "Volume Up exited manually-entered DND");
+        } catch (SecurityException denied) {
+            new Thread(new Runnable() { public void run() {
+                RootShell.exec("cmd notification set_dnd off");
+            }}, "TickerBar-exit-dnd").start();
         }
     }
 

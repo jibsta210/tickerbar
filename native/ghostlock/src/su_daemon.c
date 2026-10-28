@@ -26,7 +26,7 @@
 
 #define SOCK_NAME "tickerbar-root"
 #define VOLUME_SOCK_NAME "tickerbar-volume-v2"
-#define INPUT_SOCK_NAME "tickerbar-input-v2"
+#define INPUT_SOCK_NAME "tickerbar-input-v3"
 #define POWER_SOCK_NAME "tickerbar-power-v1"
 
 static uid_t allowed_uid = (uid_t)-1;
@@ -738,6 +738,43 @@ static int open_touchscreen(int *max_x, int *max_y) {
   return result;
 }
 
+/* A second read-only evdev client does not consume or alter Android's key stream. It only
+ * lets the app notice Volume Up early enough to clear a manually-entered DND state while
+ * the original event continues to AudioService normally. */
+static int open_volume_observer(void) {
+  DIR *dir = opendir("/dev/input");
+  if (!dir)
+    return -1;
+  int result = -1;
+  struct dirent *entry;
+  while ((entry = readdir(dir))) {
+    if (strncmp(entry->d_name, "event", 5) != 0)
+      continue;
+    char path[128];
+    snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0)
+      continue;
+    char name[128] = {0};
+    (void)ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+    if (strstr(name, "TickerBar") || strstr(name, "uinput")) {
+      close(fd);
+      continue;
+    }
+    unsigned long bits[(KEY_MAX + 8U * sizeof(unsigned long)) /
+                       (8U * sizeof(unsigned long))];
+    memset(bits, 0, sizeof(bits));
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) >= 0 &&
+        key_bit(bits, KEY_VOLUMEUP)) {
+      result = fd;
+      break;
+    }
+    close(fd);
+  }
+  closedir(dir);
+  return result;
+}
+
 static int in_corner(const struct input_config *c, int x, int y) {
   int width = c->corner_width > 0 ? c->corner_width : c->screen_w * 15 / 100;
   if (width < c->screen_w / 20)
@@ -766,6 +803,7 @@ static int in_ticker(const struct input_config *c, int x, int y) {
 static void serve_input_client(int conn) {
   int max_x = 1, max_y = 1;
   int input = open_touchscreen(&max_x, &max_y);
+  int volume = open_volume_observer();
   int status = input >= 0 ? 0 : 1;
   if (!write_full(conn, &status, sizeof(status)) || status != 0)
     goto done;
@@ -789,12 +827,13 @@ static void serve_input_client(int conn) {
       int64_t remaining = down_at + hold - monotonic_ms();
       timeout = remaining <= 0 ? 0 : remaining > 2000 ? 2000 : (int)remaining;
     }
-    struct pollfd polls[2] = {
+    struct pollfd polls[3] = {
       {conn, POLLIN | POLLHUP | POLLERR, 0},
-      {input, POLLIN | POLLHUP | POLLERR, 0}
+      {input, POLLIN | POLLHUP | POLLERR, 0},
+      {volume, volume >= 0 ? POLLIN | POLLHUP | POLLERR : 0, 0}
     };
     int ready;
-    do { ready = poll(polls, 2, timeout); } while (ready < 0 && errno == EINTR);
+    do { ready = poll(polls, 3, timeout); } while (ready < 0 && errno == EINTR);
     if (ready < 0 || (polls[0].revents & (POLLHUP | POLLERR | POLLNVAL)))
       break;
     if (ready == 0) {
@@ -808,6 +847,15 @@ static void serve_input_client(int conn) {
     if (polls[0].revents & POLLIN) {
       if (!read_full(conn, &config, sizeof(config)))
         break;
+    }
+    if (volume >= 0 && (polls[2].revents & POLLIN)) {
+      struct input_event key_event;
+      while (read(volume, &key_event, sizeof(key_event)) == sizeof(key_event)) {
+        if (key_event.type == EV_KEY && key_event.code == KEY_VOLUMEUP && key_event.value == 1) {
+          char out = 'U';
+          if (!write_full(conn, &out, 1)) goto done;
+        }
+      }
     }
     if (!(polls[1].revents & POLLIN))
       continue;
@@ -878,12 +926,13 @@ static void serve_input_client(int conn) {
 
 done:
   if (input >= 0) close(input);
+  if (volume >= 0) close(volume);
 }
 
 static int input_helper_main(uid_t app_uid) {
   if (geteuid() != 0 || app_uid < 10000)
     return 126;
-  (void)prctl(PR_SET_NAME, "tb-input2", 0, 0, 0);
+  (void)prctl(PR_SET_NAME, "tb-input3", 0, 0, 0);
   signal(SIGPIPE, SIG_IGN);
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0)

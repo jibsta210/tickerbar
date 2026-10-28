@@ -138,9 +138,27 @@ final class RootVolume {
     private boolean shouldConsume(int key) {
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         if (audio == null || audio.getMode() != AudioManager.MODE_NORMAL || remoteVolume()) return false;
+        if (key == KeyEvent.KEYCODE_VOLUME_UP && Prefs.on(context, Prefs.RINGER_CYCLE)
+                && exitDnd(audio)) return true;
         boolean media = audio.isMusicActive();
         if (!Prefs.on(context, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
         return step(key, false);
+    }
+
+    /** DND is above stream routing: even stale/playing media must not steal its exit press. */
+    private boolean exitDnd(AudioManager audio) {
+        NotificationManager nm = (NotificationManager)
+                context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null || nm.getCurrentInterruptionFilter()
+                <= NotificationManager.INTERRUPTION_FILTER_ALL) return false;
+        try {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+            if (audio.getRingerMode() == AudioManager.RINGER_MODE_SILENT)
+                audio.setRingerMode(AudioManager.RINGER_MODE_VIBRATE);
+            audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_SAME,
+                    AudioManager.FLAG_SHOW_UI);
+            return true;
+        } catch (SecurityException e) { return false; }
     }
 
     private boolean step(int key, boolean repeat) {
