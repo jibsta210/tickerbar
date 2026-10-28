@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TickerListener extends NotificationListenerService {
 
     private static TickerListener self;
+    private static final String PERMISSION_REMINDER_CHANNEL = "permission reminders";
 
     @Override public void onListenerConnected() {
         self = this;
@@ -32,7 +33,8 @@ public class TickerListener extends NotificationListenerService {
         try {
             StatusBarNotification[] current = getActiveNotifications();
             if (current != null) for (StatusBarNotification sbn : current) {
-                if (sbn == null || getPackageName().equals(sbn.getPackageName())) continue;
+                if (sbn == null || suppressAccessibilityReminder(sbn)
+                        || getPackageName().equals(sbn.getPackageName())) continue;
                 remember(sbn.getPackageName());
                 rememberType(sbn);
                 hideFromStockShadeIfSelected(sbn);
@@ -117,12 +119,15 @@ public class TickerListener extends NotificationListenerService {
     /** Apply the user's app/channel exclusions to HyperOS's real stock shade. */
     static void filterActive() {
         TickerListener listener = self;
-        if (listener == null || !RootFeatures.applied()) return;
+        if (listener == null) return;
         StatusBarNotification[] active;
         try { active = listener.getActiveNotifications(); }
         catch (Exception e) { return; }
         if (active == null) return;
-        for (StatusBarNotification sbn : active) listener.hideFromStockShadeIfSelected(sbn);
+        for (StatusBarNotification sbn : active) {
+            if (listener.suppressAccessibilityReminder(sbn)) continue;
+            listener.hideFromStockShadeIfSelected(sbn);
+        }
     }
 
     /** Snooze from the shade's long-press menu; it comes back after ms. */
@@ -145,8 +150,12 @@ public class TickerListener extends NotificationListenerService {
             new ConcurrentHashMap<String, PendingIntent>();
 
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
-        ShadeService.notificationsChanged();
         if (sbn == null || sbn.getNotification() == null) return;
+        if (suppressAccessibilityReminder(sbn)) {
+            ShadeService.notificationsChanged();
+            return;
+        }
+        ShadeService.notificationsChanged();
         Notification n = sbn.getNotification();
         String pkg = sbn.getPackageName();
         String key = sbn.getKey();
@@ -207,6 +216,40 @@ public class TickerListener extends NotificationListenerService {
                     + " channel=" + n.getChannelId());
         } catch (Exception failure) {
             Log.w("TickerBarFilter", "Could not remove " + pkg, failure);
+        }
+        return true;
+    }
+
+    /**
+     * Android periodically re-posts an accessibility review even after the user has already
+     * trusted TickerBar. Remove only that one targeted reminder. Permission dialogs, Safety
+     * Center, Play Protect and reminders concerning other apps remain untouched.
+     */
+    private boolean suppressAccessibilityReminder(StatusBarNotification sbn) {
+        if (sbn == null || sbn.getNotification() == null
+                || !Prefs.on(this, Prefs.HIDE_ACCESSIBILITY_REMINDERS)) return false;
+        String pkg = sbn.getPackageName();
+        if (!("com.google.android.permissioncontroller".equals(pkg)
+                || "com.android.permissioncontroller".equals(pkg)
+                || "com.android.packageinstaller".equals(pkg))) return false;
+        Notification notification = sbn.getNotification();
+        if (!PERMISSION_REMINDER_CHANNEL.equals(notification.getChannelId())) return false;
+
+        String tag = sbn.getTag();
+        Bundle extras = notification.extras;
+        String title = text(extras, Notification.EXTRA_TITLE);
+        String body = text(extras, Notification.EXTRA_TEXT);
+        boolean targetsTickerBar = tag != null && tag.startsWith(getPackageName() + "/");
+        if (!targetsTickerBar) {
+            String app = label(getPackageName());
+            targetsTickerBar = body.contains(app) && title.contains("full device access");
+        }
+        if (!targetsTickerBar) return false;
+        try {
+            cancelNotification(sbn.getKey());
+            Log.i("TickerBarFilter", "Removed recurring accessibility review: " + sbn.getKey());
+        } catch (Exception failure) {
+            Log.w("TickerBarFilter", "Could not remove accessibility review", failure);
         }
         return true;
     }

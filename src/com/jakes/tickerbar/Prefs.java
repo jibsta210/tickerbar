@@ -24,6 +24,7 @@ public final class Prefs {
     public static final String QUEUE        = "queue";
     public static final String SKIP_SILENT  = "skip_silent";
     public static final String SKIP_ONGOING = "skip_ongoing";
+    public static final String HIDE_ACCESSIBILITY_REMINDERS = "hide_accessibility_reminders";
     public static final String IGNORE       = "ignore_pkgs";
 
     // animation
@@ -142,6 +143,7 @@ public final class Prefs {
         DEF.put(PAD, 120);       DEF.put(TEXT, 13);       DEF.put(OPACITY, 100);
         DEF.put(DWELL, 4000);    DEF.put(QUEUE, 1);       DEF.put(SKIP_SILENT, 1);
         DEF.put(SKIP_ONGOING, 1);
+        DEF.put(HIDE_ACCESSIBILITY_REMINDERS, 1);
         DEF.put(ANIM_IN, 4);     DEF.put(ANIM_OUT, 4);    DEF.put(ANIM_MS, 380);
         DEF.put(SCROLL_MODE, 0); DEF.put(SPEED, 160);     DEF.put(DELAY, 700);
         DEF.put(SWIPE_ON, 0);    DEF.put(SWIPE_HOME, 0);  DEF.put(SWIPE_TRIGGER, 2);

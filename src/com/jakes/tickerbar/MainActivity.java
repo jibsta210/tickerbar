@@ -359,6 +359,9 @@ public class MainActivity extends Activity {
                 + "The custom shade also runs on the lock screen and follows Android's notification privacy settings; landscape keeps the system shade.");
 
         c = card("Hidden apps");
+        switchRow(c, "Hide recurring accessibility reviews",
+                "Removes only Android's repeated ‘Review app with full device access’ reminder for TickerBar",
+                Prefs.HIDE_ACCESSIBILITY_REMINDERS);
         note(c, "Apps switched on here never appear on the ticker. With root they are also removed from "
                 + "HyperOS's stock shade; the fallback one-shade hides them locally. Tip: long-press a "
                 + "notification in the shade to hide just that type (like Messages' pairing notice) or the whole "
