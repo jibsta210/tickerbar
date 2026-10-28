@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jakes.tickerbar"
-    android:versionCode="117"
-    android:versionName="1.14.63">
+    android:versionCode="118"
+    android:versionName="1.14.64">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35"/>
 
@@ -27,6 +27,7 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <!-- Root grants this app-op; the native ticker no longer needs Accessibility. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <!-- Used only to preserve the ticker's "quiet in the foreground app" behaviour. -->

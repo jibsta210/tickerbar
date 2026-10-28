@@ -157,7 +157,18 @@ final class UnifiedShade {
     private AppWidgetHost homeWidgetHost;
     private AppWidgetHostView homeWidgetView;
     private TextView homeLocationLabel;
+    private final HashMap<View, Boolean> homeTileStates = new HashMap<View, Boolean>();
     private int homeWidgetId;
+    /** One timeline owns sheet travel, scrim, navbar tint and compositor blur. */
+    private android.animation.ValueAnimator revealAnimator;
+    private WindowManager.LayoutParams navBackdropLp;
+    private int targetBackdropBlur;
+    private int appliedBackdropBlur = -1;
+    private int pendingBackdropBlur;
+    private boolean backdropBlurUpdatePosted;
+    private int backdropGeneration;
+    private float revealProgress;
+    private boolean revealDragActive;
     private float expansionProgress;
     private LayoutTransition expansionSavedTransition;
     private LayoutTransition contentExpansionSavedTransition;
@@ -184,14 +195,16 @@ final class UnifiedShade {
 
     /** Opened from a shortcut: slide all the way down. */
     void openAnimated() {
+        revealDragActive = false;
         if (!attach()) return;
-        sheet.setTranslationY(-sheetH);
+        setRevealProgress(0f);
         settle(true, 0);
     }
 
     /** A pull from the status bar starts: the sheet follows the finger from here. */
     void beginDrag() {
-        if (attach()) sheet.setTranslationY(-sheetH);
+        revealDragActive = true;
+        if (attach()) setRevealProgress(0f);
     }
 
     void drag(float dy) {
@@ -203,7 +216,10 @@ final class UnifiedShade {
     void endDrag(float velocityY) {
         if (!attached || closing) return;
         float shown = sheet.getTranslationY() + sheetH;
-        settle(velocityY > 800 || (velocityY > -800 && shown > sheetH * 0.18f), velocityY);
+        boolean open = velocityY > 800 || (velocityY > -800 && shown > sheetH * 0.18f);
+        revealDragActive = false;
+        if (open) setShadeWindowFocusable(true);
+        settle(open, velocityY);
     }
 
     void close() { if (attached && !closing) settle(false, 0); }
@@ -214,39 +230,48 @@ final class UnifiedShade {
     }
 
     private void settle(final boolean open, float velocity) {
-        final float target = open ? 0 : -sheetH;
-        float dist = Math.abs(sheet.getTranslationY() - target);
+        final float targetProgress = open ? 1f : 0f;
+        float dist = Math.abs(revealProgress - targetProgress) * sheetH;
         long ms = (long) Math.max(190, Math.min(460, dist / Math.max(1300, Math.abs(velocity)) * 1000));
         if (!open) closing = true;
         sheet.animate().cancel();
         if (scrim != null) scrim.animate().cancel();
         if (navBackdrop != null) navBackdrop.animate().cancel();
+        if (revealAnimator != null) revealAnimator.cancel();
         // The chrome belongs to the sheet. Start any one-shot colour handoff with the
         // sheet itself instead of waiting for the panel to land and making its controls
         // look as though they were inflated late.
         if (open) runChromeIntroIfNeeded();
-        sheet.animate().translationY(target).scaleX(open ? 1f : 0.985f).scaleY(open ? 1f : 0.985f)
-                .setDuration(ms).setInterpolator(open ? OPEN_EASE : CLOSE_EASE)
-                .setListener(new AnimatorListenerAdapter() {
-                    @Override public void onAnimationEnd(Animator a) {
-                        sheet.animate().setListener(null);
-                        if (!open) detach();
-                    }
-                }).start();
-        if (scrim != null) scrim.animate().alpha(open ? 1f : 0f).setDuration(ms)
-                .setInterpolator(open ? OPEN_EASE : CLOSE_EASE).start();
-        if (navBackdrop != null) navBackdrop.animate().alpha(open ? 1f : 0f).setDuration(ms)
-                .setInterpolator(open ? OPEN_EASE : CLOSE_EASE).start();
+        final android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(
+                revealProgress, targetProgress);
+        revealAnimator = a;
+        a.setDuration(ms);
+        a.setInterpolator(open ? OPEN_EASE : CLOSE_EASE);
+        a.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                setRevealProgress((Float) animation.getAnimatedValue());
+            }
+        });
+        a.addListener(new AnimatorListenerAdapter() {
+            private boolean cancelled;
+            @Override public void onAnimationCancel(Animator animation) { cancelled = true; }
+            @Override public void onAnimationEnd(Animator animation) {
+                if (revealAnimator == animation) revealAnimator = null;
+                if (!cancelled && !open) detach();
+            }
+        });
+        a.start();
     }
 
     private void setRevealProgress(float progress) {
         float p = Math.max(0f, Math.min(1f, progress));
+        revealProgress = p;
         sheet.setTranslationY(-sheetH * (1f - p));
         float scale = 0.985f + 0.015f * p;
         sheet.setScaleX(scale);
         sheet.setScaleY(scale);
         if (scrim != null) scrim.setAlpha(p);
-        if (navBackdrop != null) navBackdrop.setAlpha(p);
+        applyBackdropProgress(p);
         if (chromeIntroPending) {
             applyAccessoryReveal(homeShelfView, (p - 0.12f) / 0.58f, svc.px(18));
             float mediaProgress = (p - 0.22f) / 0.58f;
@@ -263,6 +288,11 @@ final class UnifiedShade {
             sheet.animate().setListener(null);
             sheet.animate().cancel();
             if (scrim != null) scrim.animate().cancel();
+            if (revealAnimator != null) {
+                revealAnimator.cancel();
+                revealAnimator = null;
+            }
+            setShadeWindowFocusable(!revealDragActive);
             setRevealProgress(1f);
             return true;
         }
@@ -287,12 +317,20 @@ final class UnifiedShade {
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         // the shade ends at the nav bar, so Back / Home / Recents stay visible and usable
         int height = shadeHeight();
+        sheetH = height;
+        // Establish the hidden geometry before either window is submitted. Doing this after
+        // addView leaves one compositor frame with the scrim and sheet fully visible.
+        setRevealProgress(0f);
         WindowManager.LayoutParams lp = svc.overlay(WindowManager.LayoutParams.MATCH_PARENT, height, 0);
         lp.gravity = Gravity.TOP;
         // This window must own focus while open so Back is dispatched here instead of to the
         // app underneath. Its bounds still stop above NavigationBar0, so HyperOS continues to
         // draw and operate the genuine Back/Home/Recents controls in their own window.
-        lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;
+        lp.flags |= flags;
+        if (revealDragActive) lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        else lp.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
         if (svc.locked()) lp.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
         // Blur is hosted by the application-overlay backdrop below SystemUI. Putting
         // FLAG_BLUR_BEHIND on this accessibility window makes SurfaceFlinger create a
@@ -311,10 +349,11 @@ final class UnifiedShade {
                 try { navBackdropWm.removeViewImmediate(navBackdrop); } catch (Exception ignored) {}
                 navBackdrop = null;
                 navBackdropWm = null;
+                navBackdropLp = null;
             }
             return false;
         }
-        root.requestFocus();
+        if (!revealDragActive) root.requestFocus();
 
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
@@ -325,7 +364,6 @@ final class UnifiedShade {
         }
         attached = true;
         closing = false;
-        sheetH = height;
         setRevealProgress(0f);
         startTorchWatch();
         refreshHotspot();
@@ -347,6 +385,7 @@ final class UnifiedShade {
      */
     private void attachNavBackdrop() {
         if (svc.navBar() <= 0 || navBackdrop != null) return;
+        backdropGeneration++;
         FrameLayout backdrop = new FrameLayout(svc);
         backdrop.setBackgroundColor(Color.TRANSPARENT);
         backdrop.setAlpha(0f);
@@ -362,7 +401,9 @@ final class UnifiedShade {
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         int blur = Math.max(0, Math.min(120, Prefs.n(svc, Prefs.SHADE_BLUR)));
-        if (Build.VERSION.SDK_INT >= 31 && blur > 0)
+        targetBackdropBlur = svc.px(blur);
+        appliedBackdropBlur = -1;
+        if (Build.VERSION.SDK_INT >= 31 && targetBackdropBlur > 0)
             flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
@@ -372,9 +413,13 @@ final class UnifiedShade {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         if (Build.VERSION.SDK_INT >= 30) lp.setFitInsetsTypes(0);
-        if (Build.VERSION.SDK_INT >= 31 && blur > 0) lp.setBlurBehindRadius(svc.px(blur));
+        // A view alpha does not attenuate FLAG_BLUR_BEHIND. Start the compositor at zero
+        // and drive the real radius from setRevealProgress, otherwise the wallpaper jumps
+        // to fully blurred on the first attached frame while the shade is still off-screen.
+        if (Build.VERSION.SDK_INT >= 31 && targetBackdropBlur > 0) lp.setBlurBehindRadius(0);
         lp.dimAmount = 0f;
         lp.setTitle("TickerBar shade backdrop");
+        navBackdropLp = lp;
         try {
             // The service WindowManager supplies its accessibility token even for an explicit
             // TYPE_APPLICATION_OVERLAY, re-parenting the surface above NavigationBar0. The
@@ -382,7 +427,45 @@ final class UnifiedShade {
             // below-SystemUI application-overlay layer.
             navBackdropWm = svc.applicationWindows();
             navBackdropWm.addView(navBackdrop, lp);
-        } catch (Exception ignored) { navBackdrop = null; navBackdropWm = null; }
+        } catch (Exception ignored) {
+            navBackdrop = null;
+            navBackdropWm = null;
+            navBackdropLp = null;
+        }
+    }
+
+    /** Fade and blur are perceptually eased together, including direct finger tracking. */
+    private void applyBackdropProgress(float progress) {
+        if (navBackdrop == null) return;
+        float p = Math.max(0f, Math.min(1f, progress));
+        // Use the exact same reveal value as the main scrim. A second easing curve makes the
+        // navigation band visibly lighter/darker than the rest of the shade during a pull.
+        navBackdrop.setAlpha(p);
+        if (Build.VERSION.SDK_INT < 31 || navBackdropLp == null || navBackdropWm == null
+                || targetBackdropBlur <= 0) return;
+        int radius = Math.round(targetBackdropBlur * p);
+        // Updating WMS for identical one-pixel steps wastes compositor work on high-density
+        // displays. Two-pixel quantisation is visually continuous and keeps pull-down at 60fps.
+        if (radius != 0 && radius != targetBackdropBlur && appliedBackdropBlur >= 0
+                && Math.abs(radius - appliedBackdropBlur) < 2) return;
+        if (radius == appliedBackdropBlur && !backdropBlurUpdatePosted) return;
+        pendingBackdropBlur = radius;
+        if (backdropBlurUpdatePosted) return;
+        backdropBlurUpdatePosted = true;
+        final int generation = backdropGeneration;
+        // Direct touch can deliver more samples than the display can present. Coalesce them
+        // to one WMS transaction per frame so the lower overlay never churns the real navbar.
+        navBackdrop.postOnAnimation(new Runnable() { public void run() {
+            if (generation != backdropGeneration) return;
+            backdropBlurUpdatePosted = false;
+            if (navBackdrop == null || navBackdropLp == null || navBackdropWm == null) return;
+            int next = pendingBackdropBlur;
+            if (next == appliedBackdropBlur) return;
+            appliedBackdropBlur = next;
+            navBackdropLp.setBlurBehindRadius(next);
+            try { navBackdropWm.updateViewLayout(navBackdrop, navBackdropLp); }
+            catch (Exception ignored) {}
+        }});
     }
 
     private void setReplyFocusable(boolean focusable) {
@@ -394,6 +477,20 @@ final class UnifiedShade {
             lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             svc.windows().updateViewLayout(root, lp);
             if (!focusable) root.requestFocus();
+        } catch (Exception ignored) {}
+    }
+
+    /** Do not steal/cancel the catcher's in-flight pull; take input after ACTION_UP. */
+    private void setShadeWindowFocusable(boolean focusable) {
+        if (!attached || root == null) return;
+        try {
+            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) root.getLayoutParams();
+            if (focusable) lp.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+            else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            svc.windows().updateViewLayout(root, lp);
+            if (focusable) root.requestFocus();
         } catch (Exception ignored) {}
     }
 
@@ -430,10 +527,38 @@ final class UnifiedShade {
         // Once this focusable overlay owns Back, SystemUI no longer supplies the navbar's
         // usual click feedback. VIRTUAL_KEY restores it while still honoring the user's
         // system-level touch-feedback setting.
-        if (root != null)
-            root.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+        performBackHaptic();
         if (replying && replyClose != null) { replyClose.run(); return; }
         close();
+    }
+
+    /** The focusable shade consumes Back, so explicitly reproduce SystemUI's navbar click. */
+    private void performBackHaptic() {
+        if (root == null) return;
+        boolean performed = root.performHapticFeedback(
+                android.view.HapticFeedbackConstants.VIRTUAL_KEY,
+                android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+        if (performed) return;
+        // Some HyperOS builds reject haptics requested by an accessibility-overlay view.
+        // Fall back only when the user's global touch-feedback setting is enabled.
+        if (Settings.System.getInt(svc.getContentResolver(),
+                Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) == 0) return;
+        try {
+            android.os.Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= 31) {
+                android.os.VibratorManager manager = (android.os.VibratorManager)
+                        svc.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager == null ? null : manager.getDefaultVibrator();
+            } else {
+                vibrator = (android.os.Vibrator) svc.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator != null && vibrator.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= 29)
+                    vibrator.vibrate(android.os.VibrationEffect.createPredefined(
+                            android.os.VibrationEffect.EFFECT_CLICK));
+                else vibrator.vibrate(18);
+            }
+        } catch (Exception ignored) {}
     }
 
     private void detach() {
@@ -444,6 +569,10 @@ final class UnifiedShade {
         if (sheet != null) {
             sheet.animate().setListener(null);
             sheet.animate().cancel();
+        }
+        if (revealAnimator != null) {
+            revealAnimator.cancel();
+            revealAnimator = null;
         }
         if (scrim != null) scrim.animate().cancel();
         if (expansionAnimator != null) {
@@ -465,18 +594,27 @@ final class UnifiedShade {
         replyClose = null;
         imeHeight = 0;
         if (navBackdrop != null) {
+            backdropGeneration++;
             try { navBackdropWm.removeViewImmediate(navBackdrop); } catch (Exception ignored) {}
             navBackdrop = null;
             navBackdropWm = null;
+            navBackdropLp = null;
         }
         if (attached) {
             try { svc.windows().removeViewImmediate(root); } catch (Exception ignored) {}
         }
         attached = false;
         closing = false;
+        revealDragActive = false;
+        revealProgress = 0f;
+        targetBackdropBlur = 0;
+        appliedBackdropBlur = -1;
+        pendingBackdropBlur = 0;
+        backdropBlurUpdatePosted = false;
         refreshers.clear();
         fixed.clear();
         mediaIntroViews.clear();
+        homeTileStates.clear();
         groupOpenState.clear();
         cardOpenState.clear();
         swipingCard = false;
@@ -750,7 +888,10 @@ final class UnifiedShade {
         // ---- notifications
         notifBox = new LinearLayout(svc);
         notifBox.setOrientation(LinearLayout.VERTICAL);
-        notifBox.setLayoutTransition(polishedTransition());
+        // Notification refreshes use one explicit fade + bounds transition. LayoutTransition
+        // and TransitionManager fighting over the same children was the source of occasional
+        // flashes and one-frame jumps when a section header appeared or disappeared.
+        notifBox.setLayoutTransition(null);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         nlp.topMargin = svc.px(12);
@@ -1009,11 +1150,17 @@ final class UnifiedShade {
             refreshTiles();
         }});
         r.addView(sun, new LinearLayout.LayoutParams(svc.px(38), svc.px(38)));
+        final Boolean[] shownAuto = {null};
         fixed.add(new Runnable() { public void run() {
-            boolean auto = autoBrightness();
-            sun.setImageResource(auto ? R.drawable.qs_brightness_auto : R.drawable.qs_brightness);
-            sun.setImageTintList(ColorStateList.valueOf(auto ? pal.onPrimary : pal.primary));
-            sun.setBackground(auto ? round(pal.primary, svc.px(19)) : null);
+            final boolean auto = autoBrightness();
+            if (shownAuto[0] != null && shownAuto[0] == auto) return;
+            Runnable mutation = new Runnable() { public void run() {
+                sun.setImageResource(auto ? R.drawable.qs_brightness_auto : R.drawable.qs_brightness);
+                sun.setImageTintList(ColorStateList.valueOf(auto ? pal.onPrimary : pal.primary));
+                sun.setBackground(auto ? round(pal.primary, svc.px(19)) : null);
+            }};
+            if (shownAuto[0] == null) mutation.run(); else crossfadeMutation(sun, mutation);
+            shownAuto[0] = auto;
         }});
 
         brightness = new SeekBar(svc);
@@ -1469,12 +1616,18 @@ final class UnifiedShade {
             final boolean active = homeTileActive((ViewGroup) tile);
             // Do not call setTint on Home's state-list RippleDrawable. Its nested blend modes
             // resolve to black on this Google Home/HyperOS combination.
-            int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
-            clearHomeTileBackgroundLayers((ViewGroup) tile);
-            tile.setBackground(ripple(round(active ? pal.primary : pal.surfaceHigh, radius)));
-            tile.setClipToOutline(true);
-            tile.setOutlineProvider(roundOutline(radius));
-            tintHomeControl((ViewGroup) tile, active);
+            final int radius = Math.round(Math.min(tile.getHeight() / 2f, svc.px(24)));
+            final ViewGroup control = (ViewGroup) tile;
+            Runnable restyle = new Runnable() { public void run() {
+                clearHomeTileBackgroundLayers(control);
+                control.setBackground(ripple(round(active ? pal.primary : pal.surfaceHigh, radius)));
+                control.setClipToOutline(true);
+                control.setOutlineProvider(roundOutline(radius));
+                tintHomeControl(control, active);
+            }};
+            Boolean previousState = homeTileStates.put(tile, active);
+            if (previousState != null && previousState != active) crossfadeMutation(tile, restyle);
+            else restyle.run();
             tiles.add((ViewGroup) tile);
         }
 
@@ -1516,7 +1669,7 @@ final class UnifiedShade {
                         && textAt[0] - widgetAt[0] < widget.getWidth() * .70f) {
                     HomeWidgetProfiles.label(svc, homeWidgetId, text.getText().toString());
                     if (homeLocationLabel != null)
-                        homeLocationLabel.setText(text.getText().toString());
+                        setIfChanged(homeLocationLabel, text.getText().toString());
                     text.setClickable(true);
                     text.setContentDescription("Switch Google Home location");
                     text.setOnClickListener(new View.OnClickListener() {
@@ -1752,6 +1905,66 @@ final class UnifiedShade {
         return lt;
     }
 
+    /**
+     * Stock-like state change: opacity and geometry move on the same emphasized curve.
+     * Call immediately before changing visibility, text bounds, or child membership.
+     */
+    private void beginMotionTransition(ViewGroup scene, long duration) {
+        if (scene == null || !scene.isLaidOut() || scene.getWindowToken() == null) return;
+        android.transition.TransitionSet set = new android.transition.TransitionSet();
+        set.setOrdering(android.transition.TransitionSet.ORDERING_TOGETHER);
+        set.addTransition(new android.transition.Fade(
+                android.transition.Fade.IN | android.transition.Fade.OUT));
+        set.addTransition(new android.transition.ChangeBounds());
+        set.addTransition(new android.transition.ChangeTransform());
+        set.setDuration(duration);
+        set.setInterpolator(EMPHASIZED_EASE);
+        android.transition.TransitionManager.beginDelayedTransition(scene, set);
+    }
+
+    /** Fade an in-place visual mutation instead of replacing an icon or colour in one frame. */
+    private void crossfadeMutation(final View view, final Runnable mutation) {
+        if (view == null) return;
+        view.animate().cancel();
+        if (!view.isLaidOut() || view.getWindowToken() == null) {
+            mutation.run();
+            view.setAlpha(1f);
+            view.setScaleX(1f);
+            view.setScaleY(1f);
+            return;
+        }
+        view.animate().alpha(0.18f).scaleX(0.94f).scaleY(0.94f).setDuration(85)
+                .setInterpolator(CLOSE_EASE).withEndAction(new Runnable() { public void run() {
+                    mutation.run();
+                    view.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(190)
+                            .setInterpolator(OPEN_EASE).start();
+                }}).start();
+    }
+
+    /** INVISIBLE keeps media geometry stable; opacity still eases rather than snapping. */
+    private void fadeInvisible(final View view, boolean show) {
+        if (view == null) return;
+        view.animate().cancel();
+        if (!view.isLaidOut() || view.getWindowToken() == null) {
+            view.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
+            view.setAlpha(1f);
+            return;
+        }
+        if (show) {
+            if (view.getVisibility() != View.VISIBLE) {
+                view.setAlpha(0f);
+                view.setVisibility(View.VISIBLE);
+            }
+            view.animate().alpha(1f).setDuration(220).setInterpolator(OPEN_EASE).start();
+        } else if (view.getVisibility() == View.VISIBLE) {
+            view.animate().alpha(0f).setDuration(140).setInterpolator(CLOSE_EASE)
+                    .withEndAction(new Runnable() { public void run() {
+                        view.setVisibility(View.INVISIBLE);
+                        view.setAlpha(1f);
+                    }}).start();
+        }
+    }
+
     private void prepareChromeIntro() {
         int stockTint = pal.dark ? 0xFFFFFFFF : 0xFF111111;
         for (ImageView icon : headerStatusIcons)
@@ -1849,6 +2062,9 @@ final class UnifiedShade {
         final LinearLayout words;
         final TextView name, state;
         final Paint tilePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        android.animation.ValueAnimator lookAnimator;
+        boolean lookInitialized;
+        int shownTileColor, shownIconColor, shownNameColor, shownStateColor;
         float visualWidth, visualHeight;
 
         MorphTile(final Tile tile, int gridIndex, int sharedIndex) {
@@ -1889,12 +2105,63 @@ final class UnifiedShade {
 
         void refreshLook() {
             boolean on = tile.active();
-            tilePaint.setColor(on ? pal.primary : pal.surfaceHigh);
-            icon.setImageTintList(ColorStateList.valueOf(on ? pal.onPrimary : pal.onSurface));
-            name.setTextColor(on ? pal.onPrimary : pal.onSurface);
-            state.setTextColor(on ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant);
-            state.setText(tile.state());
+            final int tileColor = on ? pal.primary : pal.surfaceHigh;
+            final int iconColor = on ? pal.onPrimary : pal.onSurface;
+            final int nameColor = on ? pal.onPrimary : pal.onSurface;
+            final int stateColor = on ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant;
+            final CharSequence stateText = tile.state();
+            if (!TextUtils.equals(state.getText(), stateText)) {
+                if (!lookInitialized) state.setText(stateText);
+                else crossfadeMutation(state, new Runnable() { public void run() {
+                    state.setText(stateText);
+                }});
+            }
+            if (!lookInitialized) {
+                shownTileColor = tileColor;
+                shownIconColor = iconColor;
+                shownNameColor = nameColor;
+                shownStateColor = stateColor;
+                applyLookColors(tileColor, iconColor, nameColor, stateColor);
+                lookInitialized = true;
+                return;
+            }
+            if (shownTileColor == tileColor && shownIconColor == iconColor
+                    && shownNameColor == nameColor && shownStateColor == stateColor) return;
+            if (lookAnimator != null) lookAnimator.cancel();
+            final int fromTile = shownTileColor, fromIcon = shownIconColor;
+            final int fromName = shownNameColor, fromState = shownStateColor;
+            final android.animation.ArgbEvaluator colors = new android.animation.ArgbEvaluator();
+            lookAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            lookAnimator.setDuration(260);
+            lookAnimator.setInterpolator(EMPHASIZED_EASE);
+            lookAnimator.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+                public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                    float p = (Float) animation.getAnimatedValue();
+                    applyLookColors(
+                            (Integer) colors.evaluate(p, fromTile, tileColor),
+                            (Integer) colors.evaluate(p, fromIcon, iconColor),
+                            (Integer) colors.evaluate(p, fromName, nameColor),
+                            (Integer) colors.evaluate(p, fromState, stateColor));
+                }
+            });
+            lookAnimator.start();
+            shownTileColor = tileColor;
+            shownIconColor = iconColor;
+            shownNameColor = nameColor;
+            shownStateColor = stateColor;
+        }
+
+        private void applyLookColors(int tileColor, int iconColor, int nameColor, int stateColor) {
+            tilePaint.setColor(tileColor);
+            icon.setImageTintList(ColorStateList.valueOf(iconColor));
+            name.setTextColor(nameColor);
+            state.setTextColor(stateColor);
             invalidate();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            if (lookAnimator != null) lookAnimator.cancel();
+            super.onDetachedFromWindow();
         }
 
         void applyMorph(float p, int stageWidth, int rowCount) {
@@ -2367,6 +2634,9 @@ final class UnifiedShade {
         // never rebuild under a finger, or while a reply is being typed
         if (swipingCard || replying) { refreshPending = true; return; }
         refreshPending = false;
+        boolean animateRefresh = notifBox.getChildCount() > 0 && !notificationIntroPending
+                && notifBox.isLaidOut();
+        if (animateRefresh) beginMotionTransition(notifBox, 300);
         notifBox.removeAllViews();
         clearable.clear();
         expanders.clear();
@@ -2619,7 +2889,7 @@ final class UnifiedShade {
         final TextView title, artist, app, pos, dur;
         final SeekBar seek;
         android.graphics.Bitmap shownArt;
-        boolean playing;
+        boolean playing, playStateInitialized, shownPlaying;
 
         Player(final MediaController mc) {
             this.mc = mc;
@@ -2737,8 +3007,15 @@ final class UnifiedShade {
         };
 
         void showPlaying() {
-            play.setImageResource(playing ? R.drawable.qs_pause : R.drawable.qs_play);
-            play.setContentDescription(playing ? "Pause" : "Play");
+            if (playStateInitialized && shownPlaying == playing) return;
+            final boolean next = playing;
+            Runnable mutation = new Runnable() { public void run() {
+                play.setImageResource(next ? R.drawable.qs_pause : R.drawable.qs_play);
+                play.setContentDescription(next ? "Pause" : "Play");
+            }};
+            if (!playStateInitialized) mutation.run(); else crossfadeMutation(play, mutation);
+            playStateInitialized = true;
+            shownPlaying = next;
         }
 
         /** Refresh in place: only what changed is touched, so nothing flashes. */
@@ -2768,7 +3045,7 @@ final class UnifiedShade {
                     }
                 }
                 long d = md.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
-                seek.setVisibility(d > 0 ? View.VISIBLE : View.INVISIBLE);
+                fadeInvisible(seek, d > 0);
                 if (d > 0) { seek.setMax((int) Math.min(Integer.MAX_VALUE, d)); dur.setText(DateUtils.formatElapsedTime(d / 1000)); }
                 else dur.setText("");
             }
@@ -2790,8 +3067,9 @@ final class UnifiedShade {
         void release() { try { mc.unregisterCallback(cb); } catch (Exception ignored) {} }
     }
 
-    private static void setIfChanged(TextView t, CharSequence s) {
-        if (!TextUtils.equals(t.getText(), s)) t.setText(s);
+    private void setIfChanged(final TextView t, final CharSequence s) {
+        if (TextUtils.equals(t.getText(), s)) return;
+        crossfadeMutation(t, new Runnable() { public void run() { t.setText(s); }});
     }
 
     private final java.util.LinkedHashMap<Object, Player> players = new java.util.LinkedHashMap<Object, Player>();
@@ -2857,17 +3135,6 @@ final class UnifiedShade {
     // ------------------------------------------------------------ groups and cards
 
     /** A stock-style group: collapsed it previews the latest messages; expanded, each is its own. */
-    /** Size changes inside these animate instead of jumping. */
-    private LayoutTransition grow() {
-        LayoutTransition lt = new LayoutTransition();
-        lt.enableTransitionType(LayoutTransition.CHANGING);
-        lt.setDuration(260);
-        lt.setInterpolator(LayoutTransition.CHANGING, new PathInterpolator(0.2f, 0f, 0f, 1f));
-        lt.setInterpolator(LayoutTransition.CHANGE_APPEARING, new PathInterpolator(0.2f, 0f, 0f, 1f));
-        lt.setInterpolator(LayoutTransition.CHANGE_DISAPPEARING, new PathInterpolator(0.2f, 0f, 0f, 1f));
-        return lt;
-    }
-
     /**
      * A stock-style group: collapsed it previews the latest messages; expanded, each is its own.
      * Both are built up front and swapped in place, so opening animates rather than rebuilding.
@@ -2881,7 +3148,7 @@ final class UnifiedShade {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(svc.px(16), svc.px(14), svc.px(8), svc.px(10));
         box.setBackground(ripple(round(Palette.alpha(pal.surface, panelA), svc.px(24))));
-        box.setLayoutTransition(grow());
+        box.setLayoutTransition(null);
 
         LinearLayout top = appLine(lead, en.kids.size());
         final LinearLayout preview = new LinearLayout(svc);
@@ -2895,10 +3162,11 @@ final class UnifiedShade {
             expanders.remove(box);
             collapsers.remove(box);
             if (open[0]) collapsers.put(box, this); else expanders.put(box, this);
+            beginMotionTransition(box, 310);
             preview.setVisibility(open[0] ? View.GONE : View.VISIBLE);
             kids.setVisibility(open[0] ? View.VISIBLE : View.GONE);
-            if (open[0]) { kids.setAlpha(0f); kids.animate().alpha(1f).setDuration(220).start(); }
-            chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(240).start();
+            chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(300)
+                    .setInterpolator(EMPHASIZED_EASE).start();
             chev[0].setContentDescription(open[0] ? "Collapse" : "Expand");
         }};
         chev[0] = chevron(open[0], toggle);
@@ -3104,14 +3372,19 @@ final class UnifiedShade {
         p.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
             if (p.getTag() == null) {
                 p.setTag(Boolean.TRUE);
-                p.setText(armed);
-                p.setTextColor(0xFFFFFFFF);
-                p.setBackground(ripple(round(pal.dark ? 0xFFB3261E : 0xFFD32F2F, svc.px(18))));
+                crossfadeMutation(p, new Runnable() { public void run() {
+                    p.setText(armed);
+                    p.setTextColor(0xFFFFFFFF);
+                    p.setBackground(ripple(round(pal.dark ? 0xFFB3261E : 0xFFD32F2F,
+                            svc.px(18))));
+                }});
                 p.postDelayed(new Runnable() { public void run() {
                     p.setTag(null);
-                    p.setText(label);
-                    p.setTextColor(pal.onSurface);
-                    p.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
+                    crossfadeMutation(p, new Runnable() { public void run() {
+                        p.setText(label);
+                        p.setTextColor(pal.onSurface);
+                        p.setBackground(ripple(round(pal.surfaceHigh, svc.px(18))));
+                    }});
                 }}, 3000);
                 return;
             }
@@ -3123,6 +3396,9 @@ final class UnifiedShade {
     private View.OnLongClickListener toggleMenu(final View menu) {
         return new View.OnLongClickListener() { public boolean onLongClick(View v) {
             v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            ViewGroup scene = v instanceof ViewGroup ? (ViewGroup) v
+                    : v.getParent() instanceof ViewGroup ? (ViewGroup) v.getParent() : null;
+            beginMotionTransition(scene, 300);
             menu.setVisibility(menu.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
             return true;
         }};
@@ -3164,7 +3440,7 @@ final class UnifiedShade {
 
         final LinearLayout card = new LinearLayout(svc);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setLayoutTransition(grow());
+        card.setLayoutTransition(null);
         LinearLayout top = null;
         if (child) {
             card.setPadding(svc.px(14), svc.px(10), svc.px(14), svc.px(10));
@@ -3254,12 +3530,13 @@ final class UnifiedShade {
                 expanders.remove(card);
                 collapsers.remove(card);
                 if (open[0]) collapsers.put(card, this); else expanders.put(card, this);
+                beginMotionTransition(card, 310);
                 if (bodyView != null) bodyView.setMaxLines(open[0] ? 30 : shortLines);   // the card grows, animated
                 if (pics[0] != null) {
                     pics[0].setVisibility(open[0] ? View.VISIBLE : View.GONE);
-                    if (open[0]) { pics[0].setAlpha(0f); pics[0].animate().alpha(1f).setDuration(240).start(); }
                 }
-                chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(240).start();
+                chev[0].animate().rotation(open[0] ? 180f : 0f).setDuration(300)
+                        .setInterpolator(EMPHASIZED_EASE).start();
                 chev[0].setContentDescription(open[0] ? "Collapse" : "Expand");
             }};
             chev[0] = chevron(open[0], toggle);
@@ -3339,6 +3616,7 @@ final class UnifiedShade {
             android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager)
                     svc.getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+            beginMotionTransition(card, 280);
             replyBox.setVisibility(View.GONE);   // the draft stays for next time
             replying = false;
             replyClose = null;
@@ -3373,6 +3651,7 @@ final class UnifiedShade {
                 final boolean isReply = a == replyA;
                 TextView b = actionPill(a.title.toString(), new View.OnClickListener() { public void onClick(View v) {
                     if (isReply) {
+                        beginMotionTransition(card, 300);
                         replyBox.setVisibility(View.VISIBLE);
                         replying = true;
                         replyClose = closeReply;
