@@ -289,9 +289,10 @@ final class UnifiedShade {
         int height = shadeHeight();
         WindowManager.LayoutParams lp = svc.overlay(WindowManager.LayoutParams.MATCH_PARENT, height, 0);
         lp.gravity = Gravity.TOP;
-        // Leave focus with the app underneath so HyperOS keeps drawing its real navigation
-        // buttons. Inline reply temporarily makes this window focusable for the keyboard.
-        lp.flags = lp.flags | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | flags;
+        // This window must own focus while open so Back is dispatched here instead of to the
+        // app underneath. Its bounds still stop above NavigationBar0, so HyperOS continues to
+        // draw and operate the genuine Back/Home/Recents controls in their own window.
+        lp.flags = (lp.flags & ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) | flags;
         if (svc.locked()) lp.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
         // Blur is hosted by the application-overlay backdrop below SystemUI. Putting
         // FLAG_BLUR_BEHIND on this accessibility window makes SurfaceFlinger create a
@@ -313,6 +314,7 @@ final class UnifiedShade {
             }
             return false;
         }
+        root.requestFocus();
 
         if (Build.VERSION.SDK_INT >= 33) {
             // targeting 36, back arrives as a back callback rather than a key
@@ -387,9 +389,11 @@ final class UnifiedShade {
         if (!attached || root == null) return;
         try {
             WindowManager.LayoutParams lp = (WindowManager.LayoutParams) root.getLayoutParams();
-            if (focusable) lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-            else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            // The shade remains the focused window after an inline reply closes; otherwise
+            // the next Back press falls through to the app behind it.
+            lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             svc.windows().updateViewLayout(root, lp);
+            if (!focusable) root.requestFocus();
         } catch (Exception ignored) {}
     }
 
@@ -416,10 +420,10 @@ final class UnifiedShade {
     /** Leave the SystemUI navigation-bar region completely uncovered. */
     private int shadeHeight() { return Math.max(svc.px(320), svc.screenH() - svc.navBar()); }
 
-    /** Back: leave a reply you're typing, then fold the controls, then close. */
+    /** Back dismisses an active reply first; otherwise it closes the shade in one press. */
     private void back() {
         if (replying && replyClose != null) { replyClose.run(); return; }
-        if (expanded) setExpanded(false); else close();
+        close();
     }
 
     private void detach() {
