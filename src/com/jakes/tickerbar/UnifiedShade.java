@@ -1626,16 +1626,19 @@ final class UnifiedShade {
                     transition.attach(control, radius);
                 } else if (previousState == null) {
                     homeTileStates.put(stateKey, active);
-                    transition = new HomeStateTransition(stateKey, control, active, radius);
+                    transition = new HomeStateTransition(
+                            stateKey, control, 0f, active ? 1f : 0f, radius);
                     homeTileTransitions.put(stateKey, transition);
                     transition.start();
                 } else if (previousState != active) {
+                    float from = transition == null
+                            ? (previousState ? 1f : 0f) : transition.currentLevel();
                     if (transition != null) transition.cancel();
                     homeTileStates.put(stateKey, active);
-                    final boolean next = active;
-                    crossfadeMutation(control, new Runnable() { public void run() {
-                        styleHomeControl(control, next, radius);
-                    }});
+                    transition = new HomeStateTransition(
+                            stateKey, control, from, active ? 1f : 0f, radius);
+                    homeTileTransitions.put(stateKey, transition);
+                    transition.start();
                 } else {
                     styleHomeControl(control, active, radius);
                 }
@@ -1736,6 +1739,8 @@ final class UnifiedShade {
     private final class HomeStateTransition {
         final String key;
         final boolean active;
+        final float startLevel;
+        final float targetLevel;
         ViewGroup tile;
         int radius;
         float progress;
@@ -1743,10 +1748,17 @@ final class UnifiedShade {
         boolean cancelled;
         ArrayList<TextView> stateLabels = new ArrayList<TextView>();
 
-        HomeStateTransition(String key, ViewGroup tile, boolean active, int radius) {
+        HomeStateTransition(String key, ViewGroup tile, float startLevel,
+                            float targetLevel, int radius) {
             this.key = key;
-            this.active = active;
+            this.startLevel = startLevel;
+            this.targetLevel = targetLevel;
+            this.active = targetLevel >= .5f;
             attach(tile, radius);
+        }
+
+        float currentLevel() {
+            return startLevel + (targetLevel - startLevel) * progress;
         }
 
         void attach(ViewGroup next, int nextRadius) {
@@ -1805,15 +1817,15 @@ final class UnifiedShade {
 
         void apply(boolean finished) {
             if (tile == null) return;
+            float level = currentLevel();
             int target = active ? pal.primary : pal.surfaceHigh;
             android.animation.ArgbEvaluator evaluator = new android.animation.ArgbEvaluator();
-            int background = (Integer) evaluator.evaluate(progress, pal.surfaceHigh, target);
+            int background = (Integer) evaluator.evaluate(level, pal.surfaceHigh, pal.primary);
             tile.setBackground(finished
                     ? ripple(round(target, radius)) : round(background, radius));
-            int primary = (Integer) evaluator.evaluate(progress, pal.onSurface,
-                    active ? pal.onPrimary : pal.onSurface);
-            int secondary = (Integer) evaluator.evaluate(progress, pal.onSurfaceVariant,
-                    active ? Palette.alpha(pal.onPrimary, 0xCC) : pal.onSurfaceVariant);
+            int primary = (Integer) evaluator.evaluate(level, pal.onSurface, pal.onPrimary);
+            int secondary = (Integer) evaluator.evaluate(level, pal.onSurfaceVariant,
+                    Palette.alpha(pal.onPrimary, 0xCC));
             tintHomeControl(tile, primary, secondary);
             for (TextView label : stateLabels) {
                 label.setAlpha(progress);
