@@ -6,7 +6,6 @@ import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -181,11 +180,11 @@ final class NativeTicker {
             values = new String[]{tidy[0], tidy[1], tidy[2]};
             styles = new int[]{TickerView.STYLE_MUTED, TickerView.STYLE_BOLD, TickerView.STYLE_NORMAL};
         }
-        Drawable icon = null;
-        if (style == TickerView.LOOK_CARD && item.pkg != null) try {
-            icon = context.getPackageManager().getApplicationIcon(item.pkg).mutate();
-        } catch (Exception ignored) {}
-        view.setContent(bold, values, styles, icon, 0);
+        Item.TickerIcon artwork = style == TickerView.LOOK_CARD
+                ? item.loadTickerIcon(context) : null;
+        view.setContent(bold, values, styles,
+                artwork == null ? null : artwork.drawable,
+                artwork != null && artwork.tint, 0);
 
         int height = Prefs.n(context, Prefs.HEIGHT);
         if (height <= 0) height = Math.max(statusBarHeight(),

@@ -249,7 +249,7 @@ public final class RootOverlay {
             try { icon = app.getPackageManager().getApplicationIcon(tickerPackage).mutate(); }
             catch (Exception ignored) {}
         }
-        ticker.setContent(bold, values, styles, icon, 0);
+        ticker.setContent(bold, values, styles, icon, false, 0);
         int bar = height > 0 ? height : Math.max(statusBarHeight(),
                 (int)Math.ceil(TickerView.lineHeight(textPx) * (count + 0.3f)));
         tickerLp = params(WindowManager.LayoutParams.MATCH_PARENT, bar, true);

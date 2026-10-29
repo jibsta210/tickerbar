@@ -869,14 +869,11 @@ public class ShadeService extends AccessibilityService {
         boolean card = Prefs.n(this, Prefs.STYLE) == TickerView.LOOK_CARD;
         String[] bold, texts;
         int[] styles;
-        android.graphics.drawable.Drawable icon = null;
+        Item.TickerIcon artwork = null;
         if (card) {
-            // heads-up look: the app's own small icon, bold title, then the text
+            // heads-up look: sender/avatar, app artwork or a tinted small-icon fallback
             int n = Math.max(1, Math.min(2, Prefs.n(this, Prefs.LINES)));
-            if (it.icon != null) {
-                try { icon = it.icon.loadDrawable(this); } catch (Exception ignored) {}
-                if (icon != null) icon = icon.mutate();
-            }
+            artwork = it.loadTickerIcon(this);
             if (n == 1) {
                 bold = new String[]{title};
                 texts = new String[]{body};
@@ -910,7 +907,9 @@ public class ShadeService extends AccessibilityService {
         ticker.setRotationX(0f);
         ticker.setShade(0f);
         ticker.animate().setUpdateListener(null);
-        ticker.setContent(bold, texts, styles, icon, animateIn ? ms : 0);
+        ticker.setContent(bold, texts, styles,
+                artwork == null ? null : artwork.drawable,
+                artwork != null && artwork.tint, animateIn ? ms : 0);
         showing = true;
         current = it;
         setTickerTouchable(true);

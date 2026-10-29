@@ -59,6 +59,7 @@ public class TickerView extends View {
     private int look = LOOK_CLASSIC;
     private int surface = Color.BLACK, onSurface = Color.WHITE, onSurfaceVariant = 0xFFB4B4BE, accent = Color.WHITE;
     private Drawable icon;
+    private boolean tintIcon;
     private final RectF card = new RectF();
     private float cardR;
 
@@ -106,7 +107,7 @@ public class TickerView extends View {
         this.onSurface = onSurface;
         this.onSurfaceVariant = onSurfaceVariant;
         this.accent = accent;
-        if (icon != null) icon.setTint(accent);
+        updateIconTint();
         relayout();
         invalidate();
     }
@@ -137,7 +138,8 @@ public class TickerView extends View {
      * @param texts  per line, the text
      * @param styles per line, STYLE_*
      */
-    public void setContent(String[] bold, String[] texts, int[] styles, Drawable icon, long startDelayMs) {
+    public void setContent(String[] bold, String[] texts, int[] styles, Drawable icon,
+                           boolean tintIcon, long startDelayMs) {
         Line[] ls = new Line[texts.length];
         for (int i = 0; i < texts.length; i++) {
             Line l = new Line();
@@ -148,10 +150,20 @@ public class TickerView extends View {
         }
         lines = ls;
         this.icon = icon;
-        if (icon != null) icon.setTint(accent);
+        this.tintIcon = tintIcon;
+        updateIconTint();
         startAt = SystemClock.uptimeMillis() + Math.max(0, startDelayMs);
         relayout();
         invalidate();
+    }
+
+    private void updateIconTint() {
+        if (icon == null) return;
+        if (tintIcon) icon.setTint(accent);
+        else {
+            icon.setTintList(null);
+            icon.clearColorFilter();
+        }
     }
 
     private static String clean(String s) {

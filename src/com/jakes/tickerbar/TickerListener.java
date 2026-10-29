@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.Parcelable;
 import android.util.Log;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
@@ -188,9 +189,24 @@ public class TickerListener extends NotificationListenerService {
         else intents.remove(key);
 
         String app = label(pkg);
-        Item item = new Item(app, title.isEmpty() ? app : title, body, pkg, n.getSmallIcon(),
-                n.contentIntent, key, (n.flags & Notification.FLAG_AUTO_CANCEL) != 0);
+        Item item = new Item(app, title.isEmpty() ? app : title, body, pkg,
+                richIcon(n), n.getSmallIcon(), n.contentIntent, key,
+                (n.flags & Notification.FLAG_AUTO_CANCEL) != 0);
         if (!NativeTicker.post(item) && !RootOverlayClient.post(item)) ShadeService.post(item);
+    }
+
+    /** Prefer the latest conversation sender, then the notification's large artwork. */
+    private static android.graphics.drawable.Icon richIcon(Notification notification) {
+        try {
+            Parcelable[] bundles = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+            java.util.List<Notification.MessagingStyle.Message> messages =
+                    Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles);
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                android.app.Person sender = messages.get(i).getSenderPerson();
+                if (sender != null && sender.getIcon() != null) return sender.getIcon();
+            }
+        } catch (Exception ignored) {}
+        return notification.getLargeIcon();
     }
 
     @Override public void onNotificationRemoved(StatusBarNotification sbn) {
