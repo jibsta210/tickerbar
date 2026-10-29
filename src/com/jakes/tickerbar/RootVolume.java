@@ -137,15 +137,18 @@ final class RootVolume {
 
     private boolean shouldConsume(int key) {
         AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (audio == null || audio.getMode() != AudioManager.MODE_NORMAL || remoteVolume()) return false;
-        if (key == KeyEvent.KEYCODE_VOLUME_UP && Prefs.on(context, Prefs.RINGER_CYCLE)
-                && exitDnd(audio)) return true;
+        if (audio == null || audio.getMode() != AudioManager.MODE_NORMAL
+                || remoteVolume(context)) return false;
         boolean media = audio.isMusicActive();
+        // Active media owns both volume keys even while DND is on. DND is a notification/
+        // ringer policy, not a reason to redirect a playing stream back to the muted ringer.
+        if (!media && key == KeyEvent.KEYCODE_VOLUME_UP && Prefs.on(context, Prefs.RINGER_CYCLE)
+                && exitDnd(audio)) return true;
         if (!Prefs.on(context, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
         return step(key, false);
     }
 
-    /** DND is above stream routing: even stale/playing media must not steal its exit press. */
+    /** With no active media, Volume Up leaves DND before resuming the ringer cycle. */
     private boolean exitDnd(AudioManager audio) {
         NotificationManager nm = (NotificationManager)
                 context.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -229,7 +232,8 @@ final class RootVolume {
         } catch (SecurityException e) { return false; }
     }
 
-    private boolean remoteVolume() {
+    /** A cast/remote session owns the physical keys; passive observers must leave DND alone too. */
+    static boolean remoteVolume(Context context) {
         MediaSessionManager manager = (MediaSessionManager)
                 context.getSystemService(Context.MEDIA_SESSION_SERVICE);
         if (manager == null) return false;

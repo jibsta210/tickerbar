@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Rect;
+import android.media.AudioManager;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.Process;
@@ -128,9 +129,13 @@ final class RootInput {
         }
     }
 
-    /** Volume Up always leaves DND when the user's ringer-cycle feature is enabled. */
+    /** With no active local/cast media, Volume Up leaves DND for the ringer cycle. */
     private void exitManualDnd() {
         if (!Prefs.on(context, Prefs.RINGER_CYCLE)) return;
+        AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        // This observer sees Volume Up even when the accessibility volume handler consumes it.
+        // Never let its DND shortcut override an actively playing local or cast stream.
+        if ((audio != null && audio.isMusicActive()) || RootVolume.remoteVolume(context)) return;
         NotificationManager nm = (NotificationManager)
                 context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null || nm.getCurrentInterruptionFilter()

@@ -1,6 +1,7 @@
 package com.jakes.tickerbar;
 
 import android.content.Context;
+import android.app.NotificationChannel;
 import android.hardware.camera2.CameraManager;
 import android.net.TetheringManager;
 import android.os.Looper;
@@ -19,6 +20,16 @@ public final class RootTool {
             Context context = systemContext();
             if (args.length == 3 && "torch".equals(args[0])) {
                 setTorch(context, args[1], args[2]);
+                return;
+            }
+            if (args.length == 6 && "notification-channel".equals(args[0])) {
+                setNotificationChannelImportance(args[1], Integer.parseInt(args[2]),
+                        args[3], Integer.parseInt(args[4]), "lower".equals(args[5]));
+                return;
+            }
+            if (args.length == 5 && "cancel-notification".equals(args[0])) {
+                cancelNotification(args[1], "@null".equals(args[2]) ? null : args[2],
+                        Integer.parseInt(args[3]), Integer.parseInt(args[4]));
                 return;
             }
             if (args.length != 2 || !"hotspot".equals(args[0])) fail("usage", 2);
@@ -59,6 +70,45 @@ public final class RootTool {
         if (cm == null) fail("camera service unavailable", 3);
         cm.setTorchMode(cameraId, "on".equals(action));
         System.out.println("ok");
+    }
+
+    /** Root keeps the foreground service alive while changing only SystemUI's channel ranking. */
+    private static void setNotificationChannelImportance(String pkg, int uid, String channelId,
+                                                         int importance, boolean lowerOnly)
+            throws Exception {
+        Object service = notificationService();
+        Method get = service.getClass().getMethod("getNotificationChannelForPackage",
+                String.class, int.class, String.class, String.class, boolean.class);
+        NotificationChannel channel = (NotificationChannel)get.invoke(service,
+                pkg, uid, channelId, null, false);
+        if (channel == null) fail("notification channel not found", 3);
+        int oldImportance = channel.getImportance();
+        if (!lowerOnly || oldImportance > importance) {
+            channel.setImportance(importance);
+            Method update = service.getClass().getMethod("updateNotificationChannelForPackage",
+                    String.class, int.class, NotificationChannel.class);
+            update.invoke(service, pkg, uid, channel);
+        }
+        System.out.println("old=" + oldImportance);
+    }
+
+    /** Framework USER_ALL notices cannot be dismissed through an ordinary listener token. */
+    private static void cancelNotification(String pkg, String tag, int id, int userId)
+            throws Exception {
+        Object service = notificationService();
+        Method cancel = service.getClass().getMethod("cancelNotificationWithTag",
+                String.class, String.class, String.class, int.class, int.class);
+        cancel.invoke(service, pkg, pkg, tag, id, userId);
+        System.out.println("ok");
+    }
+
+    private static Object notificationService() throws Exception {
+        Class<?> serviceManager = Class.forName("android.os.ServiceManager");
+        Object binder = serviceManager.getMethod("getService", String.class)
+                .invoke(null, Context.NOTIFICATION_SERVICE);
+        Class<?> binderType = Class.forName("android.os.IBinder");
+        Class<?> stub = Class.forName("android.app.INotificationManager$Stub");
+        return stub.getMethod("asInterface", binderType).invoke(null, binder);
     }
 
     private static Context systemContext() throws Exception {

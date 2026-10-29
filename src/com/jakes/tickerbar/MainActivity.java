@@ -363,7 +363,8 @@ public class MainActivity extends Activity {
                 "Removes only Android's repeated ‘Review app with full device access’ reminder for TickerBar",
                 Prefs.HIDE_ACCESSIBILITY_REMINDERS);
         note(c, "Apps switched on here never appear on the ticker. With root they are also removed from "
-                + "HyperOS's stock shade; the fallback one-shade hides them locally. Tip: long-press a "
+                + "HyperOS's stock shade and status bar; their original channel importance returns when "
+                + "you unhide them. The fallback one-shade hides them locally. Tip: long-press a "
                 + "notification in the shade to hide just that type (like Messages' pairing notice) or the whole "
                 + "app.");
         hiddenAppRows(c);

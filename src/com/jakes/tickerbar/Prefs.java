@@ -254,6 +254,7 @@ public final class Prefs {
         if (hide) b.append(pkg).append('\t').append(channel).append('\t')
                 .append(name == null ? channel : name.replace('\t', ' ').replace('\n', ' ')).append('\n');
         put(c, HIDDEN_TYPES, b.toString());
+        if (!hide) HiddenNotificationChannels.restore(c, pkg, channel);
         TickerListener.filterActive();
     }
 
@@ -261,6 +262,7 @@ public final class Prefs {
         java.util.Set<String> s = set(c, HIDDEN_APPS);
         if (hide) s.add(pkg); else s.remove(pkg);
         putSet(c, HIDDEN_APPS, s);
+        if (!hide) HiddenNotificationChannels.restore(c, pkg, null);
         TickerListener.filterActive();
     }
 

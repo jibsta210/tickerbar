@@ -221,11 +221,15 @@ public class TickerListener extends NotificationListenerService {
     }
 
     private boolean hideFromStockShadeIfSelected(StatusBarNotification sbn) {
-        if (sbn == null || sbn.getNotification() == null || !RootFeatures.applied()) return false;
+        // Notification access itself is sufficient to remove a notification. Tying this to
+        // RootFeatures.applied() left a restart window where UnifiedShade filtered the card,
+        // but SystemUI still owned the live notification and therefore kept its status icon.
+        if (sbn == null || sbn.getNotification() == null) return false;
         String pkg = sbn.getPackageName();
         if (getPackageName().equals(pkg)) return false;
         Notification n = sbn.getNotification();
         if (!Prefs.hidden(this, pkg) && !Prefs.typeHidden(this, pkg, n.getChannelId())) return false;
+        HiddenNotificationChannels.hide(this, sbn);
         try {
             cancelNotification(sbn.getKey());
             Log.i("TickerBarFilter", "Removed from stock shade: " + pkg

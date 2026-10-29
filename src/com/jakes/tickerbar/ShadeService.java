@@ -273,11 +273,13 @@ public class ShadeService extends AccessibilityService {
         if (audio.getMode() != AudioManager.MODE_NORMAL) return false;   // calls keep the system's handling
         // Casting: the system routes the buttons to the cast device, so it gets them untouched.
         if (castSession() != null) return false;
-        boolean exitedDnd = key == KeyEvent.KEYCODE_VOLUME_UP
+        // Media keeps the keys while playing, including in DND. Only an otherwise-ringer
+        // press may use Volume Up as the user's silent/DND exit gesture.
+        boolean media = audio.isMusicActive();
+        boolean exitedDnd = !media && key == KeyEvent.KEYCODE_VOLUME_UP
                 && Prefs.on(this, Prefs.RINGER_CYCLE) && exitDnd(audio);
         // Something playing here: fine media steps. Nothing playing: the ringer, cycled the
         // stock Android way. Either only if switched on; otherwise the system has the press.
-        boolean media = !exitedDnd && audio.isMusicActive();
         if (!exitedDnd && !Prefs.on(this, media ? Prefs.VOLUME_ON : Prefs.RINGER_CYCLE)) return false;
         heldRinger = exitedDnd || !media;
         boundarySince = 0;
@@ -290,7 +292,7 @@ public class ShadeService extends AccessibilityService {
         return true;
     }
 
-    /** DND exit takes precedence over media/ringer stream selection. */
+    /** With no active media, Volume Up leaves DND before resuming the ringer cycle. */
     private boolean exitDnd(AudioManager audio) {
         android.app.NotificationManager nm = (android.app.NotificationManager)
                 getSystemService(NOTIFICATION_SERVICE);
