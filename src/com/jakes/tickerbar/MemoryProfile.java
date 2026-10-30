@@ -25,10 +25,18 @@ final class MemoryProfile {
     }
 
     static boolean apply(Context context) {
+        return apply(context, Prefs.on(context, Prefs.MEMORY_RELAXED));
+    }
+
+    /** Clean-session transition: undo boot-scoped memory overrides before root exits. */
+    static boolean restoreStock(Context context) {
+        return apply(context, false);
+    }
+
+    private static boolean apply(Context context, boolean relaxed) {
         File resetprop = new File(context.getApplicationInfo().nativeLibraryDir, "libresetprop.so");
         if (!resetprop.isFile() || !RootShell.available()) return false;
         saveStockOnce(context);
-        boolean relaxed = Prefs.on(context, Prefs.MEMORY_RELAXED);
         SharedPreferences stock = context.getSharedPreferences(STORE, Context.MODE_PRIVATE);
         StringBuilder command = new StringBuilder("ln -sf ")
                 .append(quote(resetprop.getAbsolutePath())).append(" /data/local/tmp/resetprop");

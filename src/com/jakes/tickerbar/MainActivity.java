@@ -217,6 +217,9 @@ public class MainActivity extends Activity {
                         RootOverlayClient.start(MainActivity.this);
                         toast("Applying root integration");
                     }});
+            actionRow(c, "Finish setup, drop root & reboot",
+                    "Keeps persistent grants and HyperOS fixes, then ends every privileged helper",
+                    new Runnable() { public void run() { confirmCleanRootTransition(); }});
             actionRow(c, "Prepare Shizuku automatic startup",
                     "Grants its boot permission and removes background restrictions",
                     new Runnable() { public void run() { prepareShizukuAutoStart(); }});
@@ -266,7 +269,11 @@ public class MainActivity extends Activity {
                 Prefs.MEMORY_RELAXED);
         note(c, "The floating recorder and replacement tile work through either root or Shizuku. "
                 + "Countdown removal disables only Security Center's warning activity; the rest of Security "
-                + "Center, Android permission dialogs and Play Protect remain intact.");
+                + "Center, Android permission dialogs and Play Protect remain intact. Clean mode retains "
+                + "the countdown removal, granted Android permissions and persistent status-bar settings. "
+                + "Boot-only property changes, root power gestures and root input helpers stop until you "
+                + "explicitly start another root session. This reduces privileged runtime exposure but does "
+                + "not promise any Play Integrity or Wallet verdict.");
 
         // ---------------------------------------------------------- status bar
         c = card("Status bar");
@@ -491,6 +498,38 @@ public class MainActivity extends Activity {
         } else {
             toast("Root attempt started; keep the phone awake");
         }
+    }
+
+    private void confirmCleanRootTransition() {
+        if (!RootShell.available()) {
+            toast(RootSession.cleanMode(this) ? "Clean mode is already active"
+                    : "Start root and apply the setup first");
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Finish setup and reboot clean?")
+                .setMessage("TickerBar will preserve the Xiaomi countdown removal, Android grants, "
+                        + "tile ordering and persistent status-bar settings. It will restore boot-only "
+                        + "memory tuning, stop its root input/power/ticker helpers, remove temporary "
+                        + "files, terminate the general root worker and reboot. Root-only live features "
+                        + "will stay off until you explicitly root again. This does not guarantee a "
+                        + "Wallet or Play Integrity result.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Drop root & reboot",
+                        new android.content.DialogInterface.OnClickListener() {
+                            public void onClick(android.content.DialogInterface dialog, int which) {
+                                rootLine.setText("◐  Finishing persistent setup…");
+                                rootLine.setTextColor(pal.warn);
+                                RootSession.finishSetupAndReboot(MainActivity.this,
+                                        new RootSession.Callback() {
+                                            public void done(boolean ok, String detail) {
+                                                toast(detail);
+                                                refreshRootStatus();
+                                            }
+                                        });
+                            }
+                        })
+                .show();
     }
 
     /** Toggle Xiaomi's shared 10-second intercept activity; Security Center stays installed. */

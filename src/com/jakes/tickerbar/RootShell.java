@@ -108,6 +108,20 @@ final class RootShell {
         return ok;
     }
 
+    /** End the authenticated root worker after all clients and helpers are closed. */
+    static boolean shutdownDaemon() {
+        Result result = transact("", 'X', false);
+        if (result.connected && result.code == 0) return true;
+
+        // Daemons from an APK already running before this protocol was added do not
+        // understand X.  Match the exact daemon comm name rather than using a broad
+        // pkill, so an in-place update can still enter clean mode safely.
+        Result legacy = exec("for f in /proc/[0-9]*/comm; do "
+                + "name=$(cat \"$f\" 2>/dev/null); [ \"$name\" = tickerbar-root ] || continue; "
+                + "p=${f#/proc/}; p=${p%/comm}; kill -TERM \"$p\"; done");
+        return legacy.connected && legacy.code == 0;
+    }
+
     /** New daemons acknowledge this mode after disabling HyperOS's shade. */
     static StatusBarLease acquireStatusBarLease() {
         return acquireLease('S', "Native shade suppression");

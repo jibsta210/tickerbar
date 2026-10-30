@@ -374,7 +374,7 @@ static void serve_one(int conn) {
   struct ucred peer;
   socklen_t peer_len = sizeof(peer);
   if (getsockopt(conn, SOL_SOCKET, SO_PEERCRED, &peer, &peer_len) != 0 ||
-      (peer.uid != 0 && peer.uid != 2000 && peer.uid != allowed_uid)) {
+      (peer.uid != 0 && peer.uid != allowed_uid)) {
     const char denied[] = "tickerbar root: peer denied\n";
     (void)write(conn, denied, sizeof(denied) - 1);
     return;
@@ -408,6 +408,15 @@ static void serve_one(int conn) {
     serve_statusbar_lease(conn);
   } else if (mode == 'T') {
     serve_statusicon_lease(conn);
+  } else if (mode == 'X' && peer.uid == allowed_uid) {
+    /* The app can explicitly end the temporary privileged session.  Keep this
+     * out of the shell/ADB allowance: only the UID the exploit authenticated
+     * when it created the daemon may shut it down through the protocol. */
+    int status = 0;
+    xwrite(conn, &status, sizeof(status));
+    pid_t parent = getppid();
+    if (parent > 1)
+      (void)kill(parent, SIGTERM);
   }
 }
 

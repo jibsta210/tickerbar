@@ -21,6 +21,10 @@ final class RootFeatures {
 
     static boolean applied() { return applied && RootShell.available(); }
 
+    static boolean applying() { return APPLYING.get(); }
+
+    static void privilegeDropped() { applied = false; }
+
     /** Idempotent: safe after boot, an app update, or reconnecting to the root daemon. */
     static void applyAsync(Context context) {
         if (!RootShell.available() || !APPLYING.compareAndSet(false, true)) return;

@@ -67,6 +67,7 @@ final class RootBootstrap {
             }
         }
         if (RootShell.available()) {
+            RootSession.markActive(app);
             markAutoSuccess(app, boot);
             state(app, "ready", "Root daemon is ready");
             RootFeatures.applyAsync(app);
@@ -211,6 +212,7 @@ final class RootBootstrap {
             }
 
             prefs(c).edit().putLong(KEY_READY_AT, System.currentTimeMillis()).apply();
+            RootSession.markActive(c);
             markAutoSuccess(c, bootCount);
             state(c, "ready", "Root daemon is ready; Shizuku remains available as fallback");
             RootFeatures.applyAsync(c);
@@ -226,6 +228,7 @@ final class RootBootstrap {
             return prefs(c).getString(KEY_DETAIL,
                     "Root attempts paused after kernel panic — normal TickerBar is safe");
         if (RootShell.available()) return "✓ Root daemon ready · Shizuku fallback kept";
+        if (RootSession.cleanMode(c)) return RootSession.cleanStatus(c);
         SharedPreferences p = prefs(c);
         String detail = p.getString(KEY_DETAIL, "Idle — tap Start root attempt");
         return detail == null ? "Idle — tap Start root attempt" : detail;
