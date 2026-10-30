@@ -100,23 +100,31 @@ public final class HomeWidgetSetupActivity extends Activity {
 
     private void showSwitcher() {
         final List<HomeWidgetProfiles.Profile> choices = HomeWidgetProfiles.choices(this);
+        final String detectedNetwork = HomeWidgetProfiles.currentNetwork(this);
         if (choices.size() < 2) {
-            Toast.makeText(this, "Set up another Home shelf first, then it can switch by Wi-Fi",
-                    Toast.LENGTH_LONG).show();
-            showManager();
+            // There is nothing to switch to yet. Going back to the manager made the button
+            // look dead; allocate a second Favorites widget immediately so Google's own
+            // picker can choose Cottage/Home and bind it to this Wi-Fi in one flow.
+            addForNetwork(detectedNetwork);
             return;
         }
-        String[] names = new String[choices.size()];
-        for (int i = 0; i < names.length; i++) {
+        String[] names = new String[choices.size() + 1];
+        for (int i = 0; i < choices.size(); i++) {
             HomeWidgetProfiles.Profile profile = choices.get(i);
             names[i] = profile.label == null || profile.label.isEmpty()
                     ? (profile.network.isEmpty() ? "Home" : profile.network) : profile.label;
             if (!profile.network.isEmpty()) names[i] += "  ·  " + profile.network;
         }
-        final String detectedNetwork = HomeWidgetProfiles.currentNetwork(this);
+        names[choices.size()] = detectedNetwork.isEmpty()
+                ? "Set up another Google Home"
+                : "Set up another Google Home for “" + detectedNetwork + "”";
         showSheet(detectedNetwork.isEmpty() ? "Show controls for"
                         : "Use automatically on “" + detectedNetwork + "”",
                 names, new Choice() { public void selected(int which) {
+                    if (which == choices.size()) {
+                        addForNetwork(detectedNetwork);
+                        return;
+                    }
                     HomeWidgetProfiles.Profile chosen = choices.get(which);
                     String network = HomeWidgetProfiles.currentNetwork(HomeWidgetSetupActivity.this);
                     if (network.isEmpty())
@@ -186,10 +194,16 @@ public final class HomeWidgetSetupActivity extends Activity {
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == CONFIGURE && configuringId > 0 && mappingNetwork != null) {
-            if (result == RESULT_OK
-                    && AppWidgetManager.getInstance(this).getAppWidgetInfo(configuringId) != null) {
+            boolean exists = AppWidgetManager.getInstance(this)
+                    .getAppWidgetInfo(configuringId) != null;
+            android.util.Log.i("TickerBarHome", "Favorites setup returned result=" + result
+                    + " id=" + configuringId + " network=" + mappingNetwork
+                    + " providerExists=" + exists);
+            if (result == RESULT_OK && exists) {
                 HomeWidgetProfiles.map(this, mappingNetwork, configuringId);
                 ShadeService.homeProfileChanged();
+                Toast.makeText(this, "Google Home assigned automatically to “"
+                        + mappingNetwork + "”", Toast.LENGTH_LONG).show();
             } else try { new AppWidgetHost(this, HOST_ID).deleteAppWidgetId(configuringId); }
             catch (Exception ignored) {}
         }
