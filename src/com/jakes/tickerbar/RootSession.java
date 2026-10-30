@@ -43,6 +43,24 @@ final class RootSession {
         }
         new Thread(new Runnable() { @Override public void run() {
             try {
+                if (RootShell.restricted()) {
+                    NativeTicker.stop();
+                    RootInput.stop();
+                    RootPowerGestures.stop();
+                    RootOverlayClient.stop();
+                    prefs(app).edit().putBoolean(KEY_CLEAN, true)
+                            .putString(KEY_DETAIL,
+                                    "Clean boot · privileged daemon off · Android grants retained")
+                            .commit();
+                    RootShell.Result reboot = RootShell.operation("clean_reboot");
+                    boolean scheduled = reboot.connected && reboot.code == 0;
+                    if (scheduled) RootShell.shutdownDaemon();
+                    RootFeatures.privilegeDropped();
+                    deliver(callback, scheduled, scheduled
+                            ? "Allowlisted worker stopped; rebooting clean"
+                            : "Could not schedule the clean reboot");
+                    return;
+                }
                 RootFeatures.applyAsync(app);
                 long deadline = android.os.SystemClock.elapsedRealtime() + 20_000L;
                 while ((RootFeatures.applying() || !RootFeatures.applied())

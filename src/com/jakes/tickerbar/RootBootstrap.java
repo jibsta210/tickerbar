@@ -227,6 +227,7 @@ final class RootBootstrap {
         if (!ROOT_ATTEMPTS_ENABLED)
             return prefs(c).getString(KEY_DETAIL,
                     "Root attempts paused after kernel panic — normal TickerBar is safe");
+        if (RootShell.restricted()) return "✓ Root locked to allowlisted controls";
         if (RootShell.available()) return "✓ Root daemon ready · Shizuku fallback kept";
         if (RootSession.cleanMode(c)) return RootSession.cleanStatus(c);
         SharedPreferences p = prefs(c);

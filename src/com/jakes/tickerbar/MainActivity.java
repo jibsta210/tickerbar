@@ -217,6 +217,9 @@ public class MainActivity extends Activity {
                         RootOverlayClient.start(MainActivity.this);
                         toast("Applying root integration");
                     }});
+            actionRow(c, "Lock root to allowlisted controls",
+                    "Keeps direct toggles but permanently removes arbitrary shell access until reboot",
+                    new Runnable() { public void run() { confirmRestrictedRoot(); }});
             actionRow(c, "Finish setup, drop root & reboot",
                     "Keeps persistent grants and HyperOS fixes, then ends every privileged helper",
                     new Runnable() { public void run() { confirmCleanRootTransition(); }});
@@ -465,7 +468,8 @@ public class MainActivity extends Activity {
         if (rootLine == null) return;
         boolean ready = RootBootstrap.attemptsEnabled() && RootShell.available();
         String integration = ready ? "\n"
-                + (RootFeatures.applied() ? "✓ combined SystemUI" : "… SystemUI setup") + "  ·  "
+                + (RootShell.restricted() ? "✓ allowlisted controls" :
+                (RootFeatures.applied() ? "✓ combined SystemUI" : "… SystemUI setup")) + "  ·  "
                 + (NativeTicker.ready() ? "✓ native ticker" : "… ticker") + "  ·  "
                 + "navbar stock  ·  "
                 + "✓ stock volume" : "";
@@ -532,9 +536,45 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private void confirmRestrictedRoot() {
+        if (RootShell.restricted()) {
+            toast("Root is already locked to allowlisted controls");
+            return;
+        }
+        if (!RootShell.canExec()) {
+            toast("Start root and apply the system integration first");
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Lock root to controls only?")
+                .setMessage("TickerBar will keep fixed operations for hotspot, radios, flashlight, "
+                        + "Ultra Saver, reverse charging, recorder and its live ticker/input leases. "
+                        + "The daemon will reject every arbitrary or interactive shell command until "
+                        + "the next reboot. This reduces attack surface; it does not hide root or "
+                        + "guarantee a Play Integrity verdict.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Lock to controls",
+                        new android.content.DialogInterface.OnClickListener() {
+                            public void onClick(android.content.DialogInterface dialog, int which) {
+                                rootLine.setText("◐  Applying setup before root lockdown…");
+                                rootLine.setTextColor(pal.warn);
+                                RootFeatures.restrictToControls(MainActivity.this,
+                                        new RootFeatures.ResultCallback() {
+                                            public void done(final boolean ok, final String detail) {
+                                                runOnUiThread(new Runnable() { public void run() {
+                                                    toast(detail);
+                                                    refreshRootStatus();
+                                                }});
+                                            }
+                                        });
+                            }
+                        })
+                .show();
+    }
+
     /** Toggle Xiaomi's shared 10-second intercept activity; Security Center stays installed. */
     private void setSecurityCountdowns(final boolean enabled) {
-        if (!RootShell.available()) {
+        if (!RootShell.canExec()) {
             toast("Root is needed for HyperOS's protected Security Center setting");
             return;
         }

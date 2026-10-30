@@ -27,7 +27,15 @@ final class RootFeatures {
 
     /** Idempotent: safe after boot, an app update, or reconnecting to the root daemon. */
     static void applyAsync(Context context) {
-        if (!RootShell.available() || !APPLYING.compareAndSet(false, true)) return;
+        if (!RootShell.available()) return;
+        if (RootShell.restricted()) {
+            applied = true;
+            ensureShadeHost(context);
+            startNativeServices(context.getApplicationContext());
+            RootPowerGestures.sync(context);
+            return;
+        }
+        if (!APPLYING.compareAndSet(false, true)) return;
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { @Override public void run() {
             try { applied = apply(app); }
@@ -186,9 +194,10 @@ final class RootFeatures {
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { public void run() {
             for (int i = 0; i < 8; i++) {
-                RootShell.exec("appops set " + quote(app.getPackageName())
-                        + " SYSTEM_ALERT_WINDOW allow; appops set " + quote(app.getPackageName())
-                        + " GET_USAGE_STATS allow");
+                if (RootShell.canExec())
+                    RootShell.exec("appops set " + quote(app.getPackageName())
+                            + " SYSTEM_ALERT_WINDOW allow; appops set " + quote(app.getPackageName())
+                            + " GET_USAGE_STATS allow");
                 NativeTicker.start(app);
                 RootInput.start(app);
                 if (NativeTicker.ready() && RootInput.connected()) return;
@@ -242,6 +251,12 @@ final class RootFeatures {
         }
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { @Override public void run() {
+            if (RootShell.restricted()) {
+                RootShell.Result result = RootShell.operation("recorder");
+                if (callback != null) callback.done(result.connected && result.code == 0,
+                        result.output.trim());
+                return;
+            }
             String command = "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
                     + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
                     + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
@@ -272,6 +287,44 @@ final class RootFeatures {
 
     interface ResultCallback { void done(boolean ok, String detail); }
 
+    /** Seal the live root worker to fixed control opcodes; irreversible until reboot. */
+    static void restrictToControls(final Context context, final ResultCallback callback) {
+        final Context app = context.getApplicationContext();
+        if (!RootShell.canExec()) {
+            if (callback != null) callback.done(RootShell.restricted(),
+                    RootShell.restricted() ? "Allowlisted controls are already active"
+                            : "A general root session is not available");
+            return;
+        }
+        new Thread(new Runnable() { @Override public void run() {
+            applyAsync(app);
+            long until = android.os.SystemClock.elapsedRealtime() + 20_000L;
+            while ((applying() || !applied()) && RootShell.canExec()
+                    && android.os.SystemClock.elapsedRealtime() < until) {
+                try { Thread.sleep(200); } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    if (callback != null) callback.done(false, "Restriction was interrupted");
+                    return;
+                }
+            }
+            if (applying() || !applied()) {
+                if (callback != null) callback.done(false,
+                        "System integration did not finish; root was left unrestricted");
+                return;
+            }
+            NativeTicker.start(app);
+            RootInput.start(app);
+            RootPowerGestures.sync(app);
+            try { Thread.sleep(800); } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            boolean restricted = RootShell.restrictToControls();
+            if (callback != null) callback.done(restricted, restricted
+                    ? "Root locked to allowlisted controls until reboot"
+                    : "Could not lock the root worker; unrestricted root remains active");
+        }}, "TickerBar-restrict-root").start();
+    }
+
     /**
      * UnifiedShade is still hosted by ShadeService even when every control behind it uses
      * root. Keep that host registered across APK replacement and reboot; removing it while
@@ -292,7 +345,7 @@ final class RootFeatures {
                         + "settings put secure accessibility_enabled 1";
                 int code;
                 String output;
-                if (RootShell.available()) {
+                if (RootShell.canExec()) {
                     RootShell.Result result = RootShell.exec(command);
                     code = result.connected ? result.code : -1;
                     output = result.output;

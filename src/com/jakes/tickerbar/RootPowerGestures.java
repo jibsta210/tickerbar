@@ -103,9 +103,10 @@ final class RootPowerGestures {
                 // tryConnect() is the authoritative existence check. Android's pidof reports
                 // this executable as libtickerroot.so despite PR_SET_NAME("tb-power"), and the
                 // old pidof guard therefore attempted a redundant helper on every reconnect.
-                String command = quote(payload.getAbsolutePath()) + " --power-helper "
-                        + Process.myUid() + " >/dev/null 2>&1 &";
-                RootShell.Result launch = RootShell.exec(command);
+                RootShell.Result launch = RootShell.restricted()
+                        ? RootShell.operation("start_power")
+                        : RootShell.exec(quote(payload.getAbsolutePath()) + " --power-helper "
+                                + Process.myUid() + " >/dev/null 2>&1 &");
                 if (!launch.connected || launch.code != 0)
                     throw new IllegalStateException("power helper launch failed: " + launch.output);
                 for (int i = 0; i < 40 && connected == null && !stopped; i++) {
@@ -159,29 +160,30 @@ final class RootPowerGestures {
         }
         Log.i(TAG, "Dispatching action=" + actionName(action));
         if (action == ACTION_HOME) {
-            runLogged("input keyevent KEYCODE_WAKEUP; cmd statusbar click-tile controls", action);
+            runLogged("power_home", "input keyevent KEYCODE_WAKEUP; cmd statusbar click-tile controls", action);
         } else if (action == ACTION_SEARCH) {
-            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0 -n "
+            runLogged("power_search", "input keyevent KEYCODE_WAKEUP; am start --user 0 -n "
                     + quote(context.getPackageName() + "/.SearchActivity") + " >/dev/null", action);
         } else if (action == ACTION_WALLET) {
-            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0"
+            runLogged("power_wallet", "input keyevent KEYCODE_WAKEUP; am start --user 0"
                     + " -a com.google.android.apps.wallet.main.QUICKDRAW"
                     + " -p com.google.android.apps.walletnfcrel >/dev/null", action);
         } else if (action == ACTION_CAMERA) {
-            runLogged("input keyevent KEYCODE_WAKEUP; am start --user 0"
+            runLogged("power_camera", "input keyevent KEYCODE_WAKEUP; am start --user 0"
                     + " -a android.media.action.STILL_IMAGE_CAMERA >/dev/null", action);
         } else if (action == ACTION_RECORDER) {
             Log.i(TAG, "Handing Screen recorder action to RootFeatures");
             RootFeatures.openRecorder(context, null);
         } else if (action == ACTION_FLASHLIGHT) {
-            runLogged("cmd statusbar click-tile flashlight", action);
+            runLogged("power_flashlight", "cmd statusbar click-tile flashlight", action);
         } else if (action == ACTION_APP) {
             String pkg = Prefs.str(context, packageKey).trim();
             if (pkg.isEmpty()) {
                 Log.w(TAG, "Open-app dispatch skipped: no package selected");
             } else {
                 Log.i(TAG, "Open-app target=" + pkg);
-                runLogged("input keyevent KEYCODE_WAKEUP; monkey --pct-syskeys 0 -p "
+                runLogged("launch_pkg:" + pkg,
+                        "input keyevent KEYCODE_WAKEUP; monkey --pct-syskeys 0 -p "
                         + quote(pkg) + " 1 >/dev/null 2>&1", action);
             }
         } else {
@@ -189,7 +191,16 @@ final class RootPowerGestures {
         }
     }
 
-    private void runLogged(String command, final int action) {
+    private void runLogged(String restrictedOperation, String command, final int action) {
+        if (RootShell.restricted()) {
+            RootShell.operationAsync(restrictedOperation, new RootShell.OperationCallback() {
+                public void done(RootShell.Result result) {
+                    if (result.code == 0) Log.i(TAG, "Action completed: " + actionName(action));
+                    else Log.w(TAG, "Allowlisted action failed: " + actionName(action)
+                            + " code=" + result.code + " output=" + result.output.trim());
+                }});
+            return;
+        }
         Shell.runResult(command, new Shell.ResultCallback() { public void done(Shell.Result result) {
             if (result.code == 0) Log.i(TAG, "Action completed: " + actionName(action));
             else Log.w(TAG, "Action failed: " + actionName(action) + " code=" + result.code
@@ -211,6 +222,18 @@ final class RootPowerGestures {
         lastDoubleEnabled = enabled;
         new Thread(new Runnable() { public void run() {
             try {
+                if (RootShell.restricted()) {
+                    if (enabled)
+                        Settings.System.putString(context.getContentResolver(),
+                                "double_click_power_key", "none");
+                    else if (Prefs.get(context).contains(Prefs.POWER_STOCK_DOUBLE)) {
+                        String old = Prefs.str(context, Prefs.POWER_STOCK_DOUBLE);
+                        Settings.System.putString(context.getContentResolver(),
+                                "double_click_power_key", old.isEmpty() ? null : old);
+                        Prefs.get(context).edit().remove(Prefs.POWER_STOCK_DOUBLE).apply();
+                    }
+                    return;
+                }
                 if (enabled) {
                     if (!Prefs.get(context).contains(Prefs.POWER_STOCK_DOUBLE)) {
                         String old = Settings.System.getString(context.getContentResolver(),

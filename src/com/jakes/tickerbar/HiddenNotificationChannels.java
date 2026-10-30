@@ -23,7 +23,7 @@ final class HiddenNotificationChannels {
 
     static void hide(final TickerListener listener, final StatusBarNotification sbn) {
         if (listener == null || sbn == null || sbn.getNotification() == null
-                || !RootShell.available()) return;
+                || !RootShell.canExec()) return;
         final String pkg = sbn.getPackageName();
         final String channelId = sbn.getNotification().getChannelId();
         if (pkg == null || channelId == null) return;
@@ -61,7 +61,7 @@ final class HiddenNotificationChannels {
                         && (channelId == null || record.channel.equals(channelId));
                 boolean stillHidden = Prefs.hidden(app, record.pkg)
                         || Prefs.typeHidden(app, record.pkg, record.channel);
-                if (!target || stillHidden || !RootShell.available()
+                if (!target || stillHidden || !RootShell.canExec()
                         || setImportance(app, record.pkg, record.uid,
                                 record.channel, record.importance, false) < 0) {
                     keep.add(record);

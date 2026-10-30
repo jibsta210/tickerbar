@@ -84,7 +84,7 @@ final class SystemBarSettings {
         } catch (Throwable ignored) {}
 
         String command = "settings put " + table + " " + quote(key) + " " + quote(value);
-        if (RootShell.available()) {
+        if (RootShell.canExec()) {
             RootShell.Result result = RootShell.exec(command);
             return result.connected && result.code == 0;
         }

@@ -1223,7 +1223,7 @@ final class UnifiedShade {
      * mode enabled; the permanent call becomes the automatic controller's new user anchor.
      */
     private void applyBrightness(int progress, boolean commit) {
-        if (!Settings.System.canWrite(svc) && !RootShell.available()) {
+        if (!Settings.System.canWrite(svc) && !RootShell.canExec()) {
             if (commit) askWriteSettings();
             return;
         }
@@ -1235,7 +1235,7 @@ final class UnifiedShade {
             if (commit) {
                 Prefs.put(svc, Prefs.AUTO_BRIGHTNESS_LEVEL, p);
                 brightnessPreviewActive = false;
-                if (RootShell.available()) queueBrightnessCall(level, 41);
+                if (RootShell.canExec()) queueBrightnessCall(level, 41);
                 else try {
                     Settings.System.putInt(svc.getContentResolver(),
                             Settings.System.SCREEN_BRIGHTNESS, Math.round(level * 255));
@@ -1248,7 +1248,7 @@ final class UnifiedShade {
             try { Settings.System.putInt(svc.getContentResolver(),
                     Settings.System.SCREEN_BRIGHTNESS, level); } catch (Exception ignored) {}
             brightness.setContentDescription("Brightness " + Math.round(progress / 10f) + " percent");
-            if (commit && RootShell.available())
+            if (commit && RootShell.canExec())
                 Shell.run("settings put system screen_brightness " + level, null);
         }
     }
@@ -1273,7 +1273,7 @@ final class UnifiedShade {
 
     /** Read the values SystemUI itself uses, without relying on the stale manual setting. */
     private void queryNativeBrightnessRange() {
-        if (brightnessLevelQueried || !RootShell.available()) return;
+        if (brightnessLevelQueried || !RootShell.canExec()) return;
         brightnessLevelQueried = true;
         Shell.runResult("dumpsys display | awk -F= '"
                 + "/mCachedBrightnessInfo.brightnessMin=/{if(!a){print $2;a=1}} "
@@ -2495,6 +2495,16 @@ final class UnifiedShade {
                     public void tap() {
                         final boolean wanted = !torchOn;
                         if (RootShell.available()) {
+                            if (RootShell.restricted()) {
+                                RootShell.operationAsync(
+                                        "torch_" + (wanted ? "on:" : "off:") + torchId,
+                                        new RootShell.OperationCallback() { public void done(RootShell.Result result) {
+                                            if (result.connected && result.code == 0) torchOn = wanted;
+                                            else svc.toast("Flashlight failed (" + result.code + ")");
+                                            refreshTiles();
+                                        }});
+                                return;
+                            }
                             Shell.runResult(rootTool("torch " + torchId + " "
                                             + (wanted ? "on" : "off")),
                                     new Shell.ResultCallback() { public void done(Shell.Result result) {
@@ -2613,6 +2623,15 @@ final class UnifiedShade {
                         final int wanted = active() ? 0 : 1;
                         hotspot = wanted;
                         refreshTiles();
+                        if (RootShell.restricted()) {
+                            RootShell.operationAsync(wanted == 1 ? "hotspot_on" : "hotspot_off",
+                                    new RootShell.OperationCallback() { public void done(RootShell.Result result) {
+                                        if (!result.connected || result.code != 0)
+                                            svc.toast("Hotspot failed (" + result.code + ")");
+                                        refreshHotspot();
+                                    }});
+                            return;
+                        }
                         Shell.runResult(rootTool("hotspot " + (wanted == 1 ? "on" : "off")),
                                 new Shell.ResultCallback() { public void done(Shell.Result result) {
                                     if (result.code != 0)
@@ -2699,6 +2718,15 @@ final class UnifiedShade {
                 public void tap() {
                     if (!RootShell.available()) { openBattery(); return; }
                     boolean enable = !active();
+                    if (RootShell.restricted()) {
+                        RootShell.operationAsync(enable ? "ultra_on" : "ultra_off",
+                                new RootShell.OperationCallback() { public void done(RootShell.Result result) {
+                                    if (!result.connected || result.code != 0)
+                                        svc.toast("Ultra battery saver failed (" + result.code + ")");
+                                    refreshTiles();
+                                }});
+                        return;
+                    }
                     shell("content call --uri content://com.miui.powercenter.powersaver"
                             + " --method changeSuperPowerMode"
                             + " --extra POWER_SUPERSAVE_MODE_OPEN:b:" + enable
@@ -2717,6 +2745,15 @@ final class UnifiedShade {
                     final int wanted = active() ? 0 : 1;
                     reverseCharging = wanted;
                     refreshTiles();
+                    if (RootShell.restricted()) {
+                        RootShell.operationAsync(wanted == 1 ? "reverse_on" : "reverse_off",
+                                new RootShell.OperationCallback() { public void done(RootShell.Result result) {
+                                    if (!result.connected || result.code != 0)
+                                        svc.toast("Reverse charging failed (" + result.code + ")");
+                                    refreshReverseCharging();
+                                }});
+                        return;
+                    }
                     Shell.runResult("printf " + wanted
                             + " > /sys/class/qcom-battery/reverse_chg_mode",
                             new Shell.ResultCallback() { public void done(Shell.Result result) {
@@ -4130,6 +4167,18 @@ final class UnifiedShade {
      * should open Android's panel. The tiles refresh as the radio actually changes.
      */
     private boolean shell(String cmd) {
+        if (RootShell.restricted()) {
+            String operation = restrictedOperation(cmd);
+            if (operation == null) return false;
+            RootShell.operationAsync(operation, new RootShell.OperationCallback() {
+                public void done(RootShell.Result result) {
+                    if (!result.connected || result.code != 0)
+                        svc.toast("Allowlisted control failed (" + result.code + ")");
+                    refreshTiles();
+                }});
+            root.postDelayed(new Runnable() { public void run() { refreshTiles(); } }, 1000);
+            return true;
+        }
         if (!Shell.privileged()) return false;
         Shell.runResult(cmd, new Shell.ResultCallback() { public void done(Shell.Result result) {
             if (result.code != 0) svc.toast("Privileged command failed (" + result.code + ")");
@@ -4140,8 +4189,39 @@ final class UnifiedShade {
         return true;
     }
 
+    private String restrictedOperation(String command) {
+        if (command.startsWith("cmd wifi set-wifi-enabled disabled")) return "wifi_off";
+        if (command.startsWith("cmd wifi set-wifi-enabled enabled")) return "wifi_on";
+        if (command.equals("svc data disable")) return "data_off";
+        if (command.equals("svc data enable")) return "data_on";
+        if (command.startsWith("cmd bluetooth_manager disable")) return "bluetooth_off";
+        if (command.startsWith("cmd bluetooth_manager enable")) return "bluetooth_on";
+        if (command.startsWith("cmd location set-location-enabled true")) return "location_on";
+        if (command.startsWith("cmd location set-location-enabled false")) return "location_off";
+        if (command.equals("cmd connectivity airplane-mode enable")) return "airplane_on";
+        if (command.equals("cmd connectivity airplane-mode disable")) return "airplane_off";
+        if (command.equals("svc nfc enable")) return "nfc_on";
+        if (command.equals("svc nfc disable")) return "nfc_off";
+        if (command.equals("cmd power set-mode 1")) return "battery_on";
+        if (command.equals("cmd power set-mode 0")) return "battery_off";
+        if (command.startsWith("cmd notification set_dnd priority")) return "dnd_on";
+        if (command.startsWith("cmd notification set_dnd off")) return "dnd_off";
+        return null;
+    }
+
     /** Read the POCO's actual reverse-charging switch through the privileged channel. */
     private void refreshReverseCharging() {
+        if (RootShell.restricted()) {
+            RootShell.operationAsync("reverse_status", new RootShell.OperationCallback() {
+                public void done(RootShell.Result result) {
+                    if (result.connected && result.code == 0) {
+                        try { reverseCharging = Integer.parseInt(result.output.trim()) == 0 ? 0 : 1; }
+                        catch (Exception e) { reverseCharging = -1; }
+                    } else reverseCharging = -1;
+                    refreshTiles();
+                }});
+            return;
+        }
         if (!Shell.privileged()) { reverseCharging = -1; return; }
         Shell.runResult("cat /sys/class/qcom-battery/reverse_chg_mode 2>/dev/null",
                 new Shell.ResultCallback() { public void done(Shell.Result result) {
@@ -4160,6 +4240,16 @@ final class UnifiedShade {
 
     private void refreshHotspot() {
         if (!RootShell.available()) { hotspot = -1; return; }
+        if (RootShell.restricted()) {
+            RootShell.operationAsync("hotspot_status", new RootShell.OperationCallback() {
+                public void done(RootShell.Result result) {
+                    if (result.connected && result.code == 0)
+                        hotspot = "on".equals(result.output.trim()) ? 1 : 0;
+                    else hotspot = -1;
+                    refreshTiles();
+                }});
+            return;
+        }
         Shell.runResult(rootTool("hotspot status"),
                 new Shell.ResultCallback() { public void done(Shell.Result result) {
                     if (result.code == 0) hotspot = "on".equals(result.output.trim()) ? 1 : 0;

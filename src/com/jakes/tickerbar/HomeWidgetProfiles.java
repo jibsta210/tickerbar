@@ -44,7 +44,9 @@ final class HomeWidgetProfiles {
     /** Location services can redact WifiInfo even after the root-granted permission. */
     private static String rootNetwork() {
         if (!RootShell.available()) return "";
-        RootShell.Result result = RootShell.exec("cmd wifi status 2>/dev/null");
+        RootShell.Result result = RootShell.restricted()
+                ? RootShell.operation("wifi_status")
+                : RootShell.exec("cmd wifi status 2>/dev/null");
         if (!result.connected || result.code != 0) return "";
         for (String line : result.output.split("\\n")) {
             String trimmed = line.trim();

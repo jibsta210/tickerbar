@@ -18,7 +18,7 @@ final class MemoryProfile {
     private MemoryProfile() {}
 
     static void applyAsync(Context context) {
-        if (!RootShell.available()) return;
+        if (!RootShell.canExec()) return;
         final Context app = context.getApplicationContext();
         new Thread(new Runnable() { public void run() { apply(app); }},
                 "TickerBar-memory-profile").start();
@@ -35,7 +35,7 @@ final class MemoryProfile {
 
     private static boolean apply(Context context, boolean relaxed) {
         File resetprop = new File(context.getApplicationInfo().nativeLibraryDir, "libresetprop.so");
-        if (!resetprop.isFile() || !RootShell.available()) return false;
+        if (!resetprop.isFile() || !RootShell.canExec()) return false;
         saveStockOnce(context);
         SharedPreferences stock = context.getSharedPreferences(STORE, Context.MODE_PRIVATE);
         StringBuilder command = new StringBuilder("ln -sf ")

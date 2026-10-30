@@ -30,6 +30,12 @@
 #define POWER_SOCK_NAME "tickerbar-power-v1"
 
 static uid_t allowed_uid = (uid_t)-1;
+static volatile sig_atomic_t restricted_mode;
+
+static void restrict_daemon(int signal_number) {
+  (void)signal_number;
+  restricted_mode = 1;
+}
 
 static socklen_t daemon_address(struct sockaddr_un *sun) {
   memset(sun, 0, sizeof(*sun));
@@ -385,7 +391,123 @@ static void serve_one(int conn) {
     return;
   }
 
+  if (mode == 'P') {
+    int state = 1 | (restricted_mode ? 2 : 0);
+    xwrite(conn, &state, sizeof(state));
+    return;
+  }
+
+  if (mode == 'L' && peer.uid == allowed_uid) {
+    int status = 0;
+    xwrite(conn, &status, sizeof(status));
+    pid_t parent = getppid();
+    if (parent > 1)
+      (void)kill(parent, SIGUSR1);
+    return;
+  }
+
+  if (mode == 'O') {
+    uint32_t len = 0;
+    if (!read_full(conn, &len, sizeof(len)) || len == 0 || len > 128)
+      return;
+    char op[129];
+    memset(op, 0, sizeof(op));
+    if (!read_full(conn, op, len))
+      return;
+    const char *cmd = NULL;
+    char dynamic[1024];
+    if (strcmp(op, "wifi_on") == 0) cmd = "cmd wifi set-wifi-enabled enabled || svc wifi enable";
+    else if (strcmp(op, "wifi_off") == 0) cmd = "cmd wifi set-wifi-enabled disabled || svc wifi disable";
+    else if (strcmp(op, "wifi_status") == 0) cmd = "cmd wifi status";
+    else if (strcmp(op, "data_on") == 0) cmd = "svc data enable";
+    else if (strcmp(op, "data_off") == 0) cmd = "svc data disable";
+    else if (strcmp(op, "bluetooth_on") == 0) cmd = "cmd bluetooth_manager enable || svc bluetooth enable";
+    else if (strcmp(op, "bluetooth_off") == 0) cmd = "cmd bluetooth_manager disable || svc bluetooth disable";
+    else if (strcmp(op, "airplane_on") == 0) cmd = "cmd connectivity airplane-mode enable";
+    else if (strcmp(op, "airplane_off") == 0) cmd = "cmd connectivity airplane-mode disable";
+    else if (strcmp(op, "location_on") == 0) cmd = "cmd location set-location-enabled true";
+    else if (strcmp(op, "location_off") == 0) cmd = "cmd location set-location-enabled false";
+    else if (strcmp(op, "nfc_on") == 0) cmd = "svc nfc enable";
+    else if (strcmp(op, "nfc_off") == 0) cmd = "svc nfc disable";
+    else if (strcmp(op, "battery_on") == 0) cmd = "cmd power set-mode 1";
+    else if (strcmp(op, "battery_off") == 0) cmd = "cmd power set-mode 0";
+    else if (strcmp(op, "dnd_on") == 0) cmd = "cmd notification set_dnd priority";
+    else if (strcmp(op, "dnd_off") == 0) cmd = "cmd notification set_dnd off";
+    else if (strcmp(op, "ultra_on") == 0)
+      cmd = "content call --uri content://com.miui.powercenter.powersaver --method changeSuperPowerMode --extra POWER_SUPERSAVE_MODE_OPEN:b:true --extra POWER_SUPERSAVE_MODE_FROMUSER:b:true";
+    else if (strcmp(op, "ultra_off") == 0)
+      cmd = "content call --uri content://com.miui.powercenter.powersaver --method changeSuperPowerMode --extra POWER_SUPERSAVE_MODE_OPEN:b:false --extra POWER_SUPERSAVE_MODE_FROMUSER:b:true";
+    else if (strcmp(op, "reverse_on") == 0) cmd = "printf 1 > /sys/class/qcom-battery/reverse_chg_mode";
+    else if (strcmp(op, "reverse_off") == 0) cmd = "printf 0 > /sys/class/qcom-battery/reverse_chg_mode";
+    else if (strcmp(op, "reverse_status") == 0) cmd = "cat /sys/class/qcom-battery/reverse_chg_mode";
+    else if (strcmp(op, "recorder") == 0)
+      cmd = "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; appops set com.miui.screenrecorder RECORD_AUDIO allow; appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; am start --user 0 -a miui.intent.screenrecorder.RECORDER_ACTIVITY -p com.miui.screenrecorder --ez is_start_immediately false --ez need_check_audio_permission false";
+    else if (strcmp(op, "power_home") == 0)
+      cmd = "input keyevent KEYCODE_WAKEUP; cmd statusbar click-tile controls";
+    else if (strcmp(op, "power_search") == 0)
+      cmd = "input keyevent KEYCODE_WAKEUP; am start --user 0 -n com.jakes.tickerbar/.SearchActivity >/dev/null";
+    else if (strcmp(op, "power_wallet") == 0)
+      cmd = "input keyevent KEYCODE_WAKEUP; am start --user 0 -a com.google.android.apps.wallet.main.QUICKDRAW -p com.google.android.apps.walletnfcrel >/dev/null";
+    else if (strcmp(op, "power_camera") == 0)
+      cmd = "input keyevent KEYCODE_WAKEUP; am start --user 0 -a android.media.action.STILL_IMAGE_CAMERA >/dev/null";
+    else if (strcmp(op, "power_flashlight") == 0)
+      cmd = "cmd statusbar click-tile flashlight";
+    else if (strcmp(op, "hotspot_on") == 0 || strcmp(op, "hotspot_off") == 0 ||
+             strcmp(op, "hotspot_status") == 0) {
+      const char *action = op + strlen("hotspot_");
+      snprintf(dynamic, sizeof(dynamic),
+               "source=$(pm path com.jakes.tickerbar | sed -n 's/^package://p' | head -n 1); [ -n \"$source\" ] || exit 3; CLASSPATH=\"$source\" /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool hotspot %s",
+               action);
+      cmd = dynamic;
+    } else if (strncmp(op, "torch_on:", 9) == 0 ||
+               strncmp(op, "torch_off:", 10) == 0) {
+      const char *id = strchr(op, ':') + 1;
+      int safe = *id != '\0';
+      for (const char *p = id; *p; ++p)
+        if ((*p < '0' || *p > '9') && *p != '_' && *p != '-') safe = 0;
+      if (safe) {
+        const char *action = strncmp(op, "torch_on:", 9) == 0 ? "on" : "off";
+        snprintf(dynamic, sizeof(dynamic),
+                 "source=$(pm path com.jakes.tickerbar | sed -n 's/^package://p' | head -n 1); [ -n \"$source\" ] || exit 3; CLASSPATH=\"$source\" /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool torch %s %s",
+                 id, action);
+        cmd = dynamic;
+      }
+    } else if (strncmp(op, "launch_pkg:", 11) == 0) {
+      const char *pkg = op + 11;
+      int safe = *pkg != '\0';
+      for (const char *p = pkg; *p; ++p)
+        if ((*p < 'a' || *p > 'z') && (*p < 'A' || *p > 'Z') &&
+            (*p < '0' || *p > '9') && *p != '.' && *p != '_') safe = 0;
+      if (safe) {
+        snprintf(dynamic, sizeof(dynamic),
+                 "input keyevent KEYCODE_WAKEUP; monkey --pct-syskeys 0 -p %s 1 >/dev/null 2>&1",
+                 pkg);
+        cmd = dynamic;
+      }
+    } else if (strcmp(op, "start_input") == 0 || strcmp(op, "start_power") == 0) {
+      const char *kind = strcmp(op, "start_input") == 0 ? "input" : "power";
+      snprintf(dynamic, sizeof(dynamic),
+               "source=$(pm path com.jakes.tickerbar | sed -n 's/^package://p' | head -n 1); helper=${source%%/base.apk}/lib/arm64/libtickerroot.so; [ -x \"$helper\" ] || exit 3; \"$helper\" --%s-helper %u >/dev/null 2>&1 &",
+               kind, (unsigned int)allowed_uid);
+      cmd = dynamic;
+    } else if (strcmp(op, "clean_reboot") == 0) {
+      cmd = "cmd statusbar send-disable-flag none; for f in /proc/[0-9]*/comm; do name=$(cat \"$f\" 2>/dev/null); case \"$name\" in tb-input3|tb-power|tickerbar-vol2) p=${f#/proc/}; p=${p%/comm}; kill -TERM \"$p\";; esac; done; rm -f /data/local/tmp/resetprop /data/local/tmp/tickerbar-status-icons /data/local/tmp/ghostlock-songyuan-root; sync; nohup /system/bin/sh -c 'sleep 2; /system/bin/svc power reboot' >/dev/null 2>&1 &";
+    }
+    int status = cmd ? exec_command_client(conn, cmd) : 64;
+    xwrite(conn, &status, sizeof(status));
+    return;
+  }
+
   if (mode == 'C' || mode == 'R') {
+    if (restricted_mode) {
+      if (mode == 'R') {
+        static const char denied[] = "root worker is restricted to allowlisted controls\n";
+        xwrite(conn, denied, sizeof(denied) - 1);
+        int status = 126;
+        xwrite(conn, &status, sizeof(status));
+      }
+      return;
+    }
     uint32_t len = 0;
     if (!read_full(conn, &len, sizeof(len)) || len > 65536) {
       return;
@@ -403,7 +525,8 @@ static void serve_one(int conn) {
     if (mode == 'R')
       xwrite(conn, &status, sizeof(status));
   } else if (mode == 'I') {
-    exec_interactive_client(conn);
+    if (!restricted_mode)
+      exec_interactive_client(conn);
   } else if (mode == 'S') {
     serve_statusbar_lease(conn);
   } else if (mode == 'T') {
@@ -422,6 +545,7 @@ static void serve_one(int conn) {
 
 static int daemon_main(void) {
   signal(SIGPIPE, SIG_IGN);
+  signal(SIGUSR1, restrict_daemon);
   set_root_env();
 
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);

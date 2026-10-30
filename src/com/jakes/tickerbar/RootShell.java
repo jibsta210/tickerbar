@@ -102,10 +102,72 @@ final class RootShell {
     }
 
     static boolean available() {
+        int state = state();
+        if ((state & 1) != 0) return true;
         Result r = exec("id");
         boolean ok = r.connected && r.code == 0 && r.output.contains("uid=0");
         if (!ok && r.connected) Log.w("TickerBarRoot", "Root probe: " + r.output.trim());
         return ok;
+    }
+
+    static boolean restricted() { return (state() & 2) != 0; }
+
+    static boolean canExec() { return available() && !restricted(); }
+
+    /** Execute one native allowlisted operation; no shell text is accepted in this mode. */
+    static Result operation(String operation) {
+        return transact(operation, 'O', true);
+    }
+
+    interface OperationCallback { void done(Result result); }
+
+    static void operationAsync(final String operation, final OperationCallback callback) {
+        new Thread(new Runnable() { @Override public void run() {
+            final Result result = operation(operation);
+            if (callback != null) new android.os.Handler(android.os.Looper.getMainLooper())
+                    .post(new Runnable() { @Override public void run() {
+                        callback.done(result);
+                    }});
+        }}, "TickerBar-allowlisted-" + operation).start();
+    }
+
+    /** Permanently reject arbitrary commands until this boot's daemon exits. */
+    static boolean restrictToControls() {
+        Result result = transact("", 'L', true);
+        if (!result.connected || result.code != 0) return false;
+        for (int i = 0; i < 20; i++) {
+            if (restricted()) return true;
+            try { Thread.sleep(25); } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return restricted();
+    }
+
+    private static int state() {
+        LocalSocket socket = new LocalSocket();
+        try {
+            socket.connect(new LocalSocketAddress(SOCKET,
+                    LocalSocketAddress.Namespace.ABSTRACT));
+            socket.setSoTimeout(1_000);
+            OutputStream out = socket.getOutputStream();
+            out.write('P');
+            out.flush();
+            byte[] raw = new byte[4];
+            InputStream in = socket.getInputStream();
+            int at = 0;
+            while (at < raw.length) {
+                int n = in.read(raw, at, raw.length - at);
+                if (n < 0) return 0;
+                at += n;
+            }
+            return ByteBuffer.wrap(raw).order(ByteOrder.nativeOrder()).getInt();
+        } catch (Throwable ignored) {
+            return 0;
+        } finally {
+            try { socket.close(); } catch (Throwable ignored) {}
+        }
     }
 
     /** End the authenticated root worker after all clients and helpers are closed. */

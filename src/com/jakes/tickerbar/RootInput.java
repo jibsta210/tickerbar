@@ -87,10 +87,11 @@ final class RootInput {
             if (!payload.isFile()) throw new IllegalStateException("root payload missing");
             LocalSocket connected = tryConnect();
             if (connected == null) {
-                String command = "pidof tb-input3 >/dev/null 2>&1 || ("
-                        + quote(payload.getAbsolutePath()) + " --input-helper " + Process.myUid()
-                        + " >/dev/null 2>&1 &)";
-                RootShell.Result launch = RootShell.exec(command);
+                RootShell.Result launch = RootShell.restricted()
+                        ? RootShell.operation("start_input")
+                        : RootShell.exec("pidof tb-input3 >/dev/null 2>&1 || ("
+                                + quote(payload.getAbsolutePath()) + " --input-helper "
+                                + Process.myUid() + " >/dev/null 2>&1 &)");
                 if (!launch.connected || launch.code != 0)
                     throw new IllegalStateException("input helper launch failed: " + launch.output);
                 for (int i = 0; i < 40 && connected == null && !stopped; i++) {
@@ -145,7 +146,8 @@ final class RootInput {
             Log.i("TickerBarVolume", "Volume Up exited manually-entered DND");
         } catch (SecurityException denied) {
             new Thread(new Runnable() { public void run() {
-                RootShell.exec("cmd notification set_dnd off");
+                if (RootShell.restricted()) RootShell.operation("dnd_off");
+                else RootShell.exec("cmd notification set_dnd off");
             }}, "TickerBar-exit-dnd").start();
         }
     }
@@ -270,7 +272,9 @@ final class RootInput {
     private void launchPackageAsRoot(String pkg) {
         final String safe = pkg;
         new Thread(new Runnable() { public void run() {
-            RootShell.exec("monkey --pct-syskeys 0 -p " + quote(safe) + " 1 >/dev/null 2>&1");
+            if (RootShell.restricted()) RootShell.operation("launch_pkg:" + safe);
+            else RootShell.exec("monkey --pct-syskeys 0 -p " + quote(safe)
+                    + " 1 >/dev/null 2>&1");
         }}, "TickerBar-root-launch").start();
     }
 

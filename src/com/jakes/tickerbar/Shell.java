@@ -50,7 +50,7 @@ final class Shell {
 
     /** A privileged command channel is ready; root is preferred over Shizuku. */
     static boolean privileged() {
-        return RootShell.available() || granted();
+        return RootShell.canExec() || granted();
     }
 
     static void requestPermission() {
@@ -59,7 +59,8 @@ final class Shell {
 
     /** One line for settings: where Shizuku stands. */
     static String status(Context c) {
-        if (RootShell.available()) return "✓ Root daemon ready · Shizuku available as fallback";
+        if (RootShell.restricted()) return "✓ Allowlisted root controls active";
+        if (RootShell.canExec()) return "✓ Root daemon ready · Shizuku available as fallback";
         if (!installed(c)) return "Shizuku isn't installed";
         if (!running()) return "Shizuku isn't running — start it in the Shizuku app";
         if (!granted()) return "Tap to allow TickerBar in Shizuku";
@@ -77,7 +78,7 @@ final class Shell {
     static void runResult(final String cmd, final ResultCallback done) {
         new Thread(new Runnable() { public void run() {
             Result result;
-            if (RootShell.available()) {
+            if (RootShell.canExec()) {
                 RootShell.Result root = RootShell.exec(cmd);
                 result = new Result(root.connected ? root.code : -1, root.output);
             } else {

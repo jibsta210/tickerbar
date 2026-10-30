@@ -745,7 +745,7 @@ public class ShadeService extends AccessibilityService {
         String make = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(java.util.Locale.ROOT);
         boolean split = make.contains("xiaomi") || make.contains("redmi") || make.contains("poco");
         boolean quick = split && x > screenWidth() * 0.6f;
-        if (RootShell.available())
+        if (RootShell.canExec())
             Shell.run(quick ? "cmd statusbar expand-settings"
                     : "cmd statusbar expand-notifications", null);
         else performGlobalAction(quick ? GLOBAL_ACTION_QUICK_SETTINGS : GLOBAL_ACTION_NOTIFICATIONS);
