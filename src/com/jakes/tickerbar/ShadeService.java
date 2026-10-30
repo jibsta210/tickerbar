@@ -577,6 +577,15 @@ public class ShadeService extends AccessibilityService {
         }});
     }
 
+    /** A Home/SSID choice changed while its setup activity was covering an open shade. */
+    public static void homeProfileChanged() {
+        final ShadeService s = self;
+        if (s == null) return;
+        s.ui.post(new Runnable() { public void run() {
+            if (s.shade != null) s.shade.refreshHomeShelf();
+        }});
+    }
+
     // ============================================================ settings
 
     private void applySettings() {

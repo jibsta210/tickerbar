@@ -1535,6 +1535,25 @@ final class UnifiedShade {
         homeWidgetId = 0;
     }
 
+    /** Rebind immediately after the location picker changes its widget/SSID mapping. */
+    void refreshHomeShelf() {
+        if (!attached || content == null || homeShelfView == null
+                || !Prefs.on(svc, Prefs.HOME_SHELF)) return;
+        int index = content.indexOfChild(homeShelfView);
+        if (index < 0) return;
+        View old = homeShelfView;
+        ViewGroup.LayoutParams params = old.getLayoutParams();
+        stopHomeWidgetHost();
+        View replacement = homeShelf();
+        homeShelfView = replacement;
+        content.removeViewAt(index);
+        content.addView(replacement, index, params);
+        replacement.setAlpha(0f);
+        replacement.setTranslationY(svc.px(10));
+        replacement.animate().alpha(1f).translationY(0f).setDuration(240)
+                .setInterpolator(OPEN_EASE).start();
+    }
+
     private Bundle homeWidgetOptions() {
         Bundle options = new Bundle();
         int widthDp = Math.max(220, Math.round((svc.screenW() - svc.px(52))

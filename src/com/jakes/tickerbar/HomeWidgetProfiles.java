@@ -80,12 +80,17 @@ final class HomeWidgetProfiles {
     }
 
     static void map(Context context, String network, int widgetId) {
-        if (network == null || network.isEmpty() || widgetId <= 0) return;
+        network = network == null ? "" : network.trim();
+        if (network.isEmpty() || widgetId <= 0) return;
         List<Profile> all = profiles(context);
         String label = "";
+        if (widgetId == Prefs.n(context, Prefs.HOME_WIDGET_ID))
+            label = Prefs.str(context, Prefs.HOME_WIDGET_DEFAULT_LABEL);
         for (Profile profile : all) if (profile.widgetId == widgetId) label = profile.label;
+        // One physical home can legitimately have several SSIDs (mesh, 2.4 GHz, guest).
+        // A network selects one widget, but a widget must not be restricted to one network.
         for (int i = all.size() - 1; i >= 0; i--)
-            if (network.equals(all.get(i).network) || all.get(i).widgetId == widgetId) all.remove(i);
+            if (network.equals(all.get(i).network)) all.remove(i);
         all.add(new Profile(network, widgetId, label));
         save(context, all);
         Prefs.put(context, Prefs.HOME_WIDGET_OVERRIDE_ID, 0);

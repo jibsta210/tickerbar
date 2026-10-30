@@ -72,7 +72,8 @@ public final class HomeWidgetSetupActivity extends Activity {
                 : "Use current home automatically on “" + network + "”";
         String add = network.isEmpty() ? "Set up another Wi-Fi home (connect first)"
                 : "Set up another home for “" + network + "”";
-        showSheet("Google Home", new String[]{"Edit controls", remember, add, "Switch home"},
+        showSheet("Google Home", new String[]{"Edit controls", remember, add,
+                        "Switch home / assign this Wi-Fi"},
                 new Choice() { public void selected(int which) {
                     if (which == 0) configure(current, null);
                     else if (which == 1) rememberCurrent(network, current);
@@ -91,6 +92,7 @@ public final class HomeWidgetSetupActivity extends Activity {
             return;
         }
         HomeWidgetProfiles.map(this, network, current);
+        ShadeService.homeProfileChanged();
         Toast.makeText(this, "This home will appear automatically on “" + network + "”",
                 Toast.LENGTH_LONG).show();
         finish();
@@ -99,6 +101,8 @@ public final class HomeWidgetSetupActivity extends Activity {
     private void showSwitcher() {
         final List<HomeWidgetProfiles.Profile> choices = HomeWidgetProfiles.choices(this);
         if (choices.size() < 2) {
+            Toast.makeText(this, "Set up another Home shelf first, then it can switch by Wi-Fi",
+                    Toast.LENGTH_LONG).show();
             showManager();
             return;
         }
@@ -109,9 +113,28 @@ public final class HomeWidgetSetupActivity extends Activity {
                     ? (profile.network.isEmpty() ? "Home" : profile.network) : profile.label;
             if (!profile.network.isEmpty()) names[i] += "  ·  " + profile.network;
         }
-        showSheet("Show controls for", names, new Choice() { public void selected(int which) {
-                    HomeWidgetProfiles.useUntilNetworkChanges(HomeWidgetSetupActivity.this,
-                            choices.get(which).widgetId);
+        final String detectedNetwork = HomeWidgetProfiles.currentNetwork(this);
+        showSheet(detectedNetwork.isEmpty() ? "Show controls for"
+                        : "Use automatically on “" + detectedNetwork + "”",
+                names, new Choice() { public void selected(int which) {
+                    HomeWidgetProfiles.Profile chosen = choices.get(which);
+                    String network = HomeWidgetProfiles.currentNetwork(HomeWidgetSetupActivity.this);
+                    if (network.isEmpty())
+                        HomeWidgetProfiles.useUntilNetworkChanges(HomeWidgetSetupActivity.this,
+                                chosen.widgetId);
+                    else
+                        // Choosing a home while connected there is the least surprising
+                        // automation: switch immediately and remember this SSID in one tap.
+                        HomeWidgetProfiles.map(HomeWidgetSetupActivity.this, network,
+                                chosen.widgetId);
+                    ShadeService.homeProfileChanged();
+                    String label = chosen.label == null || chosen.label.trim().isEmpty()
+                            ? "Home" : chosen.label.trim();
+                    Toast.makeText(HomeWidgetSetupActivity.this,
+                            network.isEmpty() ? "Showing “" + label + "”"
+                                    : "Showing “" + label + "” automatically on “"
+                                            + network + "”",
+                            Toast.LENGTH_LONG).show();
                     finish();
                 }});
     }
@@ -164,9 +187,10 @@ public final class HomeWidgetSetupActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (request == CONFIGURE && configuringId > 0 && mappingNetwork != null) {
             if (result == RESULT_OK
-                    && AppWidgetManager.getInstance(this).getAppWidgetInfo(configuringId) != null)
+                    && AppWidgetManager.getInstance(this).getAppWidgetInfo(configuringId) != null) {
                 HomeWidgetProfiles.map(this, mappingNetwork, configuringId);
-            else try { new AppWidgetHost(this, HOST_ID).deleteAppWidgetId(configuringId); }
+                ShadeService.homeProfileChanged();
+            } else try { new AppWidgetHost(this, HOST_ID).deleteAppWidgetId(configuringId); }
             catch (Exception ignored) {}
         }
         finish();
