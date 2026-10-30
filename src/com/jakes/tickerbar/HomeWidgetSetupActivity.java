@@ -178,16 +178,19 @@ public final class HomeWidgetSetupActivity extends Activity {
             return;
         }
 
-        Intent setup = new Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
-                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id);
-        if (info.configure != null) setup.setComponent(info.configure);
-        else setup.setPackage(info.provider.getPackageName());
         try {
             configuringId = id;
             mappingNetwork = network;
-            startActivityForResult(setup, CONFIGURE);
+            // Google Home intentionally marks AppWidgetSetupActivity non-exported. A direct
+            // Intent therefore cannot launch it even though AppWidgetProviderInfo.configure
+            // names it. AppWidgetHost delegates through the system widget service, which is
+            // the supported launcher/host path for private configuration activities.
+            new AppWidgetHost(this, HOST_ID).startAppWidgetConfigureActivityForResult(
+                    this, id, 0, CONFIGURE, null);
         } catch (Exception unavailable) {
-            failed("Google Home does not expose Favorites setup in this version");
+            android.util.Log.e("TickerBarHome", "System could not launch Favorites setup",
+                    unavailable);
+            failed("Android could not open Google Home widget settings");
         }
     }
 
