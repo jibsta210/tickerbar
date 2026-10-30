@@ -2619,7 +2619,10 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
-                    if (RootShell.available()) {
+                    // A clean boot intentionally removes TickerBar's boot-scoped root worker,
+                    // but Shizuku's shell identity can still call TetheringManager through
+                    // RootTool. Keep hotspot functional through that supported fallback.
+                    if (RootShell.available() || Shell.granted()) {
                         final int wanted = active() ? 0 : 1;
                         hotspot = wanted;
                         refreshTiles();
@@ -4239,7 +4242,7 @@ final class UnifiedShade {
     }
 
     private void refreshHotspot() {
-        if (!RootShell.available()) { hotspot = -1; return; }
+        if (!RootShell.available() && !Shell.granted()) { hotspot = -1; return; }
         if (RootShell.restricted()) {
             RootShell.operationAsync("hotspot_status", new RootShell.OperationCallback() {
                 public void done(RootShell.Result result) {
