@@ -32,23 +32,29 @@ final class HomeWidgetProfiles {
                     .getSystemService(Context.WIFI_SERVICE);
             WifiInfo info = manager == null ? null : manager.getConnectionInfo();
             String name = info == null ? "" : info.getSSID();
-            if (name == null || WifiManager.UNKNOWN_SSID.equals(name)) return rootNetwork();
+            if (name == null || WifiManager.UNKNOWN_SSID.equals(name)) return privilegedNetwork();
             if (name.length() >= 2 && name.charAt(0) == '"'
                     && name.charAt(name.length() - 1) == '"')
                 name = name.substring(1, name.length() - 1);
             name = name.trim();
-            return name.isEmpty() ? rootNetwork() : name;
-        } catch (Throwable ignored) { return rootNetwork(); }
+            return name.isEmpty() ? privilegedNetwork() : name;
+        } catch (Throwable ignored) { return privilegedNetwork(); }
     }
 
-    /** Location services can redact WifiInfo even after the root-granted permission. */
-    private static String rootNetwork() {
-        if (!RootShell.available()) return "";
-        RootShell.Result result = RootShell.restricted()
-                ? RootShell.operation("wifi_status")
-                : RootShell.exec("cmd wifi status 2>/dev/null");
-        if (!result.connected || result.code != 0) return "";
-        for (String line : result.output.split("\\n")) {
+    /** Location services can redact WifiInfo; Shizuku can still read the shell Wi-Fi status. */
+    private static String privilegedNetwork() {
+        String output;
+        if (RootShell.restricted()) {
+            RootShell.Result result = RootShell.operation("wifi_status");
+            if (!result.connected || result.code != 0) return "";
+            output = result.output;
+        } else {
+            if (!Shell.privileged()) return "";
+            Shell.Result result = Shell.runSync("cmd wifi status 2>/dev/null");
+            if (result.code != 0) return "";
+            output = result.output;
+        }
+        for (String line : output.split("\\n")) {
             String trimmed = line.trim();
             int marker = trimmed.indexOf("SSID:");
             if (marker > 0 && trimmed.charAt(marker - 1) == 'B') marker = -1;

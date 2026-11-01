@@ -59,7 +59,10 @@ final class RootBootstrap {
                 Shizuku.addRequestPermissionResultListener(
                         new Shizuku.OnRequestPermissionResultListener() {
                             @Override public void onRequestPermissionResult(int requestCode, int result) {
-                                if (requestCode == Shell.REQUEST && (userRequested || autoRequested)) kick();
+                                if (requestCode != Shell.REQUEST) return;
+                                if (result == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                                    RootFeatures.restoreAccessibilityFallback(app);
+                                if (userRequested || autoRequested) kick();
                             }
                         });
             } catch (Throwable t) {

@@ -193,7 +193,7 @@ public class MainActivity extends Activity {
                 + "TickerBar shortcut for Nova gestures.");
 
         // ---------------------------------------------------------- root
-        c = card("Root access");
+        c = card("Shizuku & root");
         rootLine = tv(RootBootstrap.status(this), 15, pal.onSurfaceVariant);
         rootLine.setPadding(dp(20), dp(18), dp(20), dp(14));
         rootLine.setLineSpacing(0, 1.15f);
@@ -243,13 +243,24 @@ public class MainActivity extends Activity {
                     + "this grants Shizuku WRITE_SECURE_SETTINGS, keeps ADB authorization permanent and "
                     + "allows background startup.\n\n"
                     + "5. On Android 13+ Shizuku 13.6 can start its ADB server after boot when the phone "
-                    + "joins trusted Wi-Fi. TickerBar waits for its binder, then makes one guarded root attempt. "
-                    + "If that attempt crashes/reboots the phone, automatic root switches itself off before "
-                    + "the next attempt so it cannot form a boot loop. Root remains temporary and is lost at reboot.");
+                    + "joins trusted Wi-Fi. TickerBar waits for its binder, then reapplies its clean-boot "
+                    + "SystemUI grants, controls and HyperOS fixes. Root remains explicit and is never started "
+                    + "merely because Shizuku connected.");
         } else {
             note(c, "Kernel root is safety-paused after a verified panic on this exact firmware. "
                     + "TickerBar will not arm it; Shizuku and Accessibility remain the stable path.");
         }
+        actionRow(c, "Apply Shizuku system integration",
+                "Direct controls, shade grants, recorder, Home Wi-Fi and HyperOS fixes without root",
+                new Runnable() { public void run() {
+                    if (!Shell.running()) { openShizuku(); return; }
+                    if (!Shell.granted()) { Shell.requestPermission(); return; }
+                    RootFeatures.restoreAccessibilityFallback(MainActivity.this);
+                    toast("Applying Shizuku integration");
+                }});
+        actionRow(c, "Test Shizuku capabilities",
+                "Read-only checks for this exact HyperOS build",
+                new Runnable() { public void run() { testShizukuCapabilities(); }});
         actionRow(c, "Open floating screen recorder",
                 "Starts HyperOS's on-screen recorder control, not its settings page",
                 new Runnable() { public void run() {
@@ -270,11 +281,13 @@ public class MainActivity extends Activity {
         switchRow(c, "Relax HyperOS memory killing",
                 "Disables Smart Power Control's extra kill/free layer; Android's normal low-memory handling stays active",
                 Prefs.MEMORY_RELAXED);
-        note(c, "The floating recorder and replacement tile work through either root or Shizuku. "
+        note(c, "The unified shade, direct radio controls, hotspot, DND, adaptive brightness, "
+                + "Home Wi-Fi selection, floating recorder and replacement tile work through Shizuku. "
                 + "Countdown removal disables only Security Center's warning activity; the rest of Security "
                 + "Center, Android permission dialogs and Play Protect remain intact. Clean mode retains "
                 + "the countdown removal, granted Android permissions and persistent status-bar settings. "
-                + "Boot-only property changes, root power gestures and root input helpers stop until you "
+                + "Reverse charging, boot-only property changes, raw power gestures and root input helpers "
+                + "remain unavailable until you "
                 + "explicitly start another root session. This reduces privileged runtime exposure but does "
                 + "not promise any Play Integrity or Wallet verdict.");
 
@@ -574,8 +587,8 @@ public class MainActivity extends Activity {
 
     /** Toggle Xiaomi's shared 10-second intercept activity; Security Center stays installed. */
     private void setSecurityCountdowns(final boolean enabled) {
-        if (!RootShell.canExec()) {
-            toast("Root is needed for HyperOS's protected Security Center setting");
+        if (!Shell.privileged()) {
+            toast("Shizuku or root is needed for HyperOS's protected Security Center setting");
             return;
         }
         String component = "com.miui.securitycenter/"
@@ -824,6 +837,48 @@ public class MainActivity extends Activity {
         }});
     }
 
+    /** Device-specific, non-destructive proof of which clean-boot service calls are available. */
+    private void testShizukuCapabilities() {
+        if (!Shell.running()) { openShizuku(); return; }
+        if (!Shell.granted()) { Shell.requestPermission(); return; }
+        toast("Testing Shizuku services…");
+        final String apk = getApplicationInfo().sourceDir;
+        final String[][] checks = {
+                {"Wi-Fi / Home network", "cmd wifi status >/dev/null 2>&1"},
+                {"Hotspot status", "CLASSPATH=" + shellQuote(apk)
+                        + " /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool"
+                        + " hotspot status >/dev/null 2>&1"},
+                {"Do Not Disturb", "cmd notification get_dnd >/dev/null 2>&1"},
+                {"Adaptive brightness", "dumpsys display >/dev/null 2>&1"},
+                {"SystemUI / status bar", "cmd statusbar help >/dev/null 2>&1"},
+                {"Secure settings", "settings get secure icon_blacklist >/dev/null 2>&1"},
+                {"HyperOS recorder", "cmd package resolve-activity --brief"
+                        + " -a miui.intent.screenrecorder.RECORDER_ACTIVITY"
+                        + " -p com.miui.screenrecorder >/dev/null 2>&1"},
+                {"Reverse-charging kernel node", "test -r /sys/class/qcom-battery/reverse_chg_mode"}
+        };
+        new Thread(new Runnable() { public void run() {
+            final StringBuilder report = new StringBuilder();
+            for (String[] check : checks) {
+                Shell.Result result = Shell.runShizukuSync(check[1]);
+                report.append(result.code == 0 ? "✓  " : "—  ")
+                        .append(check[0]).append('\n');
+            }
+            report.append("\nA dash means HyperOS denied the shell identity; TickerBar will use its safe fallback.");
+            runOnUiThread(new Runnable() { public void run() {
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Shizuku capability audit")
+                        .setMessage(report.toString().trim())
+                        .setPositiveButton("Done", null)
+                        .show();
+            }});
+        }}, "TickerBar-shizuku-audit").start();
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+
     // ================================================================= cards and rows
 
     private LinearLayout card(String label) {
@@ -884,13 +939,14 @@ public class MainActivity extends Activity {
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
         String status = "\u2022 Brightness & auto-rotate: " + (write ? "\u2713 working" : "needs \u201cAllow brightness and auto-rotate\u201d below")
                 + "\n\u2022 Location: " + (secure ? "\u2713 switches directly" : "opens settings until you run the adb command below");
-        boolean root = RootShell.available();
+        boolean privileged = Shell.privileged() || RootShell.restricted();
         note(card, "How the tiles work\n\n"
                 + "Switch right away: Flashlight, Do Not Disturb, Sound, Auto-rotate, brightness and auto brightness.\n\n"
                 + "Wi-Fi, Bluetooth, mobile data, airplane mode, location, NFC and battery saver are reserved for the system. With "
-                + (root ? "TickerBar root ready, " : "root or Shizuku available, ")
-                + "those tiles switch directly; otherwise they open Android's own panel. With TickerBar root, hotspot, "
-                + "Ultra battery saver and reverse charging also switch directly; without root they open HyperOS settings.\n\n"
+                + (privileged ? "the privileged channel ready, " : "Shizuku or root available, ")
+                + "those tiles switch directly; otherwise they open Android's own panel. Hotspot, Ultra battery saver, "
+                + "DND, the floating recorder and adaptive-brightness bias also use Shizuku. Reverse charging's protected "
+                + "sysfs switch and raw power-button observation remain root-only.\n\n"
                 + status + "\n\n"
                 + "To make Location switch directly, connect the phone to a computer with adb (USB or wireless "
                 + "debugging) and run once:\n"

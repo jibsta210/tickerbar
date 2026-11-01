@@ -18,10 +18,39 @@ final class MemoryProfile {
     private MemoryProfile() {}
 
     static void applyAsync(Context context) {
-        if (!RootShell.canExec()) return;
         final Context app = context.getApplicationContext();
-        new Thread(new Runnable() { public void run() { apply(app); }},
+        if (!RootShell.canExec() && !Shell.granted()) return;
+        new Thread(new Runnable() { public void run() {
+            if (RootShell.canExec()) apply(app);
+            else applyShizuku(app, Prefs.on(app, Prefs.MEMORY_RELAXED));
+        }},
                 "TickerBar-memory-profile").start();
+    }
+
+    /** Shell-safe subset: no read-only property spoofing, only documented runtime policy. */
+    private static boolean applyShizuku(Context context, boolean relaxed) {
+        SharedPreferences stock = context.getSharedPreferences(STORE, Context.MODE_PRIVATE);
+        String freezer = stock.getString("cached_apps_freezer", "");
+        String command;
+        if (relaxed) {
+            command = "settings put global cached_apps_freezer disabled; "
+                    + "cmd deviceidle whitelist +" + context.getPackageName() + "; "
+                    + "am set-standby-bucket " + context.getPackageName() + " active";
+        } else {
+            command = (freezer.isEmpty() || "null".equals(freezer)
+                    ? "settings delete global cached_apps_freezer"
+                    : "settings put global cached_apps_freezer " + quote(freezer))
+                    + "; cmd deviceidle whitelist -" + context.getPackageName();
+        }
+        Shell.Result result = Shell.runShizukuSync(command);
+        if (result.code != 0) {
+            Log.w("TickerBarMemory", "Shizuku memory policy failed: " + result.output);
+            return false;
+        }
+        Log.i("TickerBarMemory", relaxed
+                ? "Shizuku applied the clean-boot memory policy"
+                : "Shizuku restored the clean-boot memory policy");
+        return true;
     }
 
     static boolean apply(Context context) {

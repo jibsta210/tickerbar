@@ -621,6 +621,7 @@ final class UnifiedShade {
         fixed.clear();
         headerStatusIcons.clear();
         brightnessLevelQueried = false;
+        brightnessPreviewUnavailable = false;
         root = new FrameLayout(svc) {
             private float y0, x0;
             private boolean dragging, pulledOpen;
@@ -1223,7 +1224,7 @@ final class UnifiedShade {
      * mode enabled; the permanent call becomes the automatic controller's new user anchor.
      */
     private void applyBrightness(int progress, boolean commit) {
-        if (!Settings.System.canWrite(svc) && !RootShell.canExec()) {
+        if (!Settings.System.canWrite(svc) && !Shell.privileged()) {
             if (commit) askWriteSettings();
             return;
         }
@@ -1235,7 +1236,7 @@ final class UnifiedShade {
             if (commit) {
                 Prefs.put(svc, Prefs.AUTO_BRIGHTNESS_LEVEL, p);
                 brightnessPreviewActive = false;
-                if (RootShell.canExec()) queueBrightnessCall(level, 41);
+                if (Shell.privileged()) queueBrightnessCall(level, 41);
                 else try {
                     Settings.System.putInt(svc.getContentResolver(),
                             Settings.System.SCREEN_BRIGHTNESS, Math.round(level * 255));
@@ -1248,7 +1249,7 @@ final class UnifiedShade {
             try { Settings.System.putInt(svc.getContentResolver(),
                     Settings.System.SCREEN_BRIGHTNESS, level); } catch (Exception ignored) {}
             brightness.setContentDescription("Brightness " + Math.round(progress / 10f) + " percent");
-            if (commit && RootShell.canExec())
+            if (commit && Shell.privileged())
                 Shell.run("settings put system screen_brightness " + level, null);
         }
     }
@@ -1273,7 +1274,7 @@ final class UnifiedShade {
 
     /** Read the values SystemUI itself uses, without relying on the stale manual setting. */
     private void queryNativeBrightnessRange() {
-        if (brightnessLevelQueried || !RootShell.canExec()) return;
+        if (brightnessLevelQueried || !Shell.privileged()) return;
         brightnessLevelQueried = true;
         Shell.runResult("dumpsys display | awk -F= '"
                 + "/mCachedBrightnessInfo.brightnessMin=/{if(!a){print $2;a=1}} "
@@ -1331,9 +1332,9 @@ final class UnifiedShade {
                     pendingBrightnessPreviewSet = false;
                 }
                 String value = Float.isNaN(next) ? "nan" : Float.toString(next);
-                RootShell.Result result = RootShell.exec(
+                Shell.Result result = Shell.runSync(
                         "service call display " + transaction + " i32 0 f " + value + " >/dev/null");
-                if (!result.connected || result.code != 0) {
+                if (result.code != 0) {
                     brightnessPreviewUnavailable = true;
                     synchronized (brightnessPreviewLock) {
                         pendingBrightnessPreviewSet = false;
@@ -2494,7 +2495,7 @@ final class UnifiedShade {
                     public String state() { return torchOn ? "On" : "Off"; }
                     public void tap() {
                         final boolean wanted = !torchOn;
-                        if (RootShell.available()) {
+                        if (RootShell.available() || Shell.granted()) {
                             if (RootShell.restricted()) {
                                 RootShell.operationAsync(
                                         "torch_" + (wanted ? "on:" : "off:") + torchId,
@@ -2506,7 +2507,8 @@ final class UnifiedShade {
                                 return;
                             }
                             Shell.runResult(rootTool("torch " + torchId + " "
-                                            + (wanted ? "on" : "off")),
+                                            + (wanted ? "on" : "off")
+                                            + " || cmd statusbar click-tile flashlight"),
                                     new Shell.ResultCallback() { public void done(Shell.Result result) {
                                         if (result.code != 0) svc.toast("Flashlight failed (" + result.code + ")");
                                         else torchOn = wanted;
@@ -2515,7 +2517,7 @@ final class UnifiedShade {
                             return;
                         }
                         try { cams.setTorchMode(torchId, wanted); torchOn = wanted; }
-                        catch (Exception e) { svc.toast("Root is needed to control the flashlight"); }
+                        catch (Exception e) { svc.toast("Root or Shizuku is needed to control the flashlight"); }
                     }
                 };
             case "dnd": return new Tile() {
@@ -2526,7 +2528,7 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
-                    if (RootShell.available()) {
+                    if (Shell.privileged() || RootShell.restricted()) {
                         shell("cmd notification set_dnd " + (active() ? "off" : "priority"));
                         return;
                     }
@@ -2660,7 +2662,7 @@ final class UnifiedShade {
                 public boolean active() { return false; }
                 public String state() { return "Open recorder"; }
                 public void tap() {
-                    if (RootShell.available()) {
+                    if (Shell.privileged() || RootShell.restricted()) {
                         closeNow();
                         RootFeatures.openRecorder(svc, new RootFeatures.ResultCallback() {
                             public void done(final boolean ok, final String detail) {
@@ -2673,7 +2675,7 @@ final class UnifiedShade {
                     }
                     Intent i = recorderIntent();
                     if (i != null) launch(i);
-                    else svc.toast("Root is needed to open the floating recorder");
+                    else svc.toast("Shizuku is needed to open the floating recorder");
                 }
             };
             case "nfc": return new Tile() {
@@ -2719,7 +2721,7 @@ final class UnifiedShade {
                 }
                 public String state() { return active() ? "On" : "Off"; }
                 public void tap() {
-                    if (!RootShell.available()) { openBattery(); return; }
+                    if (!Shell.privileged() && !RootShell.restricted()) { openBattery(); return; }
                     boolean enable = !active();
                     if (RootShell.restricted()) {
                         RootShell.operationAsync(enable ? "ultra_on" : "ultra_off",
@@ -2741,7 +2743,9 @@ final class UnifiedShade {
                 public String label() { return "Reverse charging"; }
                 public boolean active() { return reverseCharging == 1; }
                 public String state() {
-                    return reverseCharging < 0 ? "Checking…" : active() ? "On" : "Off";
+                    return reverseCharging < 0
+                            ? (RootShell.available() ? "Checking…" : "Root required")
+                            : active() ? "On" : "Off";
                 }
                 public void tap() {
                     if (!RootShell.available()) { openBattery(); return; }

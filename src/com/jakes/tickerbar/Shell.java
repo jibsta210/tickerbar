@@ -64,7 +64,7 @@ final class Shell {
         if (!installed(c)) return "Shizuku isn't installed";
         if (!running()) return "Shizuku isn't running — start it in the Shizuku app";
         if (!granted()) return "Tap to allow TickerBar in Shizuku";
-        return "✓ Ready: Wi-Fi, Bluetooth, mobile data, airplane mode, NFC and battery saver switch directly";
+        return "✓ Shizuku ready: shade, hotspot, radios, DND, recorder, brightness and Home automation";
     }
 
     /** Run cmd with shell rights off the main thread, then call done (on the main thread). */
@@ -77,13 +77,7 @@ final class Shell {
     /** Run a privileged command and return its exit status on the main thread. */
     static void runResult(final String cmd, final ResultCallback done) {
         new Thread(new Runnable() { public void run() {
-            Result result;
-            if (RootShell.canExec()) {
-                RootShell.Result root = RootShell.exec(cmd);
-                result = new Result(root.connected ? root.code : -1, root.output);
-            } else {
-                result = runShizukuSync(cmd);
-            }
+            Result result = runSync(cmd);
             if (result.code != 0) Log.w("TickerBar", "shell `" + cmd + "` exited "
                     + result.code + ": " + result.output);
             final Result delivered = result;
@@ -91,6 +85,15 @@ final class Shell {
                 public void run() { done.done(delivered); }
             });
         }}, "TickerBar-shell").start();
+    }
+
+    /** Synchronous privileged command for workers that already run off the main thread. */
+    static Result runSync(String cmd) {
+        if (RootShell.canExec()) {
+            RootShell.Result root = RootShell.exec(cmd);
+            return new Result(root.connected ? root.code : -1, root.output);
+        }
+        return runShizukuSync(cmd);
     }
 
     /** Explicit Shizuku path used only to launch the bundled bootstrap. */

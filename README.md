@@ -51,15 +51,16 @@ and HyperOS between them wouldn't do these things.
   inside an expanded app group can be swiped away without dismissing the entire group.
   The shade battery meter follows the same Number, Graphic or Top bar style selected for
   HyperOS's real status bar, so the two surfaces stay consistent.
-- **Working Shizuku integration** restores TickerBar's fallback access after reboot,
-  replaces HyperOS's broken recorder tile, grants the recorder's missing permissions and
-  opens its real floating control. Pairing is remembered; Shizuku 13.6+ can restart its
-  ADB server after boot on trusted Wi-Fi once `WRITE_SECURE_SETTINGS` and background startup
-  are prepared from TickerBar's Root page.
-- **Guarded automatic root handoff** can wait for Shizuku after boot and make one root
-  attempt. A pending attempt marker disables automation after an unexpected reboot, so an
-  unstable kernel route cannot become an automatic boot loop. The Root page includes the
-  complete Shizuku 13.6+ wireless-debugging and autostart setup.
+- **Clean-boot Shizuku integration** restores the unified shade and grants after reboot and
+  directly drives hotspot, radios, DND, adaptive brightness, Ultra Saver, SystemUI expansion,
+  status-bar settings, Google Home Wi-Fi selection, the floating recorder, countdown removal
+  and the shell-safe memory policy. Pairing is remembered; Shizuku 13.6+ can restart its ADB
+  server after boot on trusted Wi-Fi once its background startup is prepared from TickerBar.
+  Reverse charging, boot-only read-only properties and raw power/input observation remain
+  root-only because Android's shell identity cannot access those kernel interfaces.
+- **Explicit root handoff** remains available as an optional, bounded attempt for the few
+  root-only interfaces. Merely connecting Shizuku never starts it, so the stable clean-boot
+  path cannot turn into an automatic kernel-attempt loop.
 - **Root power-button gestures** optionally map double- and triple-click to Home Controls,
   Google search, Wallet, camera, recorder, flashlight, or an app. The helper observes input
   passively and leaves single press, long press, the power menu, and five-click SOS stock.

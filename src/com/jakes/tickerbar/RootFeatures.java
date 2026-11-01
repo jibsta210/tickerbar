@@ -15,6 +15,7 @@ final class RootFeatures {
     private static final String KEY_SHADE_RESTART_BOOT = "native_systemui_restart_boot_v11426";
     private static final AtomicBoolean APPLYING = new AtomicBoolean();
     private static final AtomicBoolean ACCESSIBILITY_SYNC = new AtomicBoolean();
+    private static final AtomicBoolean SHIZUKU_APPLYING = new AtomicBoolean();
     private static volatile boolean applied;
 
     private RootFeatures() {}
@@ -281,7 +282,10 @@ final class RootFeatures {
             boolean ok = code == 0 && (output.contains("Starting:")
                     || output.contains("Warning: Activity not started"));
             if (callback != null) callback.done(ok, output.trim());
-            if (ok) applyAsync(app);
+            if (ok) {
+                if (root) applyAsync(app);
+                else restoreAccessibilityFallback(app);
+            }
         }}, "TickerBar-recorder").start();
     }
 
@@ -360,26 +364,91 @@ final class RootFeatures {
         }}, "TickerBar-enable-shade-host").start();
     }
 
-    /** If root cannot return after a boot, Shizuku restores the old safe UI fallback. */
+    /**
+     * Apply every persistent integration the shell identity can legitimately perform. This
+     * is the normal clean-boot path: root-only properties, raw input observers and sysfs stay
+     * off, while Android services, app-ops, settings and vendor providers use Shizuku.
+     */
     static void restoreAccessibilityFallback(Context context) {
-        if (RootShell.available() || !Shell.running() || !Shell.granted()) return;
-        Context app = context.getApplicationContext();
-        String component = new ComponentName(app, ShadeService.class).flattenToString();
-        String command = "services=\"$(settings get secure enabled_accessibility_services)\"; "
-                + "[ \"$services\" = null ] && services=; "
-                + "case \":$services:\" in *:" + component + ":*) ;; *) "
-                + "services=\"${services:+$services:}" + component + "\"; "
-                + "settings put secure enabled_accessibility_services \"$services\";; esac; "
-                + "settings put secure accessibility_enabled 1; "
-                + "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
-                + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
-                + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
-                + "tiles=\"$(settings get secure sysui_qs_tiles)\"; "
-                + "stock=\"custom(com.miui.screenrecorder/.service.QuickService)\"; "
-                + "replacement=\"custom(com.jakes.tickerbar/.RecorderTileService)\"; "
-                + "case \"$tiles\" in *\"$stock\"*) tiles=\"${tiles/$stock/$replacement}\"; "
-                + "settings put secure sysui_qs_tiles \"$tiles\";; esac";
-        Shell.runShizukuSync(command);
+        if (RootShell.available() || !Shell.running() || !Shell.granted()
+                || !SHIZUKU_APPLYING.compareAndSet(false, true)) return;
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() { public void run() {
+            try {
+                String pkg = app.getPackageName();
+                String component = new ComponentName(app, ShadeService.class).flattenToString();
+                String listener = new ComponentName(app, TickerListener.class).flattenToString();
+                String recorderTile = "custom(com.jakes.tickerbar/.RecorderTileService)";
+                String stockRecorderTile = "custom(com.miui.screenrecorder/.service.QuickService)";
+                String powerTile = "custom(com.jakes.tickerbar/.PowerTileService)";
+                String command =
+                        // Keep the app-hosted unified shade and notification stream alive.
+                        "services=\"$(settings get secure enabled_accessibility_services)\"; "
+                        + "[ \"$services\" = null ] && services=; "
+                        + "case \":$services:\" in *:" + component + ":*) ;; *) "
+                        + "services=\"${services:+$services:}" + component + "\"; "
+                        + "settings put secure enabled_accessibility_services \"$services\";; esac; "
+                        + "settings put secure accessibility_enabled 1; "
+                        + "cmd notification allow_listener " + quote(listener) + " 0; "
+                        + "cmd notification allow_dnd " + quote(pkg) + " 0; "
+                        // App-level grants and app-ops are shell-authorized and survive reboot.
+                        + "appops set " + quote(pkg) + " SYSTEM_ALERT_WINDOW allow; "
+                        + "appops set " + quote(pkg) + " GET_USAGE_STATS allow; "
+                        + "appops set " + quote(pkg) + " WRITE_SETTINGS allow; "
+                        + "appops set " + quote(pkg) + " REQUEST_INSTALL_PACKAGES allow; "
+                        + "appops set " + quote(pkg) + " ACCESS_RESTRICTED_SETTINGS allow; "
+                        + "pm grant " + quote(pkg) + " android.permission.WRITE_SECURE_SETTINGS; "
+                        + "pm grant " + quote(pkg) + " android.permission.ACCESS_FINE_LOCATION; "
+                        + "pm grant " + quote(pkg) + " android.permission.NEARBY_WIFI_DEVICES; "
+                        + "service call appwidget 21 s16 " + quote(pkg)
+                        + " i32 0 i32 1 >/dev/null; "
+                        // HyperOS confirmation detours; Android's installer and Play Protect remain.
+                        + "settings put global adb_allowed_connection_time 0; "
+                        + "settings put global adb_install_need_confirm 0; "
+                        + "settings put global verifier_verify_adb_installs 0; "
+                        + "settings put system virus_scan_install 0; "
+                        + "content call --uri content://com.miui.securitycenter.remoteprovider"
+                        + " --method callPreference --arg SET --extra type:i:1"
+                        + " --extra key:s:permcenter_install_intercept_enabled"
+                        + " --extra value:b:false >/dev/null; "
+                        // Repair the vendor recorder and preserve the user's tile ordering.
+                        + "pm grant com.miui.screenrecorder android.permission.RECORD_AUDIO; "
+                        + "appops set com.miui.screenrecorder RECORD_AUDIO allow; "
+                        + "appops set com.miui.screenrecorder SYSTEM_ALERT_WINDOW allow; "
+                        + "tiles=\"$(settings get secure sysui_qs_tiles)\"; "
+                        + "case \"$tiles\" in *" + quote(stockRecorderTile) + "*) "
+                        + "tiles=\"${tiles/" + stockRecorderTile + "/" + recorderTile + "}\"; "
+                        + "settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                        + "case \",$tiles,\" in *,controls,*) ;; *) "
+                        + "tiles=\"controls,$tiles\"; settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                        + "case \",$tiles,\" in *," + quote(powerTile) + ",*) ;; *) "
+                        + "tiles=\"$tiles," + powerTile + "\"; settings put secure sysui_qs_tiles \"$tiles\";; esac; "
+                        + "settings put secure miui_control_center_device_controller"
+                        + " com.google.android.apps.chromecast.app; "
+                        + "settings put secure lockscreen_show_controls 1; "
+                        + "settings put secure lockscreen_smart_device_control 1; "
+                        + "settings put global sysui_pm_lite 1";
+                Shell.Result result = Shell.runShizukuSync(command);
+                if (result.code == 0)
+                    Log.i("TickerBarShizuku", "Clean-boot system integration ready");
+                else Log.w("TickerBarShizuku", "System integration returned "
+                        + result.code + ": " + result.output);
+
+                // Xiaomi's standalone ten-second intercept can be disabled by shell on builds
+                // that expose it to package manager. Failure is harmless and remains visible.
+                String countdown = "com.miui.securitycenter/"
+                        + "com.miui.permcenter.privacymanager.SpecialPermissionInterceptActivity";
+                Shell.Result disabled = Shell.runShizukuSync(
+                        "pm disable --user 0 " + quote(countdown));
+                if (disabled.code != 0)
+                    Log.w("TickerBarShizuku", "Countdown component stayed enabled: "
+                            + disabled.output);
+
+                TickerListener.filterActive();
+                ShadeService.refresh();
+                MemoryProfile.applyAsync(app);
+            } finally { SHIZUKU_APPLYING.set(false); }
+        }}, "TickerBar-shizuku-features").start();
     }
 
     private static String quote(String value) {

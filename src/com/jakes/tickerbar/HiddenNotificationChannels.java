@@ -23,7 +23,7 @@ final class HiddenNotificationChannels {
 
     static void hide(final TickerListener listener, final StatusBarNotification sbn) {
         if (listener == null || sbn == null || sbn.getNotification() == null
-                || !RootShell.canExec()) return;
+                || !Shell.privileged()) return;
         final String pkg = sbn.getPackageName();
         final String channelId = sbn.getNotification().getChannelId();
         if (pkg == null || channelId == null) return;
@@ -61,7 +61,7 @@ final class HiddenNotificationChannels {
                         && (channelId == null || record.channel.equals(channelId));
                 boolean stillHidden = Prefs.hidden(app, record.pkg)
                         || Prefs.typeHidden(app, record.pkg, record.channel);
-                if (!target || stillHidden || !RootShell.canExec()
+                if (!target || stillHidden || !Shell.privileged()
                         || setImportance(app, record.pkg, record.uid,
                                 record.channel, record.importance, false) < 0) {
                     keep.add(record);
@@ -82,8 +82,8 @@ final class HiddenNotificationChannels {
                 + " /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool"
                 + " notification-channel " + quote(pkg) + " " + uid + " "
                 + quote(channel) + " " + importance + " " + (lowerOnly ? "lower" : "set");
-        RootShell.Result result = RootShell.exec(command);
-        if (result.connected && result.code == 0) {
+        Shell.Result result = Shell.runSync(command);
+        if (result.code == 0) {
             for (String line : result.output.split("\n")) if (line.startsWith("old=")) try {
                 return Integer.parseInt(line.substring(4).trim());
             } catch (NumberFormatException ignored) {}
@@ -100,8 +100,8 @@ final class HiddenNotificationChannels {
                 + " /system/bin/app_process /system/bin com.jakes.tickerbar.RootTool"
                 + " cancel-notification " + quote(pkg) + " "
                 + quote(tag == null ? "@null" : tag) + " " + id + " " + userId;
-        RootShell.Result result = RootShell.exec(command);
-        if (result.connected && result.code == 0) {
+        Shell.Result result = Shell.runSync(command);
+        if (result.code == 0) {
             Log.i("TickerBarFilter", "Removed hidden system-wide status notice: " + pkg
                     + " id=" + id);
             return;
