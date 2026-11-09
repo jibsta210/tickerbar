@@ -108,6 +108,8 @@ public class ShadeService extends AccessibilityService {
     private KeyguardManager keyguard;
     private boolean receiverOn;
     private boolean lastLocked;
+    /** The first real foreground event after unlock describes the unlock destination. */
+    private boolean foregroundHandoffAfterUnlock;
     /** A lock-screen gesture queues its target; it opens on unlock if that happens in time. */
     private Intent pendingTarget;
     private android.app.PendingIntent pendingAction;
@@ -176,11 +178,14 @@ public class ShadeService extends AccessibilityService {
         Log.d("TickerBar", "lock changed locked=" + l + " pending="
                 + (pendingTarget != null || pendingAction != null));
         if (l) {
+            foregroundHandoffAfterUnlock = false;
             hideTickerNow();
         } else if ((pendingTarget != null || pendingAction != null)
                 && pendingUntil > SystemClock.uptimeMillis()) {
+            foregroundHandoffAfterUnlock = true;
             ui.postDelayed(openPendingR, 150);   // let the keyguard finish going away
         } else {
+            foregroundHandoffAfterUnlock = true;
             pendingTarget = null;
             pendingAction = null;
             pendingActionFill = null;
@@ -448,8 +453,15 @@ public class ShadeService extends AccessibilityService {
                 && MainActivity.class.getName().contentEquals(e.getClassName());
         if (!ownApp && isTransient(pkg)) return;
         if (!pkg.equals(frontPkg)) {
+            // HyperOS can deliver the launcher/app window event after the user has already
+            // begun the first shade pull. That event is merely the keyguard-to-app handoff;
+            // closing the just-attached accessibility window left only its blur backdrop and
+            // made the first swipe look broken. Consume exactly one real foreground handoff.
+            boolean unlockHandoff = foregroundHandoffAfterUnlock;
+            foregroundHandoffAfterUnlock = false;
             frontPkg = pkg;
-            if (shade != null && shade.isOpen()) shade.closeNow();   // something opened over it
+            if (!unlockHandoff && shade != null && shade.isOpen())
+                shade.closeNow();   // something genuinely opened over it
             updateCorner();   // the corner steps aside while the app in front plays fullscreen video
             dropFrontApp();
         }
