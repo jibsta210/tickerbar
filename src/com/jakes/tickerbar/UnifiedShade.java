@@ -2495,27 +2495,21 @@ final class UnifiedShade {
                     public String state() { return torchOn ? "On" : "Off"; }
                     public void tap() {
                         final boolean wanted = !torchOn;
-                        // SystemUI keeps the camera client alive. A one-shot app_process
-                        // client loses its torch as soon as the helper exits.
-                        if (RootShell.available() || Shell.granted()) {
-                            if (RootShell.restricted()) {
-                                RootShell.operationAsync("power_flashlight",
-                                        new RootShell.OperationCallback() { public void done(RootShell.Result result) {
-                                            if (!result.connected || result.code != 0)
-                                                svc.toast("Flashlight failed (" + result.code + ")");
-                                            refreshTiles();
-                                        }});
-                                return;
-                            }
-                            Shell.runResult("cmd statusbar click-tile flashlight",
+                        // Keep the camera client in TickerBar's service process, which
+                        // survives closing the shade. SystemUI's shell tile command
+                        // does not reliably address built-in tiles on HyperOS.
+                        if (svc.checkSelfPermission(android.Manifest.permission.CAMERA)
+                                == PackageManager.PERMISSION_GRANTED) {
+                            setFlashlight(wanted);
+                        } else if (Shell.privileged()) {
+                            Shell.runResult("pm grant com.jakes.tickerbar android.permission.CAMERA",
                                     new Shell.ResultCallback() { public void done(Shell.Result result) {
-                                        if (result.code != 0) svc.toast("Flashlight failed (" + result.code + ")");
-                                        refreshTiles();
+                                        if (result.code == 0) setFlashlight(wanted);
+                                        else flashlightPermission();
                                     }});
-                            return;
+                        } else {
+                            flashlightPermission();
                         }
-                        try { cams.setTorchMode(torchId, wanted); torchOn = wanted; }
-                        catch (Exception e) { svc.toast("Root or Shizuku is needed to control the flashlight"); }
                     }
                 };
             case "dnd": return new Tile() {
@@ -2787,6 +2781,22 @@ final class UnifiedShade {
 
     private void buildTilesLater() {
         root.post(new Runnable() { public void run() { if (attached) refreshAll(); }});
+    }
+
+    private void setFlashlight(boolean wanted) {
+        try {
+            cams.setTorchMode(torchId, wanted);
+            // TorchCallback is the source of truth for the tile state.
+        } catch (Exception e) {
+            android.util.Log.w("TickerBar", "Flashlight control failed", e);
+            svc.toast("Flashlight failed: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private void flashlightPermission() {
+        svc.toast("Allow Camera permission in TickerBar permissions to use the flashlight");
+        launch(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + svc.getPackageName())));
     }
 
     private void startTorchWatch() {
