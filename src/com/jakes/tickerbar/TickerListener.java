@@ -34,7 +34,7 @@ public class TickerListener extends NotificationListenerService {
         try {
             StatusBarNotification[] current = getActiveNotifications();
             if (current != null) for (StatusBarNotification sbn : current) {
-                if (sbn == null || suppressAccessibilityReminder(sbn)
+                if (sbn == null || dismissAutomatic(sbn)
                         || getPackageName().equals(sbn.getPackageName())) continue;
                 remember(sbn.getPackageName());
                 rememberType(sbn);
@@ -126,7 +126,7 @@ public class TickerListener extends NotificationListenerService {
         catch (Exception e) { return; }
         if (active == null) return;
         for (StatusBarNotification sbn : active) {
-            if (listener.suppressAccessibilityReminder(sbn)) continue;
+            if (listener.dismissAutomatic(sbn)) continue;
             listener.hideFromStockShadeIfSelected(sbn);
         }
     }
@@ -152,7 +152,7 @@ public class TickerListener extends NotificationListenerService {
 
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null || sbn.getNotification() == null) return;
-        if (suppressAccessibilityReminder(sbn)) {
+        if (dismissAutomatic(sbn)) {
             ShadeService.notificationsChanged();
             return;
         }
@@ -218,6 +218,17 @@ public class TickerListener extends NotificationListenerService {
         ShadeService.notificationsChanged();
         // read in the app, swiped away, or replaced: the ticker shouldn't keep showing it
         ShadeService.recall(sbn.getKey());
+    }
+
+    private boolean dismissAutomatic(StatusBarNotification sbn) {
+        if (!WhatsAppReactions.matches(sbn)) return suppressAccessibilityReminder(sbn);
+        try {
+            cancelNotification(sbn.getKey());
+            return true;
+        } catch (RuntimeException failure) {
+            Log.w("TickerBarFilter", "Could not dismiss WhatsApp reaction", failure);
+            return false;
+        }
     }
 
     private boolean hideFromStockShadeIfSelected(StatusBarNotification sbn) {
